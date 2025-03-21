@@ -66,8 +66,8 @@ fn main() -> Result<()> {
 
     loop {
         // Blue!
-        led.set_pixel(RGB8::new(5, 5, 0))?;
-        //led.set_pixel(RGB8::new(0, 0, 5))?;
+        //led.set_pixel(RGB8::new(5, 5, 0))?;
+        led.set_pixel(RGB8::new(0, 0, 5))?;
         // Wait...
         std::thread::sleep(std::time::Duration::from_secs(1));
         info!("Hello, world!");
