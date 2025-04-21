@@ -26,6 +26,8 @@ RUN cargo install espflash
 RUN cargo install cargo-generate
 RUN cargo install esp-generate
 
+RUN cargo install bacon
+
 RUN rustup target add riscv32imac-unknown-none-elf
 RUN cargo install ldproxy
 
