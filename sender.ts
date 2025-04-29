@@ -11,6 +11,9 @@ const readCommands = async function*(fd) {
 	let buffer = new Uint8Array(0);
 	while(true) {
 		const readByte = await usbFd.read();
+		if (readByte.bytesRead === 0) {
+			break;
+		}
 		buffer = new Uint8Array([...buffer, ...readByte.buffer.subarray(0, readByte.bytesRead)]);
 		const foundCommands = commands.map(({command}) => command).flatMap((command) => {
 				const commandBytes = new TextEncoder().encode(command);
@@ -34,20 +37,25 @@ const readCommands = async function*(fd) {
 
 const contents: string = await fs.readFile("logs.txt", "utf8");
 const {messages} = processLogs(contents);
-const messageGroupForCommands = Object.groupBy(messages, ({parsed}) => parsed?.command);
+const messageGroupForCommands = Object.groupBy(messages, ({command}) => command);
 
 const commandsGen = readCommands(usbFd);
 const messageCounters = {};
 for await (const comm of commandsGen) {
 	if (messageGroupForCommands[comm]) {
-		const messageIndex = ((messageCounters[comm] ?? 0) + 1) % messageGroupForCommands[comm].length;
+		const messageIndex = ((messageCounters[comm] ?? 0) + Math.floor(Math.random() * messageGroupForCommands[comm].length)) % messageGroupForCommands[comm].length;
 		messageCounters[comm] = messageIndex;
 
 		console.log(comm);
-		const randomBytesBefore = Array(Math.floor(Math.random() * 100)).fill(undefined).map(() => Math.floor(Math.random() * 255));
-		const randomBytesAfter = Array(Math.floor(Math.random() * 100)).fill(undefined).map(() => Math.floor(Math.random() * 255));
-		const messageBytes = new Uint8Array([40, ...new TextEncoder().encode(messageGroupForCommands[comm][messageIndex].message)]);
-		await usbFd.write(new Uint8Array([...randomBytesBefore, ...messageBytes, ...crc_xmodem(messageBytes), 13, ...randomBytesAfter]));
+		const randomBytes = (num: number) => Array(Math.floor(Math.random() * num)).fill(undefined).map(() => {
+			if (Math.random() < 0.1) {
+				return Math.random() < 0.5 ? 40 : 13;
+			}else {
+				return Math.floor(Math.random() * 255)
+			}
+		});
+		const messageBytes = new Uint8Array(messageGroupForCommands[comm][messageIndex].bytes);
+		await usbFd.write(new Uint8Array([...randomBytes(1000), ...messageBytes, ...randomBytes(50)]));
 	}else {
 		console.warn(`Unknown command: ${comm}`);
 	}
