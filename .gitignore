@@ -1,3 +1,6 @@
 *.csv
 logs.txt
 *.bmp
+thingspeak_key.txt
+test_in
+test_out

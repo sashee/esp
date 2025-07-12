@@ -1,16 +1,32 @@
-import {execFile} from "node:child_process";
 import fs from "node:fs/promises";
 import {crc_xmodem, processLogs, commands} from "./utils.ts";
+import { parseArgs } from 'node:util';
+import assert from "node:assert/strict";
 
+const {read_from, write_to} = parseArgs({options: {
+  read_from: {
+    type: 'string',
+  },
+  write_to: {
+    type: 'string',
+  },
+}}).values;
+assert(read_from);
+assert(write_to);
+
+/*
 await execFile("stty", ["-F", "/dev/ttyUSB0", "2400"]);
 await execFile("stty", ["-F", "/dev/ttyUSB0", "raw"]);
+*/
 
-const usbFd = await fs.open("/dev/ttyUSB0", "r+");
+const writeFd = await fs.open(write_to, "w");
+const readFd = await fs.open(read_from, "r");
 
-const readCommands = async function*(fd) {
+const readCommands = async function*(fd: typeof readFd) {
 	let buffer = new Uint8Array(0);
 	while(true) {
-		const readByte = await usbFd.read();
+		const readByte = await fd.read();
+		console.log(readByte);
 		if (readByte.bytesRead === 0) {
 			break;
 		}
@@ -39,11 +55,14 @@ const contents: string = await fs.readFile("logs.txt", "utf8");
 const {messages} = processLogs(contents);
 const messageGroupForCommands = Object.groupBy(messages, ({command}) => command);
 
-const commandsGen = readCommands(usbFd);
+const commandsGen = readCommands(readFd);
 const messageCounters = {};
 for await (const comm of commandsGen) {
 	if (messageGroupForCommands[comm]) {
-		const messageIndex = ((messageCounters[comm] ?? 0) + Math.floor(Math.random() * messageGroupForCommands[comm].length)) % messageGroupForCommands[comm].length;
+		// random
+		//const messageIndex = ((messageCounters[comm] ?? 0) + Math.floor(Math.random() * messageGroupForCommands[comm].length)) % messageGroupForCommands[comm].length;
+		// time-ordered
+		const messageIndex = ((messageCounters[comm] ?? 0) + 1) % messageGroupForCommands[comm].length;
 		messageCounters[comm] = messageIndex;
 
 		console.log(comm);
@@ -55,7 +74,7 @@ for await (const comm of commandsGen) {
 			}
 		});
 		const messageBytes = new Uint8Array(messageGroupForCommands[comm][messageIndex].bytes);
-		await usbFd.write(new Uint8Array([...randomBytes(1000), ...messageBytes, ...randomBytes(50)]));
+		await writeFd.write(new Uint8Array([...randomBytes(1000), ...messageBytes, ...randomBytes(50)]));
 	}else {
 		console.warn(`Unknown command: ${comm}`);
 	}

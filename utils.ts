@@ -19,7 +19,39 @@ export const commands = [
 			const regex = /^(?<grid_voltage>\d\d\d\.\d) (?<grid_frequency>\d\d\.\d) (?<ac_output_voltage>\d\d\d\.\d) (?<ac_output_frequency>\d\d\.\d) (?<ac_output_apparent_power>\d\d\d\d) (?<ac_output_active_power>\d\d\d\d) (?<output_load_percent>\d\d\d) (?<bus_voltage>\d\d\d) (?<battery_voltage>\d\d\.\d\d) (?<battery_charging_current>\d\d\d) (?<battery_capacity>\d\d\d) (?<inverter_heat_sink_temperature>\d\d\d\d) (?<pv_input_current1>\d\d\.\d) (?<pv_input_voltage1>\d\d\d\.\d) (?<battery_voltage_from_scc1>\d\d\.\d\d) (?<battery_discharge_current>\d\d\d\d\d) (?<add_sbu_priority_version>[01])(?<configuration_status>[01])(?<scc_firmware_version>[01])(?<load_status>[01])(?<battery_voltage_to_steady_while_charging>[01])(?<charging_status>[01])(?<charging_status_scc_1>[01])(?<charging_status_ac>[01]) (?<battery_voltage_from_fans_on>\d\d) (?<eeprom_version>\d\d) (?<pv_charging_power1>\d\d\d\d\d) (?<flag_for_charging_to_flating_mode>[01])(?<switch_on>[01])(?<device_status_2_reserved>[01])$/;
 			const match = message.match(regex);
 			if (match) {
-				return match.groups;
+				const x = match.groups!;
+				return {
+					grid_voltage: Number(x["grid_voltage"]),
+					grid_frequency: Number(x["grid_frequency"]),
+					ac_output_voltage: Number(x["ac_output_voltage"]),
+					ac_output_frequency: Number(x["ac_output_frequency"]),
+					ac_output_apparent_power: Number(x["ac_output_apparent_power"]),
+					ac_output_active_power: Number(x["ac_output_active_power"]),
+					output_load_percent: Number(x["output_load_percent"]),
+					bus_voltage: Number(x["bus_voltage"]),
+					battery_voltage: Number(x["battery_voltage"]),
+					battery_charging_current: Number(x["battery_charging_current"]),
+					battery_capacity: Number(x["battery_capacity"]),
+					inverter_heat_sink_temperature: Number(x["inverter_heat_sink_temperature"]),
+					pv_input_current1: Number(x["pv_input_current1"]),
+					pv_input_voltage1: Number(x["pv_input_voltage1"]),
+					battery_voltage_from_scc1: Number(x["battery_voltage_from_scc1"]),
+					battery_discharge_current: Number(x["battery_discharge_current"]),
+					add_sbu_priority_version: Number(x["add_sbu_priority_version"]) == 1,
+					configuration_status: Number(x["configuration_status"]) == 1,
+					scc_firmware_version: Number(x["scc_firmware_version"]) == 1,
+					load_status: Number(x["load_status"]) == 1,
+					battery_voltage_to_steady_while_charging: Number(x["battery_voltage_to_steady_while_charging"]) == 1,
+					charging_status: Number(x["charging_status"]) == 1,
+					charging_status_scc_1: Number(x["charging_status_scc_1"]) == 1,
+					charging_status_ac: Number(x["charging_status_ac"]) == 1,
+					battery_voltage_from_fans_on: Number(x["battery_voltage_from_fans_on"]),
+					eeprom_version: Number(x["eeprom_version"]),
+					pv_charging_power1: Number(x["pv_charging_power1"]),
+					flag_for_charging_to_flating_mode: Number(x["flag_for_charging_to_flating_mode"]) == 1,
+					switch_on: Number(x["switch_on"]) == 1,
+					device_status_2_reserved: Number(x["device_status_2_reserved"]) == 1,
+				}
 			}
 		},
 	},
@@ -30,7 +62,12 @@ export const commands = [
 			const regex = /^(?<pv_input_current2>\d\d\.\d) (?<pv_input_voltage2>\d\d\d\.\d) (?<pv_charging_power2>\d\d\d\d\d) $/;
 			const match = message.match(regex);
 			if (match) {
-				return match.groups;
+				const x = match.groups!;
+				return {
+					pv_input_current2: Number(x["pv_input_current2"]),
+					pv_input_voltage2: Number(x["pv_input_voltage2"]),
+					pv_charging_power2: Number(x["pv_charging_power2"]),
+				};
 			}
 		},
 	},
@@ -41,7 +78,45 @@ export const commands = [
 			const regex = /^(?<reserved1>[01])(?<inverter_fault>[01])(?<bus_over>[01])(?<bus_under>[01])(?<bus_soft_fail>[01])(?<line_fail>[01])(?<opvshort>[01])(?<inverter_voltage_too_low>[01])(?<inverter_voltage_too_high>[01])(?<over_temperature>[01])(?<fan_locked>[01])(?<battery_voltage_high>[01])(?<battery_low_alarm>[01])(?<reserved_overcharge>[01])(?<battery_under_shutdown>[01])(?<reserved_battery_derating>[01])(?<over_load>[01])(?<eeprom_fault>[01])(?<inverter_over_current>[01])(?<inverter_soft_fail>[01])(?<self_test_fail>[01])(?<op_dv_voltage_over>[01])(?<bat_open>[01])(?<current_sensor_fail>[01])(?<battery_short>[01])(?<power_limit>[01])(?<pv_voltage_high_1>[01])(?<mppt_overload_fault_1>[01])(?<mppt_overload_warning_1>[01])(?<battery_too_low_to_charge_1>[01])(?<pv_voltage_high_2>[01])(?<mppt_overload_fault_2>[01])(?<mppt_overload_warning_2>[01])(?<battery_too_low_to_charge_2>[01])(?<unknown1>[01])(?<unknown2>[01])$/;
 			const match = message.match(regex);
 			if (match) {
-				return match.groups;
+				const x = match.groups!;
+				return {
+					reserved1: Number(x["reserved1"]) == 1,
+					inverter_fault: Number(x["inverter_fault"]) == 1,
+					bus_over: Number(x["bus_over"]) == 1,
+					bus_under: Number(x["bus_under"]) == 1,
+					bus_soft_fail: Number(x["bus_soft_fail"]) == 1,
+					line_fail: Number(x["line_fail"]) == 1,
+					opvshort: Number(x["opvshort"]) == 1,
+					inverter_voltage_too_low: Number(x["inverter_voltage_too_low"]) == 1,
+					inverter_voltage_too_high: Number(x["inverter_voltage_too_high"]) == 1,
+					over_temperature: Number(x["over_temperature"]) == 1,
+					fan_locked: Number(x["fan_locked"]) == 1,
+					battery_voltage_high: Number(x["battery_voltage_high"]) == 1,
+					battery_low_alarm: Number(x["battery_low_alarm"]) == 1,
+					reserved_overcharge: Number(x["reserved_overcharge"]) == 1,
+					battery_under_shutdown: Number(x["battery_under_shutdown"]) == 1,
+					reserved_battery_derating: Number(x["reserved_battery_derating"]) == 1,
+					over_load: Number(x["over_load"]) == 1,
+					eeprom_fault: Number(x["eeprom_fault"]) == 1,
+					inverter_over_current: Number(x["inverter_over_current"]) == 1,
+					inverter_soft_fail: Number(x["inverter_soft_fail"]) == 1,
+					self_test_fail: Number(x["self_test_fail"]) == 1,
+					op_dv_voltage_over: Number(x["op_dv_voltage_over"]) == 1,
+					bat_open: Number(x["bat_open"]) == 1,
+					current_sensor_fail: Number(x["current_sensor_fail"]) == 1,
+					battery_short: Number(x["battery_short"]) == 1,
+					power_limit: Number(x["power_limit"]) == 1,
+					pv_voltage_high_1: Number(x["pv_voltage_high_1"]) == 1,
+					mppt_overload_fault_1: Number(x["mppt_overload_fault_1"]) == 1,
+					mppt_overload_warning_1: Number(x["mppt_overload_warning_1"]) == 1,
+					battery_too_low_to_charge_1: Number(x["battery_too_low_to_charge_1"]) == 1,
+					pv_voltage_high_2: Number(x["pv_voltage_high_2"]) == 1,
+					mppt_overload_fault_2: Number(x["mppt_overload_fault_2"]) == 1,
+					mppt_overload_warning_2: Number(x["mppt_overload_warning_2"]) == 1,
+					battery_too_low_to_charge_2: Number(x["battery_too_low_to_charge_2"]) == 1,
+					unknown1: Number(x["unknown1"]) == 1,
+					unknown2: Number(x["unknown2"]) == 1,
+				};
 			}
 		},
 	}
