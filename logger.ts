@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {setTimeout} from "node:timers/promises";
 import {EventEmitter, once} from "node:events";
 import process from "node:process";
+import path from "node:path";
 
 const {read_from, write_to} = parseArgs({options: {
   read_from: {
@@ -101,6 +102,16 @@ const sender = sendCommand(writeFd, commandEvents);
 
 const startTime = new Date().getTime();
 
+const readCredential = async (credentialName: string, envVarName: string) => {
+	if (process.env.CREDENTIALS_DIRECTORY) {
+		return await fs.readFile(path.join(process.env.CREDENTIALS_DIRECTORY, credentialName));
+	}else {
+		return process.env[envVarName];
+	}
+}
+
+const thingspeakKey = await readCredential("thingspeak-key", "THINGSPEAK_KEY");
+
 await Promise.all([
 	(async () => {
 		for await (const comm of commandsGen) {
@@ -131,7 +142,7 @@ await Promise.all([
 			};
 			console.log(fields);
 			const req = await fetch("https://api.thingspeak.com/update" + 
-				"?api_key=" + process.env.THINGSPEAK_KEY + Object.entries(fields).map(([k, v]) => `&${k}=${v}`).join(""));
+				"?api_key=" + thingspeakKey + Object.entries(fields).map(([k, v]) => `&${k}=${v}`).join(""));
 			if (!req.ok) {
 				console.error(req);
 				throw new Error("Could not upload to thingspeak");
