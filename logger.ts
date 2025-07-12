@@ -1,11 +1,16 @@
 import fs from "node:fs/promises";
-import {crc_xmodem, processLogs, commands} from "./utils.ts";
+import {crc_xmodem, commands} from "./utils.ts";
 import { parseArgs } from 'node:util';
 import assert from "node:assert/strict";
 import {setTimeout} from "node:timers/promises";
 import {EventEmitter, once} from "node:events";
 import process from "node:process";
 import path from "node:path";
+import net from "node:net";
+
+// https://r1ch.net/blog/node-v20-aggregateeerror-etimedout-happy-eyeballs
+// https://github.com/nodejs/node/issues/54359
+//net.setDefaultAutoSelectFamilyAttemptTimeout(1000);
 
 const {read_from, write_to} = parseArgs({options: {
   read_from: {
@@ -18,8 +23,17 @@ const {read_from, write_to} = parseArgs({options: {
 assert(read_from);
 assert(write_to);
 
-const readFd = await fs.open(read_from, "r");
-const writeFd = await fs.open(write_to, "w");
+const [readFd, writeFd] = await Promise.race([
+	setTimeout(5000).then(() => {throw new Error("Open timeout")}),
+	Promise.all([
+		fs.open(read_from, "r"),
+		fs.open(write_to, "w"),
+	]),
+]).catch((e) => {
+	console.error(e);
+	// force stop
+	process.abort();
+});
 
 const readResponses = async function*(fd: typeof readFd) {
 	let buffer = new Uint8Array(0);
