@@ -1,0 +1,17 @@
+[Unit]
+Description=Remote control
+Wants=network.target
+
+[Service]
+LoadCredentialEncrypted=remote-control-token:/etc/remote-control/remote-control-token
+LoadCredentialEncrypted=remote-control-chat_id:/etc/remote-control/remote-control-chat_id
+
+Type=simple
+Restart=always
+RestartSec=60
+User=pi
+
+ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/remote_control.ts
+
+[Install]
+WantedBy=multi-user.target
