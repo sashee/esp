@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import {crc_xmodem, commands} from "./utils.ts";
+import {modifiedCrc, commands} from "./utils.ts";
 import { parseArgs } from 'node:util';
 import assert from "node:assert/strict";
 import {setTimeout} from "node:timers/promises";
@@ -50,7 +50,7 @@ const readResponses = async function*(fd: typeof readFd) {
 		console.log([...buffer].map((a) => a >= 32 && a <= 126 ? String.fromCharCode(a) : "\\x" + a.toString(16).padStart(2, "0")).join(""));
 
 		const checkCrc = (numbers: Uint8Array) => {
-			const calculatedCrc = crc_xmodem(new Uint8Array(numbers.slice(0, -2)));
+			const calculatedCrc = modifiedCrc(new Uint8Array(numbers.slice(0, -2)));
 			const actualCrc = numbers.slice(-2);
 			return calculatedCrc.length === actualCrc.length && calculatedCrc.every((v, i) => v === actualCrc[i]);
 		};
@@ -67,7 +67,7 @@ const readResponses = async function*(fd: typeof readFd) {
 						const bytes = new Uint8Array(buffer.slice(i, i + command.length + 4));
 						const crcOk = checkCrc(bytes.subarray(0, -1));
 						if (!crcOk) {
-							console.log(`CRC not correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}, but expected: ${[...crc_xmodem(new Uint8Array(bytes.slice(0, -3)))].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
+							console.log(`CRC not correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}, but expected: ${[...modifiedCrc(new Uint8Array(bytes.slice(0, -3)))].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
 							return [];
 						}
 						console.log(`CRC correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
@@ -109,7 +109,7 @@ const readResponses = async function*(fd: typeof readFd) {
 
 const sendCommand = (write: typeof writeFd, commandEvents: EventEmitter) => async (command: string) => {
 	const commandBytes = new TextEncoder().encode(command);
-	const fullCommandBytes = new Uint8Array([...commandBytes, ...crc_xmodem(commandBytes), 13]);
+	const fullCommandBytes = new Uint8Array([...commandBytes, ...modifiedCrc(commandBytes), 13]);
 	console.log("writing", command, fullCommandBytes);
 
 	const [[res]] = await Promise.all([

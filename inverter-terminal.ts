@@ -4,7 +4,7 @@ import {execFile} from "node:child_process";
 import {setTimeout} from "node:timers/promises";
 import fs from "node:fs/promises";
 import process from "node:process";
-import {crc_xmodem} from "./utils.ts";
+import {modifiedCrc} from "./utils.ts";
 
 await execFile("stty", ["-F", "/dev/ttyUSB0", "sane"]);
 await execFile("stty", ["-F", "/dev/ttyUSB0", "2400", "raw", "-echo"]);
@@ -32,7 +32,7 @@ while (true) {
 	console.log(command);
 
 	const commandBytes = new TextEncoder().encode(command);
-	const fullCommandBytes = new Uint8Array([...commandBytes, ...crc_xmodem(commandBytes), 13]);
+	const fullCommandBytes = new Uint8Array([...commandBytes, ...modifiedCrc(commandBytes), 13]);
 	console.log([...fullCommandBytes].map((n) => n.toString(16).padStart(2, "0")))
 	writeFd.write(fullCommandBytes);
 }

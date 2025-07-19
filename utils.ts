@@ -1,5 +1,5 @@
 // https://stackoverflow.com/a/75806068
-export const crc_xmodem = (str: Uint8Array) => {
+const crc_xmodem = (str: Uint8Array) => {
 	let crc = 0;
 	let xorout = 0;
     for(let i = 0, t: number; i < str.length; i++, crc &= 0xFFFF) {
@@ -10,6 +10,13 @@ export const crc_xmodem = (str: Uint8Array) => {
     const res = crc ^ xorout;
 		return new Uint8Array([res >> 8, res & 0xFF]);
 };
+
+// uses a slightly different CRC where some bytes are increased
+// https://github.com/ned-kelly/docker-voltronic-homeassistant/blob/master/sources/inverter-cli/inverter.cpp
+export const modifiedCrc = (str: Uint8Array) => {
+	const correctCrc = (crc: Uint8Array) => crc.map((v) => [0x28, 0x0D, 0x0A].includes(v) ? v + 1 : v);
+	return correctCrc(crc_xmodem(str));
+}
 
 export const commands = [
 	{

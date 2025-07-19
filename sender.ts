@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import {crc_xmodem, processLogs, commands} from "./utils.ts";
+import {modifiedCrc, processLogs, commands} from "./utils.ts";
 import { parseArgs } from 'node:util';
 import assert from "node:assert/strict";
 
@@ -33,7 +33,7 @@ const readCommands = async function*(fd: typeof readFd) {
 		buffer = new Uint8Array([...buffer, ...readByte.buffer.subarray(0, readByte.bytesRead)]);
 		const foundCommands = commands.map(({command}) => command).flatMap((command) => {
 				const commandBytes = new TextEncoder().encode(command);
-				const fullCommandBytes = new Uint8Array([...commandBytes, ...crc_xmodem(commandBytes), 13]);
+				const fullCommandBytes = new Uint8Array([...commandBytes, ...modifiedCrc(commandBytes), 13]);
 				const foundCommandIdx = buffer.findLastIndex((e, i, l) => {
 					return fullCommandBytes.every((ce, ci) => l[i + ci] === ce);
 				});
