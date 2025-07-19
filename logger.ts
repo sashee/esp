@@ -43,11 +43,11 @@ const readResponses = async function*(fd: typeof readFd) {
 	let buffer = new Uint8Array(0);
 	while(true) {
 		const readByte = await fd.read();
-		console.log(readByte);
 		if (readByte.bytesRead === 0) {
 			break;
 		}
 		buffer = new Uint8Array([...buffer, ...readByte.buffer.subarray(0, readByte.bytesRead)]);
+		console.log([...buffer].map((a) => a >= 32 && a <= 126 ? String.fromCharCode(a) : "\\x" + a.toString(16).padStart(2, "0")).join(""));
 
 		const checkCrc = (numbers: Uint8Array) => {
 			const calculatedCrc = crc_xmodem(new Uint8Array(numbers.slice(0, -2)));
@@ -67,8 +67,10 @@ const readResponses = async function*(fd: typeof readFd) {
 						const bytes = new Uint8Array(buffer.slice(i, i + command.length + 4));
 						const crcOk = checkCrc(bytes.subarray(0, -1));
 						if (!crcOk) {
+							console.log(`CRC not correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}, but expected: ${[...crc_xmodem(new Uint8Array(bytes.slice(0, -3)))].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
 							return [];
 						}
+						console.log(`CRC correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
 						const parsed = command.parse(new TextDecoder().decode(bytes.subarray(1, -3)));
 						if (!parsed) {
 							return [];
@@ -99,6 +101,7 @@ const readResponses = async function*(fd: typeof readFd) {
 		buffer = new Uint8Array(buffer.subarray(skipTo));
 
 		for (const foundResponse of results) {
+			console.log("Got response to command: " + foundResponse.command);
 			yield {command: foundResponse.command, values: foundResponse.values};
 		}
 	}
