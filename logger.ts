@@ -7,6 +7,7 @@ import {EventEmitter, once} from "node:events";
 import process from "node:process";
 import path from "node:path";
 import net from "node:net";
+import {execFile} from "node:child_process";
 
 // https://r1ch.net/blog/node-v20-aggregateeerror-etimedout-happy-eyeballs
 // https://github.com/nodejs/node/issues/54359
@@ -35,10 +36,14 @@ const [readFd, writeFd] = await Promise.race([
 	process.abort();
 });
 
+await execFile("stty", ["-F", "/dev/ttyUSB0", "speed 2400 cs8 -parenb -cstopb"]);
+await execFile("stty", ["-F", "/dev/ttyUSB0", "raw"]);
+
 const readResponses = async function*(fd: typeof readFd) {
 	let buffer = new Uint8Array(0);
 	while(true) {
 		const readByte = await fd.read();
+		console.log(readByte);
 		if (readByte.bytesRead === 0) {
 			break;
 		}
@@ -102,6 +107,7 @@ const readResponses = async function*(fd: typeof readFd) {
 const sendCommand = (write: typeof writeFd, commandEvents: EventEmitter) => async (command: string) => {
 	const commandBytes = new TextEncoder().encode(command);
 	const fullCommandBytes = new Uint8Array([...commandBytes, ...crc_xmodem(commandBytes), 13]);
+	console.log("writing", command, fullCommandBytes);
 
 	const [[res]] = await Promise.all([
 		once(commandEvents, command, {signal: AbortSignal.timeout(5000)}),
@@ -135,13 +141,13 @@ await Promise.all([
 	(async () => {
 		while (true) {
 			const qpigs = await sender("QPIGS");
-			const qpigs2 = await sender("QPIGS2");
-			const qpiws = await sender("QPIWS");
 			console.log(qpigs);
+			const qpigs2 = await sender("QPIGS2");
 			console.log(qpigs2);
+			const qpiws = await sender("QPIWS");
 			console.log(qpiws);
 
-			if (qpigs.battery_charging_current != 0 && qpigs.battery_discharge_current != 0) {
+			if (qpigs.battery_charging_current !== 0 && qpigs.battery_discharge_current !== 0) {
 				throw new Error(`Both battery charging current and battery discharge current are non-null! qpigs.battery_charging_current = ${qpigs.battery_charging_current}, qpigs.battery_discharge_current = ${qpigs.battery_discharge_current}`);
 			}
 			const fields = {
