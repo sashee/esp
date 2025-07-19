@@ -36,8 +36,8 @@ const [readFd, writeFd] = await Promise.race([
 	process.abort();
 });
 
-await execFile("stty", ["-F", "/dev/ttyUSB0", "speed 2400 cs8 -parenb -cstopb"]);
-await execFile("stty", ["-F", "/dev/ttyUSB0", "raw"]);
+//await execFile("stty", ["-F", "/dev/ttyUSB0", "sane"]);
+//await execFile("stty", ["-F", "/dev/ttyUSB0", "2400", "raw", "-echo"]);
 
 const readResponses = async function*(fd: typeof readFd) {
 	let buffer = new Uint8Array(0);
@@ -124,7 +124,7 @@ const startTime = new Date().getTime();
 
 const readCredential = async (credentialName: string, envVarName: string) => {
 	if (process.env.CREDENTIALS_DIRECTORY) {
-		return await fs.readFile(path.join(process.env.CREDENTIALS_DIRECTORY, credentialName));
+		return await fs.readFile(path.join(process.env.CREDENTIALS_DIRECTORY, credentialName), "utf8");
 	}else {
 		return process.env[envVarName];
 	}

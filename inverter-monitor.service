@@ -10,11 +10,11 @@ Restart=always
 RestartSec=60
 User=pi
 
-ExecStartPre=-stty -F /dev/ttyUSB0 2400
-ExecStartPre=-stty -F /dev/ttyUSB0 raw
+ExecStartPre=-stty -F /dev/ttyUSB0 sane
+ExecStartPre=-stty -F /dev/ttyUSB0 2400 raw -echo
 
-ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/logger.ts --read_from /home/pi/esp/test_out --write_to /home/pi/esp/test_in
-#ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/logger.ts --read_from /dev/ttyUSB0 --write_to /dev/ttyUSB0
+#ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/logger.ts --read_from /home/pi/esp/test_out --write_to /home/pi/esp/test_in
+ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/logger.ts --read_from /dev/ttyUSB0 --write_to /dev/ttyUSB0
 
 [Install]
 WantedBy=multi-user.target
