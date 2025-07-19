@@ -3,17 +3,18 @@ import {spawn} from "node:child_process";
 import process from "node:process";
 import path from "node:path";
 import { Buffer } from 'node:buffer';
+import fs from "node:fs/promises";
 
 const readCredential = async (credentialName: string, envVarName: string) => {
 	if (process.env.CREDENTIALS_DIRECTORY) {
-		return await fs.readFile(path.join(process.env.CREDENTIALS_DIRECTORY, credentialName));
+		return await fs.readFile(path.join(process.env.CREDENTIALS_DIRECTORY, credentialName), "utf8");
 	}else {
 		return process.env[envVarName];
 	}
 }
 
 const remoteControlToken = await readCredential("remote-control-token", "TOKEN");
-const remoteControlChatId = await readCredential("remote-control-chat_id", "CHAT_ID");
+const remoteControlChatId = Number(await readCredential("remote-control-chat_id", "CHAT_ID"));
 
 const sendTelegramCommand = (token: string) => async (command: string, params: object) => {
 	const res = await fetch(`https://api.telegram.org/bot${token}/${command}`, {
@@ -38,11 +39,12 @@ const readMessages = async function*(token: string, chatId: number) {
 		console.log("getUpdates with offset: " + offset);
 		const resJson = await sendCommand("getUpdates", {offset, timeout: 60});
 		console.log(JSON.stringify(resJson, undefined, 4));
-		offset = Math.max(...resJson.result.map(({update_id}) => update_id)) + 1;
+		offset = Math.max((offset ?? 0), ...resJson.result.map(({update_id}) => update_id)) + 1;
 		const messages = resJson.result
 			.flatMap((res) => res.message !== undefined && res.message.chat.id === chatId ? [res.message] : [])
 			.toSorted((m1, m2) => m1.date - m2.date);
 
+			console.log("GOT MESSAGES: ", messages);
 		for (const message of messages) {
 			yield message;
 		}
@@ -62,8 +64,9 @@ await sendCommand("setMyCommands", {
 const messagesGen = readMessages(remoteControlToken, remoteControlChatId);
 
 for await (const message of messagesGen) {
-	console.log(message);
+	console.log("goT MESSAge", message);
 	if (message.text === "/pinggy") {
+		console.log("pinggy!")
 		const child = spawn("ssh", ["-o", "StrictHostKeyChecking=no", "-p", "443", "-R0:localhost:22", "tcp@a.pinggy.io"], {env: {PATH: process.env.PATH}});
 		const stdout = [];
 		const stderr = [];
