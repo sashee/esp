@@ -153,6 +153,8 @@ await Promise.all([
 			if (qpigs.battery_charging_current !== 0 && qpigs.battery_discharge_current !== 0) {
 				throw new Error(`Both battery charging current and battery discharge current are non-null! qpigs.battery_charging_current = ${qpigs.battery_charging_current}, qpigs.battery_discharge_current = ${qpigs.battery_discharge_current}`);
 			}
+
+			console.log(`INVERTER_DATA_LOGGING ${JSON.stringify({qpigs, qpigs2, qpiws, time: new Date().toISOString(), uptime: new Date().getTime() - startTime})}`);
 			const fields = {
 				field1: (new Date().getTime() - startTime) / 1000,
 				field2: qpigs.ac_output_active_power,
