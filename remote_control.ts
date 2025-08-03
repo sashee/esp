@@ -41,7 +41,7 @@ const readMessages = async function*(token: string, chatId: number) {
 		console.log(JSON.stringify(resJson, undefined, 4));
 		offset = Math.max((offset ?? 0), ...resJson.result.map(({update_id}) => update_id)) + 1;
 		const messages = resJson.result
-			.flatMap((res) => res.message !== undefined && res.message.chat.id === chatId ? [res.message] : [])
+			.flatMap((res) => res.message !== undefined && res.message.chat.id === chatId && (new Date(res.message.date * 1000).getTime() > new Date().getTime() - 10*60*1000) ? [res.message] : [])
 			.toSorted((m1, m2) => m1.date - m2.date);
 
 			console.log("GOT MESSAGES: ", messages);
