@@ -1,0 +1,23 @@
+{
+  "name": "esp",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/sashee/esp#readme",
+  "bugs": {
+    "url": "https://github.com/sashee/esp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sashee/esp.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "serialport": "^13.0.0"
+  }
+}

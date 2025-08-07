@@ -1,127 +1,144 @@
 import fs from "node:fs/promises";
 import {modifiedCrc, commands} from "./utils.ts";
-import { parseArgs } from 'node:util';
-import assert from "node:assert/strict";
 import {setTimeout} from "node:timers/promises";
-import {EventEmitter, once} from "node:events";
 import process from "node:process";
 import path from "node:path";
 import net from "node:net";
-import {execFile} from "node:child_process";
+import { autoDetect } from "@serialport/bindings-cpp";
+import { Buffer } from 'node:buffer';
 
 // https://r1ch.net/blog/node-v20-aggregateeerror-etimedout-happy-eyeballs
 // https://github.com/nodejs/node/issues/54359
 //net.setDefaultAutoSelectFamilyAttemptTimeout(1000);
 
-const {read_from, write_to} = parseArgs({options: {
-  read_from: {
-    type: 'string',
-  },
-  write_to: {
-    type: 'string',
-  },
-}}).values;
-assert(read_from);
-assert(write_to);
+const binding = autoDetect();
 
-const [readFd, writeFd] = await Promise.race([
-	setTimeout(5000).then(() => {throw new Error("Open timeout")}),
-	Promise.all([
-		fs.open(read_from, "r"),
-		fs.open(write_to, "w"),
-	]),
-]).catch((e) => {
-	console.error(e);
-	// force stop
-	process.abort();
-});
-
-//await execFile("stty", ["-F", "/dev/ttyUSB0", "sane"]);
-//await execFile("stty", ["-F", "/dev/ttyUSB0", "2400", "raw", "-echo"]);
-
-const readResponses = async function*(fd: typeof readFd) {
-	let buffer = new Uint8Array(0);
-	while(true) {
-		const readByte = await fd.read();
-		if (readByte.bytesRead === 0) {
-			break;
-		}
-		buffer = new Uint8Array([...buffer, ...readByte.buffer.subarray(0, readByte.bytesRead)]);
-		console.log([...buffer].map((a) => a >= 32 && a <= 126 ? String.fromCharCode(a) : "\\x" + a.toString(16).padStart(2, "0")).join(""));
-
-		const checkCrc = (numbers: Uint8Array) => {
-			const calculatedCrc = modifiedCrc(new Uint8Array(numbers.slice(0, -2)));
-			const actualCrc = numbers.slice(-2);
-			return calculatedCrc.length === actualCrc.length && calculatedCrc.every((v, i) => v === actualCrc[i]);
-		};
-
-		const {skipTo, results} = buffer.reduce(({skipTo, results}, e, i) => {
-			if (i < skipTo) {
-				return {skipTo, results};
-			}else {
-				if (e === 40) {
-					const matchedCommands = commands.flatMap((command) => {
-						if (buffer[i + command.length + 3] !== 13) {
-							return [];
-						}
-						const bytes = new Uint8Array(buffer.slice(i, i + command.length + 4));
-						const crcOk = checkCrc(bytes.subarray(0, -1));
-						if (!crcOk) {
-							console.log(`CRC not correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}, but expected: ${[...modifiedCrc(new Uint8Array(bytes.slice(0, -3)))].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
-							return [];
-						}
-						console.log(`CRC correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
-						const parsed = command.parse(new TextDecoder().decode(bytes.subarray(1, -3)));
-						if (!parsed) {
-							return [];
-						}else {
-							return [{
-								from: i,
-								to: i + command.length + 3,
-								command: command.command,
-								values: parsed,
-								bytes,
-							}];
-						}
-					});
-					if (matchedCommands.length > 0) {
-						return {
-							skipTo: matchedCommands[0].to + 1,
-							results: [...results, matchedCommands[0]],
-						};
-					}else {
-						return {skipTo, results};
+const request = async (path: string, command: typeof commands[0], signal: AbortSignal) => {
+	const port = await binding.open({path, baudRate: 2400, dataBits: 8, stopBits: 1, parity: "none"});
+	const finished = new AbortController();
+	try {
+		signal.throwIfAborted();
+		const [, , values] = await Promise.all([
+			new Promise((res, rej) => {
+				signal.addEventListener("abort", (reason) => {
+					port.close().catch((e) => rej(e));
+					rej(reason);
+				}, {once: true, signal: finished.signal});
+				finished.signal.addEventListener("abort", (r) => res(r), {once: true, signal});
+			}),
+			(async () => {
+				const commandBytes = new TextEncoder().encode(command.command);
+				const fullCommandBytes = new Uint8Array([...commandBytes, ...modifiedCrc(commandBytes), 13]);
+				try {
+					await port.write(Buffer.from(fullCommandBytes, fullCommandBytes.byteLength, fullCommandBytes.byteLength));
+				}catch(e) {
+					if (!e.canceled) {
+						throw e;
 					}
-				}else {
-					return {skipTo, results};
 				}
-			}
-		}, {skipTo: 0, results: []});
+			})(),
+			(async () => {
+				let buffer = new Uint8Array(0);
+				while(true) {
+					const readBytes = await (async () => {
+						try {
+							const {buffer, bytesRead} = await port.read(Buffer.alloc(8), 0, 8);
+							return buffer.subarray(0, bytesRead);
+						}catch(e) {
+							if (!e.canceled) {
+								throw e;
+							}
+						}
+					})();
+					if (readBytes === undefined) {
+						break;
+					}
+					buffer = new Uint8Array([...buffer, ...readBytes]);
+					console.log([...buffer].map((a) => a >= 32 && a <= 126 ? String.fromCharCode(a) : "\\x" + a.toString(16).padStart(2, "0")).join(""));
 
-		buffer = new Uint8Array(buffer.subarray(skipTo));
+					const checkCrc = (numbers: Uint8Array) => {
+						const calculatedCrc = modifiedCrc(new Uint8Array(numbers.slice(0, -2)));
+						const actualCrc = numbers.slice(-2);
+						return calculatedCrc.length === actualCrc.length && calculatedCrc.every((v, i) => v === actualCrc[i]);
+					};
 
-		for (const foundResponse of results) {
-			console.log("Got response to command: " + foundResponse.command);
-			yield {command: foundResponse.command, values: foundResponse.values};
+					const {skipTo, result} = buffer.reduce(({skipTo, result}, e, i) => {
+						if (i < skipTo || result !== undefined) {
+							return {skipTo, result};
+						}else {
+							if (e === 40) {
+								if (buffer[i + command.length + 3] !== 13) {
+									return [];
+								}
+								const bytes = new Uint8Array(buffer.slice(i, i + command.length + 4));
+								const crcOk = checkCrc(bytes.subarray(0, -1));
+								if (!crcOk) {
+									console.log(`CRC not correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}, but expected: ${[...modifiedCrc(new Uint8Array(bytes.slice(0, -3)))].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
+									return [];
+								}
+								console.log(`CRC correct. Got: ${[...bytes.subarray(-3, -1)].map((a) => a.toString(16).padStart(2, "0")).join("")}. Message: ${[...bytes].map((a) => a.toString(16).padStart(2, "0")).join("")}`);
+								const parsed = command.parse(new TextDecoder().decode(bytes.subarray(1, -3)));
+								if (!parsed) {
+								return {skipTo, result};
+								}else {
+									return {
+										skipTo: i + command.length + 3,
+										result: {
+											from: i,
+											to: i + command.length + 3,
+											command: command.command,
+											values: parsed,
+											bytes,
+										}
+									};
+								}
+							}else {
+								return {skipTo, result};
+							}
+						}
+					}, {skipTo: 0, result: undefined});
+
+					buffer = new Uint8Array(buffer.subarray(skipTo));
+
+					if (result) {
+						finished.abort();
+						return result.values;
+					}
+				}
+			})(),
+		]);
+		return values;
+	}finally {
+		if (port.isOpen) {
+			await port.close();
 		}
 	}
+};
+
+const detectInverterPath = async () => {
+	const serialList = await binding.list();
+	console.log(serialList)
+	const usbPaths = serialList.map(({path}) => path).filter((path) => path.includes("USB"));
+	console.log(usbPaths)
+	const results = await Promise.allSettled(usbPaths.map(async (path) => {
+		await request(path, commands.find(({command}) => command === "QPIGS")!, AbortSignal.timeout(2000)).catch(() => {});
+		await setTimeout(2000);
+		await request(path, commands.find(({command}) => command === "QPIGS")!, AbortSignal.timeout(2000)).catch(() => {});
+		await setTimeout(2000);
+		await request(path, commands.find(({command}) => command === "QPIGS")!, AbortSignal.timeout(2000));
+		return path;
+	}));
+	console.log(results);
+	const foundPath = results.filter(({status}) => status === "fulfilled").map(({value}) => value);
+	if (foundPath.length === 0) {
+		throw new Error("Could not find the path");
+	}
+	return foundPath[0];
 }
 
-const sendCommand = (write: typeof writeFd, commandEvents: EventEmitter) => async (command: string) => {
-	const commandBytes = new TextEncoder().encode(command);
-	const fullCommandBytes = new Uint8Array([...commandBytes, ...modifiedCrc(commandBytes), 13]);
-	console.log("writing", command, fullCommandBytes);
+const inverterPath = await detectInverterPath();
 
-	const [[res]] = await Promise.all([
-		once(commandEvents, command, {signal: AbortSignal.timeout(5000)}),
-		write.write(fullCommandBytes),
-	]);
-	return res;
-}
-
-const commandEvents = new EventEmitter();
-const commandsGen = readResponses(readFd);
-const sender = sendCommand(writeFd, commandEvents);
+console.log(`Inverter path: ${inverterPath}`);
 
 const startTime = new Date().getTime();
 
@@ -135,50 +152,37 @@ const readCredential = async (credentialName: string, envVarName: string) => {
 
 const thingspeakKey = await readCredential("thingspeak-key", "THINGSPEAK_KEY");
 
-await Promise.all([
-	(async () => {
-		for await (const comm of commandsGen) {
-			commandEvents.emit(comm.command, comm.values);
-		}
-	})(),
-	(async () => {
-		while (true) {
-			const qpigs = await sender("QPIGS");
-			console.log(qpigs);
-			const qpigs2 = await sender("QPIGS2");
-			console.log(qpigs2);
-			const qpiws = await sender("QPIWS");
-			console.log(qpiws);
+while (true) {
+	const qpigs = await request(inverterPath, commands.find(({command}) => command === "QPIGS")!, AbortSignal.timeout(2000));
+	console.log(qpigs);
+	const qpigs2 = await request(inverterPath, commands.find(({command}) => command === "QPIGS2")!, AbortSignal.timeout(2000));
+	console.log(qpigs2);
+	const qpiws = await request(inverterPath, commands.find(({command}) => command === "QPIWS")!, AbortSignal.timeout(2000));
+	console.log(qpiws);
 
-			if (qpigs.battery_charging_current !== 0 && qpigs.battery_discharge_current !== 0) {
-				throw new Error(`Both battery charging current and battery discharge current are non-null! qpigs.battery_charging_current = ${qpigs.battery_charging_current}, qpigs.battery_discharge_current = ${qpigs.battery_discharge_current}`);
-			}
+	if (qpigs.battery_charging_current !== 0 && qpigs.battery_discharge_current !== 0) {
+		throw new Error(`Both battery charging current and battery discharge current are non-null! qpigs.battery_charging_current = ${qpigs.battery_charging_current}, qpigs.battery_discharge_current = ${qpigs.battery_discharge_current}`);
+	}
 
-			console.log(`INVERTER_DATA_LOGGING ${JSON.stringify({qpigs, qpigs2, qpiws, time: new Date().toISOString(), uptime: new Date().getTime() - startTime})}`);
-			const fields = {
-				field1: (new Date().getTime() - startTime) / 1000,
-				field2: qpigs.ac_output_active_power,
-				field3: qpigs.battery_voltage,
-				field4: qpigs.battery_charging_current - qpigs.battery_discharge_current,
-				field5: qpigs.battery_capacity,
-				field6: qpigs.inverter_heat_sink_temperature,
-				field7: qpigs.pv_charging_power1,
-				field8: qpigs2.pv_charging_power2,
-			};
-			console.log(fields);
-			const req = await fetch("https://api.thingspeak.com/update" + 
-				"?api_key=" + thingspeakKey + Object.entries(fields).map(([k, v]) => `&${k}=${v}`).join(""));
-			if (!req.ok) {
-				console.error(req);
-				throw new Error("Could not upload to thingspeak");
-			}
+	console.log(`INVERTER_DATA_LOGGING ${JSON.stringify({qpigs, qpigs2, qpiws, time: new Date().toISOString(), uptime: new Date().getTime() - startTime})}`);
+	const fields = {
+		field1: (new Date().getTime() - startTime) / 1000,
+		field2: qpigs.ac_output_active_power,
+		field3: qpigs.battery_voltage,
+		field4: qpigs.battery_charging_current - qpigs.battery_discharge_current,
+		field5: qpigs.battery_capacity,
+		field6: qpigs.inverter_heat_sink_temperature,
+		field7: qpigs.pv_charging_power1,
+		field8: qpigs2.pv_charging_power2,
+	};
+	console.log(fields);
+	const req = await fetch("https://api.thingspeak.com/update" + 
+		"?api_key=" + thingspeakKey + Object.entries(fields).map(([k, v]) => `&${k}=${v}`).join(""));
+	if (!req.ok) {
+		console.error(req);
+		throw new Error("Could not upload to thingspeak");
+	}
 
-			await setTimeout(15000);
-		}
-	})(),
-]).catch((e) => {
-	console.error(e);
-	// force stop
-	process.abort();
-});
+	await setTimeout(15000);
+}
 
