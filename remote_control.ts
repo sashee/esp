@@ -80,16 +80,28 @@ for await (const message of messagesGen) {
 			stderr.push(data);
 		});
 		await Promise.all([
-			setTimeout(5000).then(async () => {
+			setTimeout(10000).then(async () => {
 				if (!closed) {
-					const msg = await sendCommand("sendMessage", {
-						chat_id: remoteControlChatId,
-						text: Buffer.concat(stdout).toString() + "\nstderr:\n" + Buffer.concat(stderr).toString(),
-						link_preview_options: {
-							is_disabled: true,
-						}
-					});
-					console.log(JSON.stringify(msg, undefined, 4));
+					if (stdout.length === 0) {
+						const msg = await sendCommand("sendMessage", {
+							chat_id: remoteControlChatId,
+							text: "EMPTY STDOUT, closing "+ "\nstderr:\n" + Buffer.concat(stderr).toString(),
+							link_preview_options: {
+								is_disabled: true,
+							}
+						});
+						console.log(JSON.stringify(msg, undefined, 4));
+						child.kill();
+					}else {
+						const msg = await sendCommand("sendMessage", {
+							chat_id: remoteControlChatId,
+							text: Buffer.concat(stdout).toString() + "\nstderr:\n" + Buffer.concat(stderr).toString(),
+							link_preview_options: {
+								is_disabled: true,
+							}
+						});
+						console.log(JSON.stringify(msg, undefined, 4));
+					}
 				}
 			}),
 			new Promise((res, rej) => {
