@@ -1,0 +1,421 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  SecretHash:
+    Type: String
+    Description: "The monitoring path's sha512 must match this to allow"
+
+Resources:
+  DataCollectorUser:
+    Type: AWS::IAM::User
+    Properties:
+      Policies:
+      - PolicyName: allow-lambda-call
+        PolicyDocument:
+           Version: 2012-10-17
+           Statement:
+              - Effect: Allow
+                Action:
+                - 'lambda:InvokeFunctionUrl'
+                Resource: !GetAtt DataCollectorLambdaUrl.FunctionArn
+  DataTable: 
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - AttributeName: "Timestamp"
+          AttributeType: "N"
+      KeySchema: 
+        - AttributeName: "Timestamp"
+          KeyType: "HASH"
+      BillingMode: PAY_PER_REQUEST
+      OnDemandThroughput:
+        MaxReadRequestUnits: 100
+        MaxWriteRequestUnits: 1
+# data collector
+  DataCollectorLambdaLogGroup: 
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      RetentionInDays: 365
+  DataCollectorLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+        - PolicyName: permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - 'logs:PutLogEvents'
+              - 'logs:CreateLogStream'
+              Resource: !Sub "${DataCollectorLambdaLogGroup.Arn}:*"
+            - Effect: Allow
+              Action:
+              - 'dynamodb:PutItem'
+              Resource: !GetAtt DataTable.Arn
+  DataCollectorLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs22.x
+      Role: !GetAtt DataCollectorLambdaExecutionRole.Arn
+      Handler: index.handler
+      Timeout: 30
+      Code:
+        ZipFile: |
+          const {DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand} = require("@aws-sdk/client-dynamodb");
+          const crypto = require("crypto");
+          const zlib = require("node:zlib");
+          const {promisify} = require("node:util");
+
+          const client = new DynamoDBClient();
+
+          exports.handler = async (event) => {
+            const {body, ...rest} = event;
+            console.log({...rest, bodyLength: body?.length});
+            const {timestamp} = event.queryStringParameters;
+            const bodyBuffer = Buffer.from(body, event.isBase64Encoded ? "base64" : "utf8");
+
+            const compressed = await promisify(zlib.brotliCompress)(bodyBuffer, {params: {
+              [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+              [zlib.constants.BROTLI_PARAM_QUALITY]: zlib.constants.BROTLI_MAX_QUALITY,
+              [zlib.constants.BROTLI_PARAM_SIZE_HINT]: bodyBuffer.length,
+            }});
+            console.log({type: "compressed", original: bodyBuffer.length, compressed: compressed.length});
+            await client.send(new PutItemCommand({
+              TableName: process.env.DataTable,
+              Item: {
+                Timestamp: {N: String(new Date(Number(timestamp)).getTime())},
+                Data: {B: compressed},
+              },
+              ConditionExpression: "attribute_not_exists(#pk)",
+              ExpressionAttributeNames: {
+                "#pk": "Timestamp",
+              },
+            }));
+          };
+      LoggingConfig:
+        LogGroup: !Ref DataCollectorLambdaLogGroup
+        LogFormat: JSON
+      Environment:
+        Variables:
+          DataTable: !GetAtt DataTable.Arn
+  DataCollectorLambdaUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: AWS_IAM
+      TargetFunctionArn: !GetAtt DataCollectorLambdaFunction.Arn
+# reporting lambda
+  ReportingLambdaLogGroup: 
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      RetentionInDays: 365
+  ReportingLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+        - PolicyName: permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - 'logs:PutLogEvents'
+              - 'logs:CreateLogStream'
+              Resource: !Sub "${ReportingLambdaLogGroup.Arn}:*"
+            - Effect: Allow
+              Action:
+              - 'dynamodb:GetItem'
+              - 'dynamodb:Query'
+              Resource: !GetAtt DataTable.Arn
+  ReportingLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs22.x
+      Role: !GetAtt ReportingLambdaExecutionRole.Arn
+      Handler: index.handler
+      MemorySize: 2048
+      Timeout: 30
+      Code:
+        ZipFile: |
+          const {DynamoDBClient, QueryCommand, PutItemCommand, paginateQuery, GetItemCommand} = require("@aws-sdk/client-dynamodb");
+          const {SNSClient, PublishCommand} = require("@aws-sdk/client-sns");
+          const crypto = require("crypto");
+          const zlib = require("node:zlib");
+          const {promisify} = require("node:util");
+          // TODO: write
+
+          const getLog = (client) => async (internalId, label) => {
+            const item = await client.send(new GetItemCommand({
+              TableName: process.env.LogsTable,
+              Key: {
+                "InternalID#Label": {S: `${internalId}#${label}`},
+              },
+            }));
+            if (item.Item) {
+              const message = Buffer.from(item.Item.Message.B);
+              const decompressed = await promisify(zlib.brotliDecompress)(message);
+              return decompressed.toString();
+            }else {
+              return undefined;
+            }
+          }
+
+          const getEvents = (client) => async (monitors, startTime, endTime) => {
+            return Promise.all(monitors.map(async (monitor) => {
+              const results = [];
+              for await (const page of paginateQuery({client}, {
+                TableName: process.env.RunsTable,
+                IndexName: "ByMonitor",
+                KeyConditionExpression: "#Monitor = :monitor and #StartTime between :startTime and :endTime",
+                ExpressionAttributeNames: {
+                  "#Monitor": "Monitor",
+                  "#StartTime": "StartTime",
+                },
+                ExpressionAttributeValues: {
+                  ":monitor": {S: monitor},
+                  ":startTime": {N: String(startTime.getTime())},
+                  ":endTime": {N: String(endTime.getTime())},
+                },
+              })) {
+                const res = await Promise.all(page.Items.map(async (item) => {
+                  const [
+                    version,
+                    versionError,
+                    unlock,
+                    unlockError,
+                    backup,
+                    backupError,
+                    forget,
+                    forgetError,
+                    prune,
+                    pruneError,
+                    check,
+                    checkError,
+                    snapshots,
+                    snapshotsError,
+                    stats,
+                    statsError,
+                  ] = await Promise.all([
+                    getLog(client)(item.InternalID.S, "version"),
+                    getLog(client)(item.InternalID.S, "version-error"),
+                    getLog(client)(item.InternalID.S, "unlock"),
+                    getLog(client)(item.InternalID.S, "unlock-error"),
+                    getLog(client)(item.InternalID.S, "backup"),
+                    getLog(client)(item.InternalID.S, "backup-error"),
+                    getLog(client)(item.InternalID.S, "forget"),
+                    getLog(client)(item.InternalID.S, "forget-error"),
+                    getLog(client)(item.InternalID.S, "prune"),
+                    getLog(client)(item.InternalID.S, "prune-error"),
+                    getLog(client)(item.InternalID.S, "check"),
+                    getLog(client)(item.InternalID.S, "check-error"),
+                    getLog(client)(item.InternalID.S, "snapshots"),
+                    getLog(client)(item.InternalID.S, "snapshots-error"),
+                    getLog(client)(item.InternalID.S, "stats"),
+                    getLog(client)(item.InternalID.S, "stats-error"),
+                  ]);
+
+                  const safeRun = (fn) => {
+                    try {
+                      return fn();
+                    }catch(e) {
+                      console.error(e);
+                    }
+                  };
+
+                  const rawLogs = {
+                    version: safeRun(() => version === undefined ? undefined : JSON.parse(version)),
+                    "version-error": safeRun(() => versionError === undefined ? undefined : JSON.parse(versionError)),
+                    unlock: safeRun(() => unlock === undefined ? undefined : JSON.parse(unlock)),
+                    "unlock-error": safeRun(() => unlockError === undefined ? undefined : JSON.parse(unlockError)),
+                    backup: safeRun(() => backup === undefined ? undefined : JSON.parse(backup)),
+                    "backup-error": safeRun(() => backupError === undefined ? undefined : JSON.parse(backupError)),
+                    forget: safeRun(() => forget === undefined ? undefined : JSON.parse(forget)),
+                    "forget-error": safeRun(() => forgetError === undefined ? undefined : JSON.parse(forgetError)),
+                    prune: safeRun(() => prune === undefined ? undefined : JSON.parse(prune)),
+                    "prune-error": safeRun(() => pruneError === undefined ? undefined : JSON.parse(pruneError)),
+                    check: safeRun(() => check === undefined ? undefined : JSON.parse(check)),
+                    "check-error": safeRun(() => checkError === undefined ? undefined : JSON.parse(checkError)),
+                    snapshots: safeRun(() => snapshots === undefined ? undefined : JSON.parse(snapshots)),
+                    "snapshots-error": safeRun(() => snapshotsError === undefined ? undefined : JSON.parse(snapshotsError)),
+                    stats: safeRun(() => stats === undefined ? undefined : JSON.parse(stats)),
+                    "stats-error": safeRun(() => statsError === undefined ? undefined : JSON.parse(statsError)),
+                  };
+                  const anyErrors = versionError || unlockError || backupError || forgetError || pruneError || checkError || snapshotsError || statsError;
+                  if (item.Success?.BOOL) {
+                    // success
+                    const versionString = safeRun(() => {
+                      if (version) {
+                        const versionJson = JSON.parse(version);
+                        return `${versionJson.stdout.packageVersion} (${versionJson.stdout.resticVersion} ; ${versionJson.stdout.nodeVersion})`;
+                      }
+                    });
+                    const backupStats = safeRun(() => {
+                      if (backup) {
+                        const statsJson = JSON.parse(stats);
+                        return {
+                          total_size: statsJson.stdout.total_size,
+                          total_file_count: statsJson.stdout.total_file_count,
+                        }
+                      }
+                    });
+                    return {
+                      status: "SUCCESS",
+                      startTime: new Date(Number(item.StartTime.N)),
+                      endTime: new Date(Number(item.EndTime.N)),
+                      versionString,
+                      backupStats,
+                      anyErrors,
+                      rawLogs,
+                    };
+                  }else if (item.Success){
+                    // failed
+                    return {
+                      status: "FAILED",
+                      startTime: new Date(Number(item.StartTime.N)),
+                      endTime: new Date(Number(item.EndTime.N)),
+                      rawLogs,
+                    };
+                  }else {
+                    // pending
+                    return {
+                      status: "PENDING",
+                      startTime: new Date(Number(item.StartTime.N)),
+                      anyErrors,
+                      rawLogs,
+                    };
+                  }
+                }));
+                results.push(...res);
+              }
+              return {monitor, results};
+            }));
+          }
+
+          exports.handler = async (event) => {
+            console.log(event);
+            const client = new DynamoDBClient();
+            if (event.scheduledTime && event.functionUrl) {
+              // called by schedule, send email
+              const endTime = new Date(event.scheduledTime);
+              const startTime = new Date(endTime.getTime() - process.env.ReportInterval * 1000 * 60 * 60 * 24);
+              console.log({endTime, startTime});
+              const monitorEvents = await getEvents(client)(process.env.Monitors.split(","), startTime, endTime);
+              const token = crypto.randomUUID();
+              await client.send(new PutItemCommand({
+                TableName: process.env.ReportTokensTable,
+                Item: {
+                  Token: {S: token},
+                  StartTime: {N: String(startTime.getTime())},
+                  EndTime: {N: String(endTime.getTime())},
+                  ttl: {N: String(Math.round((new Date().getTime() + 365 * 24 * 60 * 60 * 1000) / 1000))},
+                },
+                ConditionExpression: "attribute_not_exists(#pk)",
+                ExpressionAttributeNames: {
+                  "#pk": "RunID",
+                },
+              }));
+              const reportingUrl = `${event.functionUrl}?token=${token}`;
+              const snsClient = new SNSClient({region: process.env.NotificationSNSTopicArn.split(":")[3]});
+              await snsClient.send(new PublishCommand({
+                Message: `[${process.env.StackName}] Report ready. Check the full report: ${reportingUrl}`,
+                TopicArn: process.env.NotificationSNSTopicArn,
+              }));
+            }else {
+              // called with token through Url, return HTML
+              const token = event.queryStringParameters?.token;
+              if (!token) {
+                return {statusCode: 404};
+              }
+              const item = await client.send(new GetItemCommand({
+                TableName: process.env.ReportTokensTable,
+                Key: {
+                  Token: {S: token},
+                },
+              }));
+              if (!item) {
+                return {statusCode: 404};
+              }
+              const startTime = new Date(Number(item.Item.StartTime.N));
+              const endTime = new Date(Number(item.Item.EndTime.N));
+              const monitorEvents = await getEvents(client)(item.Item.Monitors?.SS ?? process.env.Monitors.split(","), startTime, endTime);
+              const encodeResponse = async (body) => {
+                const acceptEncoding = event.headers["accept-encoding"];
+                if (acceptEncoding && acceptEncoding.split(",").some((v) => v.split(";")[0].trim() === "br")) {
+                  const bodyBuffer = Buffer.from(body, "utf8");
+                  const compressedBody = await promisify(zlib.brotliCompress)(bodyBuffer, {params: {
+                    [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+                    [zlib.constants.BROTLI_PARAM_QUALITY]: zlib.constants.BROTLI_MAX_QUALITY,
+                    [zlib.constants.BROTLI_PARAM_SIZE_HINT]: bodyBuffer.length,
+                  }});
+                  return {
+                    headers: {
+                      "Content-Encoding": "br",
+                    },
+                    isBase64Encoded: true,
+                    body: compressedBody.toString("base64"),
+                  };
+                }else {
+                  return {
+                    headers: {},
+                    isBase64Encoded: false,
+                    body,
+                  }
+                }
+              };
+              const body = `<html><body><pre>${JSON.stringify({monitorEvents, stackName: process.env.StackName}, undefined, 4)}</pre></body></html>`;
+              const encodedResponse = await encodeResponse(body);
+              return {
+                statusCode: 200,
+                headers: {
+                  ...encodedResponse.headers,
+                  "Content-Type": "text/html",
+                },
+                isBase64Encoded: encodedResponse.isBase64Encoded,
+                body: encodedResponse.body,
+              };
+            }
+          };
+      LoggingConfig:
+        LogGroup: !Ref ReportingLambdaLogGroup
+        LogFormat: JSON
+      Environment:
+        Variables:
+          DataTable: !GetAtt DataTable.Arn
+  ReportingLambdaUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !GetAtt ReportingLambdaFunction.Arn
+  ReportingLambdaUrlInvokePermission:
+     Type: AWS::Lambda::Permission
+     Properties:
+       FunctionName: !Ref ReportingLambdaFunction
+       FunctionUrlAuthType: 'NONE'
+       Action: lambda:InvokeFunctionUrl
+       Principal: '*'
+Outputs:
+  DataCollectorUrl:
+    Value: !GetAtt DataCollectorLambdaUrl.FunctionUrl
+  DataCollectorUser:
+    Value: !Ref DataCollectorUser
+  ReportingUrl:
+    Value: !GetAtt ReportingLambdaUrl.FunctionUrl
+  DataCollectorRegion:
+    Value: !Ref AWS::Region
