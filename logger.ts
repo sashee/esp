@@ -6,6 +6,18 @@ import path from "node:path";
 import net from "node:net";
 import { autoDetect } from "@serialport/bindings-cpp";
 import { Buffer } from 'node:buffer';
+import {DatabaseSync} from "node:sqlite";
+
+const database = new DatabaseSync(path.join(process.env.HOME, "monitoring-data", "data.db"));
+
+database.exec(`
+  CREATE TABLE IF NOT EXISTS data(
+    timestamp INTEGER PRIMARY KEY,
+    value TEXT
+  ) STRICT
+`);
+
+const insertIntoDb = database.prepare('INSERT INTO data (timestamp, value) VALUES (?, ?)');
 
 // https://r1ch.net/blog/node-v20-aggregateeerror-etimedout-happy-eyeballs
 // https://github.com/nodejs/node/issues/54359
@@ -164,7 +176,8 @@ while (true) {
 		throw new Error(`Both battery charging current and battery discharge current are non-null! qpigs.battery_charging_current = ${qpigs.battery_charging_current}, qpigs.battery_discharge_current = ${qpigs.battery_discharge_current}`);
 	}
 
-	console.log(`INVERTER_DATA_LOGGING ${JSON.stringify({qpigs, qpigs2, qpiws, time: new Date().toISOString(), uptime: new Date().getTime() - startTime})}`);
+	insertIntoDb.run(new Date().getTime(), JSON.stringify({inverter: {qpigs, qpigs2, qpiws}}));
+
 	const fields = {
 		field1: (new Date().getTime() - startTime) / 1000,
 		field2: qpigs.ac_output_active_power,
