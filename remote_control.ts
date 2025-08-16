@@ -13,22 +13,37 @@ const readCredential = async (credentialName: string, envVarName: string) => {
 	}
 }
 
+const callWithRetry = async (fn, depth = 0) => {
+	try {
+		return await fn();
+	}catch(e) {
+		if (depth > 7) {
+			throw e;
+		}
+		await setTimeout(2 ** depth * 10);
+	
+		return callWithRetry(fn, depth + 1);
+	}
+}
+
 const remoteControlToken = await readCredential("remote-control-token", "TOKEN");
 const remoteControlChatId = Number(await readCredential("remote-control-chat_id", "CHAT_ID"));
 
-const sendTelegramCommand = (token: string) => async (command: string, params: object) => {
-	const res = await fetch(`https://api.telegram.org/bot${token}/${command}`, {
-		method: "POST",
-			headers: {
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify(params),
+const sendTelegramCommand = (token: string) => (command: string, params: object) => {
+	return callWithRetry(async () => {
+		const res = await fetch(`https://api.telegram.org/bot${token}/${command}`, {
+			method: "POST",
+				headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(params),
+		});
+		if (!res.ok) {
+			console.error(res);
+			throw new Error("Error in res");
+		}
+		return await res.json();
 	});
-	if (!res.ok) {
-		console.error(res);
-		throw new Error("Error in res");
-	}
-	return await res.json();
 }
 
 const sendCommand = sendTelegramCommand(remoteControlToken);
