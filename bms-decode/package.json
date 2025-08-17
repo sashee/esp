@@ -1,0 +1,15 @@
+{
+  "name": "a",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "simple-ascii-chart": "^5.3.1"
+  }
+}
