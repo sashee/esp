@@ -3,13 +3,14 @@ import process from "node:process";
 import { once, EventEmitter } from 'node:events';
 import { LinuxBinding } from "@serialport/bindings-cpp";
 import { Buffer } from 'node:buffer';
+import {bms} from "./utils.ts";
 
-const request = async (options: Parameters<(typeof LinuxBinding)["open"]>[0], bytes: Uint8Array, signal: AbortSignal) => {
+const readBms = async (options: Parameters<(typeof LinuxBinding)["open"]>[0], signal: AbortSignal) => {
 	const port = await LinuxBinding.open(options);
 	const finished = new AbortController();
 	try {
 		signal.throwIfAborted();
-		const [, , values] = await Promise.all([
+		const [, values] = await Promise.all([
 			new Promise((res, rej) => {
 				signal.addEventListener("abort", (reason) => {
 					port.close().catch((e) => rej(e));
@@ -18,15 +19,7 @@ const request = async (options: Parameters<(typeof LinuxBinding)["open"]>[0], by
 				finished.signal.addEventListener("abort", (r) => res(r), {once: true, signal});
 			}),
 			(async () => {
-				try {
-					//await port.write(Buffer.from(bytes, bytes.byteLength, bytes.byteLength));
-				}catch(e) {
-					if (!e.canceled) {
-						throw e;
-					}
-				}
-			})(),
-			(async () => {
+				let buffer = new Uint8Array(0);
 				while(true) {
 					const readBytes = await (async () => {
 						try {
@@ -41,7 +34,40 @@ const request = async (options: Parameters<(typeof LinuxBinding)["open"]>[0], by
 					if (readBytes === undefined) {
 						break;
 					}
-					console.log([...readBytes].map((a) => a.toString(16).padStart(2, "0")).join(""));
+					buffer = new Uint8Array([...buffer, ...readBytes]);
+					console.log([...buffer].map((a) => a.toString(16).padStart(2, "0")).join(""));
+
+					const {skipTo, result} = buffer.reduce(({skipTo, result}, e, i) => {
+						if (i < skipTo || result !== undefined) {
+							return {skipTo, result};
+						}else {
+							if (e === 85) { // hex 55
+								const bytes = new Uint8Array(buffer.slice(i, i + bms.length));
+								const parsed = bms.parse(bytes);
+								if (!parsed) {
+									return {skipTo, result};
+								}else {
+									return {
+										skipTo: i + bms.length + 1,
+										result: {
+											from: i,
+											to: i + bms.length,
+											values: parsed,
+											bytes,
+										}
+									};
+								}
+							}else {
+								return {skipTo, result};
+							}
+						}
+					}, {skipTo: 0, result: undefined});
+					buffer = new Uint8Array(buffer.subarray(skipTo));
+
+					if (result) {
+						finished.abort();
+						return result.values;
+					}
 				}
 			})(),
 		]);
@@ -53,7 +79,5 @@ const request = async (options: Parameters<(typeof LinuxBinding)["open"]>[0], by
 	}
 };
 
-const fromHexString = (hexString) =>
-  Uint8Array.from(hexString.match(/.{1,2}/g).map((byte) => parseInt(byte, 16)));
-
-await request({path: "/dev/ttyUSB0", baudRate: 115200, dataBits: 8, stopBits: 1, parity: "none"}, fromHexString("4E5700130000000006030000000000006800000129"), AbortSignal.timeout(2000000000))
+const res = await readBms({path: "/dev/ttyUSB0", baudRate: 115200, dataBits: 8, stopBits: 1, parity: "none"}, AbortSignal.timeout(3000))
+console.log(res);
