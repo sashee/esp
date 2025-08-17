@@ -6,3 +6,4 @@ test_in
 test_out
 remote_control_config.json
 node_modules
+bms.log
