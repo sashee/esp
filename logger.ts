@@ -284,7 +284,7 @@ while (true) {
 		field3: qpigs.battery_voltage,
 		field4: qpigs.battery_charging_current - qpigs.battery_discharge_current,
 		field5: bms.state_of_charge,
-		field6: qpigs.cycle_count,
+		field6: bms.cycle_count,
 		field7: qpigs.pv_charging_power1,
 		field8: qpigs2.pv_charging_power2,
 	};
