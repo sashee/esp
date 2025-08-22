@@ -133,6 +133,10 @@ export const arrToHex = (arr: Uint8Array) => {
 	return [...arr].map((x) => x.toString(16).padStart(2, '0')).join('')
 };
 
+export const hexToArr = (hex: string) => {
+	return new Uint8Array([...hex.match(/../g)!].map(((b) => parseInt(b, 16))));
+}
+
 const parseToBits = (hex) => {
 	return [...hex.match(/(..)/g)].map((b) => {
 		// reverse because little endian 
@@ -308,7 +312,7 @@ export const bms = {
 				battery_current: parseInt32(matched.battery_current)/1000,
 				battery_temperature_1: parseInt16(matched.battery_temperature_1)/10,
 				battery_temperature_2: parseInt16(matched.battery_temperature_2)/10,
-				alarms: parseToBits(matched.alarms).map((v, i) => {
+				alarms: Object.assign({}, ...parseToBits(matched.alarms).map((v, i) => {
 					return {[[
 						"resistence_of_the_balancing_wire_too_large",
 						"MOS_overtemperature_protection",
@@ -343,7 +347,7 @@ export const bms = {
 						"unknown_7",
 						"unknown_8",
 					][i]]: v}
-				}),
+				})),
 				balance_current: parseInt16(matched.balance_current)/1000,
 				balance_state: [parseUint8(matched.balance_state)].map((a) => a === 0 ? "off" : a === 1 ? "charge" : "discharge")[0],
 				state_of_charge: parseUint8(matched.state_of_charge),
@@ -364,7 +368,7 @@ export const bms = {
 				charge_short_circuit_protection_release_time: parseUint16(matched.charge_short_circuit_protection_release_time),
 				undervoltage_protection_release_time: parseUint16(matched.undervoltage_protection_release_time),
 				overvoltage_protection_release_time: parseUint16(matched.overvoltage_protection_release_time),
-				temperature_sensor_status: parseToBits(matched.temperature_sensor_status).map((v, i) => {
+				temperature_sensor_status: Object.assign({}, ...parseToBits(matched.temperature_sensor_status).map((v, i) => {
 					return {[[
 						"MOS_temperature_sensor",
 						"battery_temperature_sensor_1",
@@ -375,7 +379,7 @@ export const bms = {
 						"unknown1",
 						"unknown2",
 					][i]]: v}
-				}),
+				})),
 				heating: parseUint8(matched.heating),
 				reserved: parseUint16(matched.reserved),
 				emergency_switch_time: parseUint16(matched.emergency_switch_time),
@@ -396,6 +400,7 @@ export const bms = {
 				parallel_current_limiting_status: parseUint8(matched.parallel_current_limiting_status),
 				reserved_3: parseUint8(matched.reserved_3),
 				trailer: matched.trailer,
+				maybecrc: matched.maybecrc,
 			};
 		}
 	}
