@@ -1,0 +1,1321 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Inverter stats</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="module" src="script.js"></script>
+  </head>
+  <body>
+	<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/grid_voltage", "params": {"value": "$.inverter.qpigs.grid_voltage"}}'
+        data-series-2='{"type": "simple", "title": "inverter/qpigs/grid_frequency", "params": {"value": "$.inverter.qpigs.grid_frequency"}}'
+        data-series-3='{"type": "simple", "title": "inverter/qpigs/ac_output_voltage", "params": {"value": "$.inverter.qpigs.ac_output_voltage"}}'
+        data-title="inverter/qpigs/grid_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/grid_frequency", "params": {"value": "$.inverter.qpigs.grid_frequency"}}'
+        data-title="inverter/qpigs/grid_frequency"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_voltage", "params": {"value": "$.inverter.qpigs.ac_output_voltage"}}'
+        data-title="inverter/qpigs/ac_output_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_frequency", "params": {"value": "$.inverter.qpigs.ac_output_frequency"}}'
+        data-title="inverter/qpigs/ac_output_frequency"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_apparent_power", "params": {"value": "$.inverter.qpigs.ac_output_apparent_power"}}'
+        data-title="inverter/qpigs/ac_output_apparent_power"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_active_power", "params": {"value": "$.inverter.qpigs.ac_output_active_power"}}'
+        data-title="inverter/qpigs/ac_output_active_power"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/output_load_percent", "params": {"value": "$.inverter.qpigs.output_load_percent"}}'
+        data-title="inverter/qpigs/output_load_percent"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/bus_voltage", "params": {"value": "$.inverter.qpigs.bus_voltage"}}'
+        data-title="inverter/qpigs/bus_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage", "params": {"value": "$.inverter.qpigs.battery_voltage"}}'
+        data-title="inverter/qpigs/battery_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_charging_current", "params": {"value": "$.inverter.qpigs.battery_charging_current"}}'
+        data-title="inverter/qpigs/battery_charging_current"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_capacity", "params": {"value": "$.inverter.qpigs.battery_capacity"}}'
+        data-title="inverter/qpigs/battery_capacity"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/inverter_heat_sink_temperature", "params": {"value": "$.inverter.qpigs.inverter_heat_sink_temperature"}}'
+        data-title="inverter/qpigs/inverter_heat_sink_temperature"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_input_current1", "params": {"value": "$.inverter.qpigs.pv_input_current1"}}'
+        data-title="inverter/qpigs/pv_input_current1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_input_voltage1", "params": {"value": "$.inverter.qpigs.pv_input_voltage1"}}'
+        data-title="inverter/qpigs/pv_input_voltage1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage_from_scc1", "params": {"value": "$.inverter.qpigs.battery_voltage_from_scc1"}}'
+        data-title="inverter/qpigs/battery_voltage_from_scc1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_discharge_current", "params": {"value": "$.inverter.qpigs.battery_discharge_current"}}'
+        data-title="inverter/qpigs/battery_discharge_current"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/add_sbu_priority_version", "params": {"value": "$.inverter.qpigs.add_sbu_priority_version"}}'
+        data-title="inverter/qpigs/add_sbu_priority_version"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/configuration_status", "params": {"value": "$.inverter.qpigs.configuration_status"}}'
+        data-title="inverter/qpigs/configuration_status"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/scc_firmware_version", "params": {"value": "$.inverter.qpigs.scc_firmware_version"}}'
+        data-title="inverter/qpigs/scc_firmware_version"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/load_status", "params": {"value": "$.inverter.qpigs.load_status"}}'
+        data-title="inverter/qpigs/load_status"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage_to_steady_while_charging", "params": {"value": "$.inverter.qpigs.battery_voltage_to_steady_while_charging"}}'
+        data-title="inverter/qpigs/battery_voltage_to_steady_while_charging"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/charging_status", "params": {"value": "$.inverter.qpigs.charging_status"}}'
+        data-title="inverter/qpigs/charging_status"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/charging_status_scc_1", "params": {"value": "$.inverter.qpigs.charging_status_scc_1"}}'
+        data-title="inverter/qpigs/charging_status_scc_1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/charging_status_ac", "params": {"value": "$.inverter.qpigs.charging_status_ac"}}'
+        data-title="inverter/qpigs/charging_status_ac"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage_from_fans_on", "params": {"value": "$.inverter.qpigs.battery_voltage_from_fans_on"}}'
+        data-title="inverter/qpigs/battery_voltage_from_fans_on"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/eeprom_version", "params": {"value": "$.inverter.qpigs.eeprom_version"}}'
+        data-title="inverter/qpigs/eeprom_version"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_charging_power1", "params": {"value": "$.inverter.qpigs.pv_charging_power1"}}'
+        data-title="inverter/qpigs/pv_charging_power1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/flag_for_charging_to_flating_mode", "params": {"value": "$.inverter.qpigs.flag_for_charging_to_flating_mode"}}'
+        data-title="inverter/qpigs/flag_for_charging_to_flating_mode"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/switch_on", "params": {"value": "$.inverter.qpigs.switch_on"}}'
+        data-title="inverter/qpigs/switch_on"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/device_status_2_reserved", "params": {"value": "$.inverter.qpigs.device_status_2_reserved"}}'
+        data-title="inverter/qpigs/device_status_2_reserved"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs2/pv_input_current2", "params": {"value": "$.inverter.qpigs2.pv_input_current2"}}'
+        data-title="inverter/qpigs2/pv_input_current2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs2/pv_input_voltage2", "params": {"value": "$.inverter.qpigs2.pv_input_voltage2"}}'
+        data-title="inverter/qpigs2/pv_input_voltage2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs2/pv_charging_power2", "params": {"value": "$.inverter.qpigs2.pv_charging_power2"}}'
+        data-title="inverter/qpigs2/pv_charging_power2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/reserved1", "params": {"value": "$.inverter.qpiws.reserved1"}}'
+        data-title="inverter/qpiws/reserved1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_fault", "params": {"value": "$.inverter.qpiws.inverter_fault"}}'
+        data-title="inverter/qpiws/inverter_fault"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bus_over", "params": {"value": "$.inverter.qpiws.bus_over"}}'
+        data-title="inverter/qpiws/bus_over"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bus_under", "params": {"value": "$.inverter.qpiws.bus_under"}}'
+        data-title="inverter/qpiws/bus_under"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bus_soft_fail", "params": {"value": "$.inverter.qpiws.bus_soft_fail"}}'
+        data-title="inverter/qpiws/bus_soft_fail"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/line_fail", "params": {"value": "$.inverter.qpiws.line_fail"}}'
+        data-title="inverter/qpiws/line_fail"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/opvshort", "params": {"value": "$.inverter.qpiws.opvshort"}}'
+        data-title="inverter/qpiws/opvshort"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_voltage_too_low", "params": {"value": "$.inverter.qpiws.inverter_voltage_too_low"}}'
+        data-title="inverter/qpiws/inverter_voltage_too_low"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_voltage_too_high", "params": {"value": "$.inverter.qpiws.inverter_voltage_too_high"}}'
+        data-title="inverter/qpiws/inverter_voltage_too_high"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/over_temperature", "params": {"value": "$.inverter.qpiws.over_temperature"}}'
+        data-title="inverter/qpiws/over_temperature"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/fan_locked", "params": {"value": "$.inverter.qpiws.fan_locked"}}'
+        data-title="inverter/qpiws/fan_locked"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_voltage_high", "params": {"value": "$.inverter.qpiws.battery_voltage_high"}}'
+        data-title="inverter/qpiws/battery_voltage_high"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_low_alarm", "params": {"value": "$.inverter.qpiws.battery_low_alarm"}}'
+        data-title="inverter/qpiws/battery_low_alarm"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/reserved_overcharge", "params": {"value": "$.inverter.qpiws.reserved_overcharge"}}'
+        data-title="inverter/qpiws/reserved_overcharge"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_under_shutdown", "params": {"value": "$.inverter.qpiws.battery_under_shutdown"}}'
+        data-title="inverter/qpiws/battery_under_shutdown"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/reserved_battery_derating", "params": {"value": "$.inverter.qpiws.reserved_battery_derating"}}'
+        data-title="inverter/qpiws/reserved_battery_derating"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/over_load", "params": {"value": "$.inverter.qpiws.over_load"}}'
+        data-title="inverter/qpiws/over_load"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/eeprom_fault", "params": {"value": "$.inverter.qpiws.eeprom_fault"}}'
+        data-title="inverter/qpiws/eeprom_fault"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_over_current", "params": {"value": "$.inverter.qpiws.inverter_over_current"}}'
+        data-title="inverter/qpiws/inverter_over_current"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_soft_fail", "params": {"value": "$.inverter.qpiws.inverter_soft_fail"}}'
+        data-title="inverter/qpiws/inverter_soft_fail"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/self_test_fail", "params": {"value": "$.inverter.qpiws.self_test_fail"}}'
+        data-title="inverter/qpiws/self_test_fail"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/op_dv_voltage_over", "params": {"value": "$.inverter.qpiws.op_dv_voltage_over"}}'
+        data-title="inverter/qpiws/op_dv_voltage_over"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bat_open", "params": {"value": "$.inverter.qpiws.bat_open"}}'
+        data-title="inverter/qpiws/bat_open"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/current_sensor_fail", "params": {"value": "$.inverter.qpiws.current_sensor_fail"}}'
+        data-title="inverter/qpiws/current_sensor_fail"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_short", "params": {"value": "$.inverter.qpiws.battery_short"}}'
+        data-title="inverter/qpiws/battery_short"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/power_limit", "params": {"value": "$.inverter.qpiws.power_limit"}}'
+        data-title="inverter/qpiws/power_limit"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/pv_voltage_high_1", "params": {"value": "$.inverter.qpiws.pv_voltage_high_1"}}'
+        data-title="inverter/qpiws/pv_voltage_high_1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_fault_1", "params": {"value": "$.inverter.qpiws.mppt_overload_fault_1"}}'
+        data-title="inverter/qpiws/mppt_overload_fault_1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_warning_1", "params": {"value": "$.inverter.qpiws.mppt_overload_warning_1"}}'
+        data-title="inverter/qpiws/mppt_overload_warning_1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_too_low_to_charge_1", "params": {"value": "$.inverter.qpiws.battery_too_low_to_charge_1"}}'
+        data-title="inverter/qpiws/battery_too_low_to_charge_1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/pv_voltage_high_2", "params": {"value": "$.inverter.qpiws.pv_voltage_high_2"}}'
+        data-title="inverter/qpiws/pv_voltage_high_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_fault_2", "params": {"value": "$.inverter.qpiws.mppt_overload_fault_2"}}'
+        data-title="inverter/qpiws/mppt_overload_fault_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_warning_2", "params": {"value": "$.inverter.qpiws.mppt_overload_warning_2"}}'
+        data-title="inverter/qpiws/mppt_overload_warning_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_too_low_to_charge_2", "params": {"value": "$.inverter.qpiws.battery_too_low_to_charge_2"}}'
+        data-title="inverter/qpiws/battery_too_low_to_charge_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/unknown1", "params": {"value": "$.inverter.qpiws.unknown1"}}'
+        data-title="inverter/qpiws/unknown1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/unknown2", "params": {"value": "$.inverter.qpiws.unknown2"}}'
+        data-title="inverter/qpiws/unknown2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_0_voltage", "params": {"value": "$.battery.bms.cell_0_voltage"}}'
+        data-title="battery/bms/cell_0_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_1_voltage", "params": {"value": "$.battery.bms.cell_1_voltage"}}'
+        data-title="battery/bms/cell_1_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_2_voltage", "params": {"value": "$.battery.bms.cell_2_voltage"}}'
+        data-title="battery/bms/cell_2_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_3_voltage", "params": {"value": "$.battery.bms.cell_3_voltage"}}'
+        data-title="battery/bms/cell_3_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_4_voltage", "params": {"value": "$.battery.bms.cell_4_voltage"}}'
+        data-title="battery/bms/cell_4_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_5_voltage", "params": {"value": "$.battery.bms.cell_5_voltage"}}'
+        data-title="battery/bms/cell_5_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_6_voltage", "params": {"value": "$.battery.bms.cell_6_voltage"}}'
+        data-title="battery/bms/cell_6_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_7_voltage", "params": {"value": "$.battery.bms.cell_7_voltage"}}'
+        data-title="battery/bms/cell_7_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_8_voltage", "params": {"value": "$.battery.bms.cell_8_voltage"}}'
+        data-title="battery/bms/cell_8_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_9_voltage", "params": {"value": "$.battery.bms.cell_9_voltage"}}'
+        data-title="battery/bms/cell_9_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_10_voltage", "params": {"value": "$.battery.bms.cell_10_voltage"}}'
+        data-title="battery/bms/cell_10_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_11_voltage", "params": {"value": "$.battery.bms.cell_11_voltage"}}'
+        data-title="battery/bms/cell_11_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_12_voltage", "params": {"value": "$.battery.bms.cell_12_voltage"}}'
+        data-title="battery/bms/cell_12_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_13_voltage", "params": {"value": "$.battery.bms.cell_13_voltage"}}'
+        data-title="battery/bms/cell_13_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_14_voltage", "params": {"value": "$.battery.bms.cell_14_voltage"}}'
+        data-title="battery/bms/cell_14_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_15_voltage", "params": {"value": "$.battery.bms.cell_15_voltage"}}'
+        data-title="battery/bms/cell_15_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_voltage_average", "params": {"value": "$.battery.bms.cell_voltage_average"}}'
+        data-title="battery/bms/cell_voltage_average"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_voltage_difference_max", "params": {"value": "$.battery.bms.cell_voltage_difference_max"}}'
+        data-title="battery/bms/cell_voltage_difference_max"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_number_with_max_voltage", "params": {"value": "$.battery.bms.cell_number_with_max_voltage"}}'
+        data-title="battery/bms/cell_number_with_max_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_number_with_min_voltage", "params": {"value": "$.battery.bms.cell_number_with_min_voltage"}}'
+        data-title="battery/bms/cell_number_with_min_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_0_resistance", "params": {"value": "$.battery.bms.cell_0_resistance"}}'
+        data-title="battery/bms/cell_0_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_1_resistance", "params": {"value": "$.battery.bms.cell_1_resistance"}}'
+        data-title="battery/bms/cell_1_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_2_resistance", "params": {"value": "$.battery.bms.cell_2_resistance"}}'
+        data-title="battery/bms/cell_2_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_3_resistance", "params": {"value": "$.battery.bms.cell_3_resistance"}}'
+        data-title="battery/bms/cell_3_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_4_resistance", "params": {"value": "$.battery.bms.cell_4_resistance"}}'
+        data-title="battery/bms/cell_4_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_5_resistance", "params": {"value": "$.battery.bms.cell_5_resistance"}}'
+        data-title="battery/bms/cell_5_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_6_resistance", "params": {"value": "$.battery.bms.cell_6_resistance"}}'
+        data-title="battery/bms/cell_6_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_7_resistance", "params": {"value": "$.battery.bms.cell_7_resistance"}}'
+        data-title="battery/bms/cell_7_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_8_resistance", "params": {"value": "$.battery.bms.cell_8_resistance"}}'
+        data-title="battery/bms/cell_8_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_9_resistance", "params": {"value": "$.battery.bms.cell_9_resistance"}}'
+        data-title="battery/bms/cell_9_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_10_resistance", "params": {"value": "$.battery.bms.cell_10_resistance"}}'
+        data-title="battery/bms/cell_10_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_11_resistance", "params": {"value": "$.battery.bms.cell_11_resistance"}}'
+        data-title="battery/bms/cell_11_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_12_resistance", "params": {"value": "$.battery.bms.cell_12_resistance"}}'
+        data-title="battery/bms/cell_12_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_13_resistance", "params": {"value": "$.battery.bms.cell_13_resistance"}}'
+        data-title="battery/bms/cell_13_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_14_resistance", "params": {"value": "$.battery.bms.cell_14_resistance"}}'
+        data-title="battery/bms/cell_14_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_15_resistance", "params": {"value": "$.battery.bms.cell_15_resistance"}}'
+        data-title="battery/bms/cell_15_resistance"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/mos_temperature", "params": {"value": "$.battery.bms.mos_temperature"}}'
+        data-title="battery/bms/mos_temperature"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_voltage", "params": {"value": "$.battery.bms.battery_voltage"}}'
+        data-title="battery/bms/battery_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_watt", "params": {"value": "$.battery.bms.battery_watt"}}'
+        data-title="battery/bms/battery_watt"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_current", "params": {"value": "$.battery.bms.battery_current"}}'
+        data-title="battery/bms/battery_current"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_1", "params": {"value": "$.battery.bms.battery_temperature_1"}}'
+        data-title="battery/bms/battery_temperature_1"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_2", "params": {"value": "$.battery.bms.battery_temperature_2"}}'
+        data-title="battery/bms/battery_temperature_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/balance_current", "params": {"value": "$.battery.bms.balance_current"}}'
+        data-title="battery/bms/balance_current"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/state_of_charge", "params": {"value": "$.battery.bms.state_of_charge"}}'
+        data-title="battery/bms/state_of_charge"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/remaining_capacity", "params": {"value": "$.battery.bms.remaining_capacity"}}'
+        data-title="battery/bms/remaining_capacity"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/full_charge_capacity", "params": {"value": "$.battery.bms.full_charge_capacity"}}'
+        data-title="battery/bms/full_charge_capacity"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cycle_count", "params": {"value": "$.battery.bms.cycle_count"}}'
+        data-title="battery/bms/cycle_count"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/total_cycle_capacity", "params": {"value": "$.battery.bms.total_cycle_capacity"}}'
+        data-title="battery/bms/total_cycle_capacity"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/state_of_health", "params": {"value": "$.battery.bms.state_of_health"}}'
+        data-title="battery/bms/state_of_health"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/precharge", "params": {"value": "$.battery.bms.precharge"}}'
+        data-title="battery/bms/precharge"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/user_alarm", "params": {"value": "$.battery.bms.user_alarm"}}'
+        data-title="battery/bms/user_alarm"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/runtime", "params": {"value": "$.battery.bms.runtime"}}'
+        data-title="battery/bms/runtime"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charge", "params": {"value": "$.battery.bms.charge"}}'
+        data-title="battery/bms/charge"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge", "params": {"value": "$.battery.bms.discharge"}}'
+        data-title="battery/bms/discharge"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/user_alarm_2", "params": {"value": "$.battery.bms.user_alarm_2"}}'
+        data-title="battery/bms/user_alarm_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge_overcurrent_protection_release_time", "params": {"value": "$.battery.bms.discharge_overcurrent_protection_release_time"}}'
+        data-title="battery/bms/discharge_overcurrent_protection_release_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge_short_circuit_protection_release_time", "params": {"value": "$.battery.bms.discharge_short_circuit_protection_release_time"}}'
+        data-title="battery/bms/discharge_short_circuit_protection_release_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charge_overcurrent_protection_release_time", "params": {"value": "$.battery.bms.charge_overcurrent_protection_release_time"}}'
+        data-title="battery/bms/charge_overcurrent_protection_release_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charge_short_circuit_protection_release_time", "params": {"value": "$.battery.bms.charge_short_circuit_protection_release_time"}}'
+        data-title="battery/bms/charge_short_circuit_protection_release_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/undervoltage_protection_release_time", "params": {"value": "$.battery.bms.undervoltage_protection_release_time"}}'
+        data-title="battery/bms/undervoltage_protection_release_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/overvoltage_protection_release_time", "params": {"value": "$.battery.bms.overvoltage_protection_release_time"}}'
+        data-title="battery/bms/overvoltage_protection_release_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/heating", "params": {"value": "$.battery.bms.heating"}}'
+        data-title="battery/bms/heating"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/reserved", "params": {"value": "$.battery.bms.reserved"}}'
+        data-title="battery/bms/reserved"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/emergency_switch_time", "params": {"value": "$.battery.bms.emergency_switch_time"}}'
+        data-title="battery/bms/emergency_switch_time"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge_current_correction_factor", "params": {"value": "$.battery.bms.discharge_current_correction_factor"}}'
+        data-title="battery/bms/discharge_current_correction_factor"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charging_current_sensor_voltage", "params": {"value": "$.battery.bms.charging_current_sensor_voltage"}}'
+        data-title="battery/bms/charging_current_sensor_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharging_current_sensor_voltage", "params": {"value": "$.battery.bms.discharging_current_sensor_voltage"}}'
+        data-title="battery/bms/discharging_current_sensor_voltage"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_voltage_correction_factor", "params": {"value": "$.battery.bms.battery_voltage_correction_factor"}}'
+        data-title="battery/bms/battery_voltage_correction_factor"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_voltage_2", "params": {"value": "$.battery.bms.battery_voltage_2"}}'
+        data-title="battery/bms/battery_voltage_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/heating_current", "params": {"value": "$.battery.bms.heating_current"}}'
+        data-title="battery/bms/heating_current"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/reserved_2", "params": {"value": "$.battery.bms.reserved_2"}}'
+        data-title="battery/bms/reserved_2"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charger_plugged", "params": {"value": "$.battery.bms.charger_plugged"}}'
+        data-title="battery/bms/charger_plugged"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/system_runtime_ticks", "params": {"value": "$.battery.bms.system_runtime_ticks"}}'
+        data-title="battery/bms/system_runtime_ticks"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_3", "params": {"value": "$.battery.bms.battery_temperature_3"}}'
+        data-title="battery/bms/battery_temperature_3"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_4", "params": {"value": "$.battery.bms.battery_temperature_4"}}'
+        data-title="battery/bms/battery_temperature_4"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_5", "params": {"value": "$.battery.bms.battery_temperature_5"}}'
+        data-title="battery/bms/battery_temperature_5"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/rtc_counter", "params": {"value": "$.battery.bms.rtc_counter"}}'
+        data-title="battery/bms/rtc_counter"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/time_enter_sleep", "params": {"value": "$.battery.bms.time_enter_sleep"}}'
+        data-title="battery/bms/time_enter_sleep"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/parallel_current_limiting_status", "params": {"value": "$.battery.bms.parallel_current_limiting_status"}}'
+        data-title="battery/bms/parallel_current_limiting_status"></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/reserved_3", "params": {"value": "$.battery.bms.reserved_3"}}'
+        data-title="battery/bms/reserved_3"></div>
+(node:1724097) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+Example app listening on port 8080
+Restarting 'data-viz.ts'
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/grid_voltage", "params": {"value": "$.inverter.qpigs.grid_voltage"}}'
+        data-title="inverter/qpigs/grid_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/grid_frequency", "params": {"value": "$.inverter.qpigs.grid_frequency"}}'
+        data-title="inverter/qpigs/grid_frequency"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_voltage", "params": {"value": "$.inverter.qpigs.ac_output_voltage"}}'
+        data-title="inverter/qpigs/ac_output_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_frequency", "params": {"value": "$.inverter.qpigs.ac_output_frequency"}}'
+        data-title="inverter/qpigs/ac_output_frequency"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_apparent_power", "params": {"value": "$.inverter.qpigs.ac_output_apparent_power"}}'
+        data-title="inverter/qpigs/ac_output_apparent_power"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_active_power", "params": {"value": "$.inverter.qpigs.ac_output_active_power"}}'
+        data-title="inverter/qpigs/ac_output_active_power"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/output_load_percent", "params": {"value": "$.inverter.qpigs.output_load_percent"}}'
+        data-title="inverter/qpigs/output_load_percent"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/bus_voltage", "params": {"value": "$.inverter.qpigs.bus_voltage"}}'
+        data-title="inverter/qpigs/bus_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage", "params": {"value": "$.inverter.qpigs.battery_voltage"}}'
+        data-title="inverter/qpigs/battery_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_charging_current", "params": {"value": "$.inverter.qpigs.battery_charging_current"}}'
+        data-title="inverter/qpigs/battery_charging_current"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_capacity", "params": {"value": "$.inverter.qpigs.battery_capacity"}}'
+        data-title="inverter/qpigs/battery_capacity"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/inverter_heat_sink_temperature", "params": {"value": "$.inverter.qpigs.inverter_heat_sink_temperature"}}'
+        data-title="inverter/qpigs/inverter_heat_sink_temperature"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_input_current1", "params": {"value": "$.inverter.qpigs.pv_input_current1"}}'
+        data-title="inverter/qpigs/pv_input_current1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_input_voltage1", "params": {"value": "$.inverter.qpigs.pv_input_voltage1"}}'
+        data-title="inverter/qpigs/pv_input_voltage1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage_from_scc1", "params": {"value": "$.inverter.qpigs.battery_voltage_from_scc1"}}'
+        data-title="inverter/qpigs/battery_voltage_from_scc1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_discharge_current", "params": {"value": "$.inverter.qpigs.battery_discharge_current"}}'
+        data-title="inverter/qpigs/battery_discharge_current"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/add_sbu_priority_version", "params": {"value": "$.inverter.qpigs.add_sbu_priority_version"}}'
+        data-title="inverter/qpigs/add_sbu_priority_version"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/configuration_status", "params": {"value": "$.inverter.qpigs.configuration_status"}}'
+        data-title="inverter/qpigs/configuration_status"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/scc_firmware_version", "params": {"value": "$.inverter.qpigs.scc_firmware_version"}}'
+        data-title="inverter/qpigs/scc_firmware_version"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/load_status", "params": {"value": "$.inverter.qpigs.load_status"}}'
+        data-title="inverter/qpigs/load_status"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage_to_steady_while_charging", "params": {"value": "$.inverter.qpigs.battery_voltage_to_steady_while_charging"}}'
+        data-title="inverter/qpigs/battery_voltage_to_steady_while_charging"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/charging_status", "params": {"value": "$.inverter.qpigs.charging_status"}}'
+        data-title="inverter/qpigs/charging_status"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/charging_status_scc_1", "params": {"value": "$.inverter.qpigs.charging_status_scc_1"}}'
+        data-title="inverter/qpigs/charging_status_scc_1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/charging_status_ac", "params": {"value": "$.inverter.qpigs.charging_status_ac"}}'
+        data-title="inverter/qpigs/charging_status_ac"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/battery_voltage_from_fans_on", "params": {"value": "$.inverter.qpigs.battery_voltage_from_fans_on"}}'
+        data-title="inverter/qpigs/battery_voltage_from_fans_on"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/eeprom_version", "params": {"value": "$.inverter.qpigs.eeprom_version"}}'
+        data-title="inverter/qpigs/eeprom_version"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_charging_power1", "params": {"value": "$.inverter.qpigs.pv_charging_power1"}}'
+        data-title="inverter/qpigs/pv_charging_power1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/flag_for_charging_to_flating_mode", "params": {"value": "$.inverter.qpigs.flag_for_charging_to_flating_mode"}}'
+        data-title="inverter/qpigs/flag_for_charging_to_flating_mode"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/switch_on", "params": {"value": "$.inverter.qpigs.switch_on"}}'
+        data-title="inverter/qpigs/switch_on"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs/device_status_2_reserved", "params": {"value": "$.inverter.qpigs.device_status_2_reserved"}}'
+        data-title="inverter/qpigs/device_status_2_reserved"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs2/pv_input_current2", "params": {"value": "$.inverter.qpigs2.pv_input_current2"}}'
+        data-title="inverter/qpigs2/pv_input_current2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs2/pv_input_voltage2", "params": {"value": "$.inverter.qpigs2.pv_input_voltage2"}}'
+        data-title="inverter/qpigs2/pv_input_voltage2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpigs2/pv_charging_power2", "params": {"value": "$.inverter.qpigs2.pv_charging_power2"}}'
+        data-title="inverter/qpigs2/pv_charging_power2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/reserved1", "params": {"value": "$.inverter.qpiws.reserved1"}}'
+        data-title="inverter/qpiws/reserved1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_fault", "params": {"value": "$.inverter.qpiws.inverter_fault"}}'
+        data-title="inverter/qpiws/inverter_fault"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bus_over", "params": {"value": "$.inverter.qpiws.bus_over"}}'
+        data-title="inverter/qpiws/bus_over"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bus_under", "params": {"value": "$.inverter.qpiws.bus_under"}}'
+        data-title="inverter/qpiws/bus_under"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bus_soft_fail", "params": {"value": "$.inverter.qpiws.bus_soft_fail"}}'
+        data-title="inverter/qpiws/bus_soft_fail"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/line_fail", "params": {"value": "$.inverter.qpiws.line_fail"}}'
+        data-title="inverter/qpiws/line_fail"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/opvshort", "params": {"value": "$.inverter.qpiws.opvshort"}}'
+        data-title="inverter/qpiws/opvshort"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_voltage_too_low", "params": {"value": "$.inverter.qpiws.inverter_voltage_too_low"}}'
+        data-title="inverter/qpiws/inverter_voltage_too_low"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_voltage_too_high", "params": {"value": "$.inverter.qpiws.inverter_voltage_too_high"}}'
+        data-title="inverter/qpiws/inverter_voltage_too_high"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/over_temperature", "params": {"value": "$.inverter.qpiws.over_temperature"}}'
+        data-title="inverter/qpiws/over_temperature"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/fan_locked", "params": {"value": "$.inverter.qpiws.fan_locked"}}'
+        data-title="inverter/qpiws/fan_locked"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_voltage_high", "params": {"value": "$.inverter.qpiws.battery_voltage_high"}}'
+        data-title="inverter/qpiws/battery_voltage_high"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_low_alarm", "params": {"value": "$.inverter.qpiws.battery_low_alarm"}}'
+        data-title="inverter/qpiws/battery_low_alarm"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/reserved_overcharge", "params": {"value": "$.inverter.qpiws.reserved_overcharge"}}'
+        data-title="inverter/qpiws/reserved_overcharge"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_under_shutdown", "params": {"value": "$.inverter.qpiws.battery_under_shutdown"}}'
+        data-title="inverter/qpiws/battery_under_shutdown"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/reserved_battery_derating", "params": {"value": "$.inverter.qpiws.reserved_battery_derating"}}'
+        data-title="inverter/qpiws/reserved_battery_derating"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/over_load", "params": {"value": "$.inverter.qpiws.over_load"}}'
+        data-title="inverter/qpiws/over_load"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/eeprom_fault", "params": {"value": "$.inverter.qpiws.eeprom_fault"}}'
+        data-title="inverter/qpiws/eeprom_fault"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_over_current", "params": {"value": "$.inverter.qpiws.inverter_over_current"}}'
+        data-title="inverter/qpiws/inverter_over_current"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/inverter_soft_fail", "params": {"value": "$.inverter.qpiws.inverter_soft_fail"}}'
+        data-title="inverter/qpiws/inverter_soft_fail"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/self_test_fail", "params": {"value": "$.inverter.qpiws.self_test_fail"}}'
+        data-title="inverter/qpiws/self_test_fail"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/op_dv_voltage_over", "params": {"value": "$.inverter.qpiws.op_dv_voltage_over"}}'
+        data-title="inverter/qpiws/op_dv_voltage_over"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/bat_open", "params": {"value": "$.inverter.qpiws.bat_open"}}'
+        data-title="inverter/qpiws/bat_open"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/current_sensor_fail", "params": {"value": "$.inverter.qpiws.current_sensor_fail"}}'
+        data-title="inverter/qpiws/current_sensor_fail"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_short", "params": {"value": "$.inverter.qpiws.battery_short"}}'
+        data-title="inverter/qpiws/battery_short"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/power_limit", "params": {"value": "$.inverter.qpiws.power_limit"}}'
+        data-title="inverter/qpiws/power_limit"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/pv_voltage_high_1", "params": {"value": "$.inverter.qpiws.pv_voltage_high_1"}}'
+        data-title="inverter/qpiws/pv_voltage_high_1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_fault_1", "params": {"value": "$.inverter.qpiws.mppt_overload_fault_1"}}'
+        data-title="inverter/qpiws/mppt_overload_fault_1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_warning_1", "params": {"value": "$.inverter.qpiws.mppt_overload_warning_1"}}'
+        data-title="inverter/qpiws/mppt_overload_warning_1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_too_low_to_charge_1", "params": {"value": "$.inverter.qpiws.battery_too_low_to_charge_1"}}'
+        data-title="inverter/qpiws/battery_too_low_to_charge_1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/pv_voltage_high_2", "params": {"value": "$.inverter.qpiws.pv_voltage_high_2"}}'
+        data-title="inverter/qpiws/pv_voltage_high_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_fault_2", "params": {"value": "$.inverter.qpiws.mppt_overload_fault_2"}}'
+        data-title="inverter/qpiws/mppt_overload_fault_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/mppt_overload_warning_2", "params": {"value": "$.inverter.qpiws.mppt_overload_warning_2"}}'
+        data-title="inverter/qpiws/mppt_overload_warning_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/battery_too_low_to_charge_2", "params": {"value": "$.inverter.qpiws.battery_too_low_to_charge_2"}}'
+        data-title="inverter/qpiws/battery_too_low_to_charge_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/unknown1", "params": {"value": "$.inverter.qpiws.unknown1"}}'
+        data-title="inverter/qpiws/unknown1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "inverter/qpiws/unknown2", "params": {"value": "$.inverter.qpiws.unknown2"}}'
+        data-title="inverter/qpiws/unknown2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_0_voltage", "params": {"value": "$.battery.bms.cell_0_voltage"}}'
+        data-title="battery/bms/cell_0_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_1_voltage", "params": {"value": "$.battery.bms.cell_1_voltage"}}'
+        data-title="battery/bms/cell_1_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_2_voltage", "params": {"value": "$.battery.bms.cell_2_voltage"}}'
+        data-title="battery/bms/cell_2_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_3_voltage", "params": {"value": "$.battery.bms.cell_3_voltage"}}'
+        data-title="battery/bms/cell_3_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_4_voltage", "params": {"value": "$.battery.bms.cell_4_voltage"}}'
+        data-title="battery/bms/cell_4_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_5_voltage", "params": {"value": "$.battery.bms.cell_5_voltage"}}'
+        data-title="battery/bms/cell_5_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_6_voltage", "params": {"value": "$.battery.bms.cell_6_voltage"}}'
+        data-title="battery/bms/cell_6_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_7_voltage", "params": {"value": "$.battery.bms.cell_7_voltage"}}'
+        data-title="battery/bms/cell_7_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_8_voltage", "params": {"value": "$.battery.bms.cell_8_voltage"}}'
+        data-title="battery/bms/cell_8_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_9_voltage", "params": {"value": "$.battery.bms.cell_9_voltage"}}'
+        data-title="battery/bms/cell_9_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_10_voltage", "params": {"value": "$.battery.bms.cell_10_voltage"}}'
+        data-title="battery/bms/cell_10_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_11_voltage", "params": {"value": "$.battery.bms.cell_11_voltage"}}'
+        data-title="battery/bms/cell_11_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_12_voltage", "params": {"value": "$.battery.bms.cell_12_voltage"}}'
+        data-title="battery/bms/cell_12_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_13_voltage", "params": {"value": "$.battery.bms.cell_13_voltage"}}'
+        data-title="battery/bms/cell_13_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_14_voltage", "params": {"value": "$.battery.bms.cell_14_voltage"}}'
+        data-title="battery/bms/cell_14_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_15_voltage", "params": {"value": "$.battery.bms.cell_15_voltage"}}'
+        data-title="battery/bms/cell_15_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_voltage_average", "params": {"value": "$.battery.bms.cell_voltage_average"}}'
+        data-title="battery/bms/cell_voltage_average"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_voltage_difference_max", "params": {"value": "$.battery.bms.cell_voltage_difference_max"}}'
+        data-title="battery/bms/cell_voltage_difference_max"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_number_with_max_voltage", "params": {"value": "$.battery.bms.cell_number_with_max_voltage"}}'
+        data-title="battery/bms/cell_number_with_max_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_number_with_min_voltage", "params": {"value": "$.battery.bms.cell_number_with_min_voltage"}}'
+        data-title="battery/bms/cell_number_with_min_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_0_resistance", "params": {"value": "$.battery.bms.cell_0_resistance"}}'
+        data-title="battery/bms/cell_0_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_1_resistance", "params": {"value": "$.battery.bms.cell_1_resistance"}}'
+        data-title="battery/bms/cell_1_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_2_resistance", "params": {"value": "$.battery.bms.cell_2_resistance"}}'
+        data-title="battery/bms/cell_2_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_3_resistance", "params": {"value": "$.battery.bms.cell_3_resistance"}}'
+        data-title="battery/bms/cell_3_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_4_resistance", "params": {"value": "$.battery.bms.cell_4_resistance"}}'
+        data-title="battery/bms/cell_4_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_5_resistance", "params": {"value": "$.battery.bms.cell_5_resistance"}}'
+        data-title="battery/bms/cell_5_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_6_resistance", "params": {"value": "$.battery.bms.cell_6_resistance"}}'
+        data-title="battery/bms/cell_6_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_7_resistance", "params": {"value": "$.battery.bms.cell_7_resistance"}}'
+        data-title="battery/bms/cell_7_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_8_resistance", "params": {"value": "$.battery.bms.cell_8_resistance"}}'
+        data-title="battery/bms/cell_8_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_9_resistance", "params": {"value": "$.battery.bms.cell_9_resistance"}}'
+        data-title="battery/bms/cell_9_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_10_resistance", "params": {"value": "$.battery.bms.cell_10_resistance"}}'
+        data-title="battery/bms/cell_10_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_11_resistance", "params": {"value": "$.battery.bms.cell_11_resistance"}}'
+        data-title="battery/bms/cell_11_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_12_resistance", "params": {"value": "$.battery.bms.cell_12_resistance"}}'
+        data-title="battery/bms/cell_12_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_13_resistance", "params": {"value": "$.battery.bms.cell_13_resistance"}}'
+        data-title="battery/bms/cell_13_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_14_resistance", "params": {"value": "$.battery.bms.cell_14_resistance"}}'
+        data-title="battery/bms/cell_14_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_15_resistance", "params": {"value": "$.battery.bms.cell_15_resistance"}}'
+        data-title="battery/bms/cell_15_resistance"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/mos_temperature", "params": {"value": "$.battery.bms.mos_temperature"}}'
+        data-title="battery/bms/mos_temperature"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_voltage", "params": {"value": "$.battery.bms.battery_voltage"}}'
+        data-title="battery/bms/battery_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_watt", "params": {"value": "$.battery.bms.battery_watt"}}'
+        data-title="battery/bms/battery_watt"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_current", "params": {"value": "$.battery.bms.battery_current"}}'
+        data-title="battery/bms/battery_current"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_1", "params": {"value": "$.battery.bms.battery_temperature_1"}}'
+        data-title="battery/bms/battery_temperature_1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_2", "params": {"value": "$.battery.bms.battery_temperature_2"}}'
+        data-title="battery/bms/battery_temperature_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/balance_current", "params": {"value": "$.battery.bms.balance_current"}}'
+        data-title="battery/bms/balance_current"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/state_of_charge", "params": {"value": "$.battery.bms.state_of_charge"}}'
+        data-title="battery/bms/state_of_charge"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/remaining_capacity", "params": {"value": "$.battery.bms.remaining_capacity"}}'
+        data-title="battery/bms/remaining_capacity"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/full_charge_capacity", "params": {"value": "$.battery.bms.full_charge_capacity"}}'
+        data-title="battery/bms/full_charge_capacity"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cycle_count", "params": {"value": "$.battery.bms.cycle_count"}}'
+        data-title="battery/bms/cycle_count"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/total_cycle_capacity", "params": {"value": "$.battery.bms.total_cycle_capacity"}}'
+        data-title="battery/bms/total_cycle_capacity"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/state_of_health", "params": {"value": "$.battery.bms.state_of_health"}}'
+        data-title="battery/bms/state_of_health"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/precharge", "params": {"value": "$.battery.bms.precharge"}}'
+        data-title="battery/bms/precharge"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/user_alarm", "params": {"value": "$.battery.bms.user_alarm"}}'
+        data-title="battery/bms/user_alarm"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/runtime", "params": {"value": "$.battery.bms.runtime"}}'
+        data-title="battery/bms/runtime"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charge", "params": {"value": "$.battery.bms.charge"}}'
+        data-title="battery/bms/charge"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge", "params": {"value": "$.battery.bms.discharge"}}'
+        data-title="battery/bms/discharge"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/user_alarm_2", "params": {"value": "$.battery.bms.user_alarm_2"}}'
+        data-title="battery/bms/user_alarm_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge_overcurrent_protection_release_time", "params": {"value": "$.battery.bms.discharge_overcurrent_protection_release_time"}}'
+        data-title="battery/bms/discharge_overcurrent_protection_release_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge_short_circuit_protection_release_time", "params": {"value": "$.battery.bms.discharge_short_circuit_protection_release_time"}}'
+        data-title="battery/bms/discharge_short_circuit_protection_release_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charge_overcurrent_protection_release_time", "params": {"value": "$.battery.bms.charge_overcurrent_protection_release_time"}}'
+        data-title="battery/bms/charge_overcurrent_protection_release_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charge_short_circuit_protection_release_time", "params": {"value": "$.battery.bms.charge_short_circuit_protection_release_time"}}'
+        data-title="battery/bms/charge_short_circuit_protection_release_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/undervoltage_protection_release_time", "params": {"value": "$.battery.bms.undervoltage_protection_release_time"}}'
+        data-title="battery/bms/undervoltage_protection_release_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/overvoltage_protection_release_time", "params": {"value": "$.battery.bms.overvoltage_protection_release_time"}}'
+        data-title="battery/bms/overvoltage_protection_release_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/heating", "params": {"value": "$.battery.bms.heating"}}'
+        data-title="battery/bms/heating"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/reserved", "params": {"value": "$.battery.bms.reserved"}}'
+        data-title="battery/bms/reserved"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/emergency_switch_time", "params": {"value": "$.battery.bms.emergency_switch_time"}}'
+        data-title="battery/bms/emergency_switch_time"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharge_current_correction_factor", "params": {"value": "$.battery.bms.discharge_current_correction_factor"}}'
+        data-title="battery/bms/discharge_current_correction_factor"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charging_current_sensor_voltage", "params": {"value": "$.battery.bms.charging_current_sensor_voltage"}}'
+        data-title="battery/bms/charging_current_sensor_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/discharging_current_sensor_voltage", "params": {"value": "$.battery.bms.discharging_current_sensor_voltage"}}'
+        data-title="battery/bms/discharging_current_sensor_voltage"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_voltage_correction_factor", "params": {"value": "$.battery.bms.battery_voltage_correction_factor"}}'
+        data-title="battery/bms/battery_voltage_correction_factor"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_voltage_2", "params": {"value": "$.battery.bms.battery_voltage_2"}}'
+        data-title="battery/bms/battery_voltage_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/heating_current", "params": {"value": "$.battery.bms.heating_current"}}'
+        data-title="battery/bms/heating_current"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/reserved_2", "params": {"value": "$.battery.bms.reserved_2"}}'
+        data-title="battery/bms/reserved_2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/charger_plugged", "params": {"value": "$.battery.bms.charger_plugged"}}'
+        data-title="battery/bms/charger_plugged"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/system_runtime_ticks", "params": {"value": "$.battery.bms.system_runtime_ticks"}}'
+        data-title="battery/bms/system_runtime_ticks"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_3", "params": {"value": "$.battery.bms.battery_temperature_3"}}'
+        data-title="battery/bms/battery_temperature_3"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_4", "params": {"value": "$.battery.bms.battery_temperature_4"}}'
+        data-title="battery/bms/battery_temperature_4"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/battery_temperature_5", "params": {"value": "$.battery.bms.battery_temperature_5"}}'
+        data-title="battery/bms/battery_temperature_5"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/rtc_counter", "params": {"value": "$.battery.bms.rtc_counter"}}'
+        data-title="battery/bms/rtc_counter"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/time_enter_sleep", "params": {"value": "$.battery.bms.time_enter_sleep"}}'
+        data-title="battery/bms/time_enter_sleep"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/parallel_current_limiting_status", "params": {"value": "$.battery.bms.parallel_current_limiting_status"}}'
+        data-title="battery/bms/parallel_current_limiting_status"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/reserved_3", "params": {"value": "$.battery.bms.reserved_3"}}'
+        data-title="battery/bms/reserved_3"
+></div>
+
+
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/0", "params": {"value": "$.battery.bms.cell_status[0]"}}'
+        data-title="battery/bms/cell_status/0"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/1", "params": {"value": "$.battery.bms.cell_status[1]"}}'
+        data-title="battery/bms/cell_status/1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/2", "params": {"value": "$.battery.bms.cell_status[2]"}}'
+        data-title="battery/bms/cell_status/2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/3", "params": {"value": "$.battery.bms.cell_status[3]"}}'
+        data-title="battery/bms/cell_status/3"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/4", "params": {"value": "$.battery.bms.cell_status[4]"}}'
+        data-title="battery/bms/cell_status/4"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/5", "params": {"value": "$.battery.bms.cell_status[5]"}}'
+        data-title="battery/bms/cell_status/5"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/6", "params": {"value": "$.battery.bms.cell_status[6]"}}'
+        data-title="battery/bms/cell_status/6"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/7", "params": {"value": "$.battery.bms.cell_status[7]"}}'
+        data-title="battery/bms/cell_status/7"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/8", "params": {"value": "$.battery.bms.cell_status[8]"}}'
+        data-title="battery/bms/cell_status/8"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/9", "params": {"value": "$.battery.bms.cell_status[9]"}}'
+        data-title="battery/bms/cell_status/9"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/10", "params": {"value": "$.battery.bms.cell_status[10]"}}'
+        data-title="battery/bms/cell_status/10"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/11", "params": {"value": "$.battery.bms.cell_status[11]"}}'
+        data-title="battery/bms/cell_status/11"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/12", "params": {"value": "$.battery.bms.cell_status[12]"}}'
+        data-title="battery/bms/cell_status/12"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/13", "params": {"value": "$.battery.bms.cell_status[13]"}}'
+        data-title="battery/bms/cell_status/13"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/14", "params": {"value": "$.battery.bms.cell_status[14]"}}'
+        data-title="battery/bms/cell_status/14"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/15", "params": {"value": "$.battery.bms.cell_status[15]"}}'
+        data-title="battery/bms/cell_status/15"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/16", "params": {"value": "$.battery.bms.cell_status[16]"}}'
+        data-title="battery/bms/cell_status/16"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/17", "params": {"value": "$.battery.bms.cell_status[17]"}}'
+        data-title="battery/bms/cell_status/17"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/18", "params": {"value": "$.battery.bms.cell_status[18]"}}'
+        data-title="battery/bms/cell_status/18"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/19", "params": {"value": "$.battery.bms.cell_status[19]"}}'
+        data-title="battery/bms/cell_status/19"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/20", "params": {"value": "$.battery.bms.cell_status[20]"}}'
+        data-title="battery/bms/cell_status/20"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/21", "params": {"value": "$.battery.bms.cell_status[21]"}}'
+        data-title="battery/bms/cell_status/21"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/22", "params": {"value": "$.battery.bms.cell_status[22]"}}'
+        data-title="battery/bms/cell_status/22"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/23", "params": {"value": "$.battery.bms.cell_status[23]"}}'
+        data-title="battery/bms/cell_status/23"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/24", "params": {"value": "$.battery.bms.cell_status[24]"}}'
+        data-title="battery/bms/cell_status/24"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/25", "params": {"value": "$.battery.bms.cell_status[25]"}}'
+        data-title="battery/bms/cell_status/25"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/26", "params": {"value": "$.battery.bms.cell_status[26]"}}'
+        data-title="battery/bms/cell_status/26"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/27", "params": {"value": "$.battery.bms.cell_status[27]"}}'
+        data-title="battery/bms/cell_status/27"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/28", "params": {"value": "$.battery.bms.cell_status[28]"}}'
+        data-title="battery/bms/cell_status/28"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/29", "params": {"value": "$.battery.bms.cell_status[29]"}}'
+        data-title="battery/bms/cell_status/29"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/30", "params": {"value": "$.battery.bms.cell_status[30]"}}'
+        data-title="battery/bms/cell_status/30"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_status/31", "params": {"value": "$.battery.bms.cell_status[31]"}}'
+        data-title="battery/bms/cell_status/31"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/0", "params": {"value": "$.battery.bms.cell_wire_resistance_status[0]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/0"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/1", "params": {"value": "$.battery.bms.cell_wire_resistance_status[1]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/1"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/2", "params": {"value": "$.battery.bms.cell_wire_resistance_status[2]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/2"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/3", "params": {"value": "$.battery.bms.cell_wire_resistance_status[3]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/3"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/4", "params": {"value": "$.battery.bms.cell_wire_resistance_status[4]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/4"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/5", "params": {"value": "$.battery.bms.cell_wire_resistance_status[5]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/5"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/6", "params": {"value": "$.battery.bms.cell_wire_resistance_status[6]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/6"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/7", "params": {"value": "$.battery.bms.cell_wire_resistance_status[7]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/7"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/8", "params": {"value": "$.battery.bms.cell_wire_resistance_status[8]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/8"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/9", "params": {"value": "$.battery.bms.cell_wire_resistance_status[9]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/9"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/10", "params": {"value": "$.battery.bms.cell_wire_resistance_status[10]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/10"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/11", "params": {"value": "$.battery.bms.cell_wire_resistance_status[11]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/11"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/12", "params": {"value": "$.battery.bms.cell_wire_resistance_status[12]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/12"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/13", "params": {"value": "$.battery.bms.cell_wire_resistance_status[13]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/13"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/14", "params": {"value": "$.battery.bms.cell_wire_resistance_status[14]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/14"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/15", "params": {"value": "$.battery.bms.cell_wire_resistance_status[15]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/15"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/16", "params": {"value": "$.battery.bms.cell_wire_resistance_status[16]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/16"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/17", "params": {"value": "$.battery.bms.cell_wire_resistance_status[17]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/17"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/18", "params": {"value": "$.battery.bms.cell_wire_resistance_status[18]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/18"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/19", "params": {"value": "$.battery.bms.cell_wire_resistance_status[19]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/19"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/20", "params": {"value": "$.battery.bms.cell_wire_resistance_status[20]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/20"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/21", "params": {"value": "$.battery.bms.cell_wire_resistance_status[21]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/21"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/22", "params": {"value": "$.battery.bms.cell_wire_resistance_status[22]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/22"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/23", "params": {"value": "$.battery.bms.cell_wire_resistance_status[23]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/23"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/24", "params": {"value": "$.battery.bms.cell_wire_resistance_status[24]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/24"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/25", "params": {"value": "$.battery.bms.cell_wire_resistance_status[25]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/25"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/26", "params": {"value": "$.battery.bms.cell_wire_resistance_status[26]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/26"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/27", "params": {"value": "$.battery.bms.cell_wire_resistance_status[27]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/27"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/28", "params": {"value": "$.battery.bms.cell_wire_resistance_status[28]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/28"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/29", "params": {"value": "$.battery.bms.cell_wire_resistance_status[29]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/29"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/30", "params": {"value": "$.battery.bms.cell_wire_resistance_status[30]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/30"
+></div>
+<div class="chart"
+        data-series-1='{"type": "simple", "title": "battery/bms/cell_wire_resistance_status/31", "params": {"value": "$.battery.bms.cell_wire_resistance_status[31]"}}'
+        data-title="battery/bms/cell_wire_resistance_status/31"
+></div>
+
+
+  </body>
+</html>
+
