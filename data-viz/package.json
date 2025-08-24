@@ -10,6 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "compression": "^1.8.1",
+    "express": "^5.1.0",
+    "piscina": "^5.1.3"
   }
 }
