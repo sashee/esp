@@ -1,10 +1,13 @@
 import {DatabaseSync} from "node:sqlite";
 import path from "node:path";
 
-const dbPath = "data.db";
-//const dbPath = path.join(process.env.HOME, "monitoring-data", "data.db");
-
-export const database = new DatabaseSync(dbPath, {readOnly: true});
+export const database = (() => {
+	try {
+		return new DatabaseSync(path.join(process.env.HOME, "monitoring-data", "data.db"), {readOnly: true});
+	}catch(e) {
+		return new DatabaseSync("data.db", {readOnly: true});
+	}
+})();
 
 const makeMovingSum = (prepareDataQuery: string) => `
 SELECT

@@ -14,7 +14,6 @@ const app = express();
 app.use(compression());
 const port = 8080;
 
-
 console.log(statements.moving_sum.all({from: 1755445318570, to: 1756050118570, value: "$.inverter.qpigs.pv_charging_power1", over: 1000 * 60 * 60 * 24}));
 
 const latestValue = JSON.parse(database.prepare("SELECT value FROM data ORDER BY timestamp desc LIMIT 1;").get().value);
