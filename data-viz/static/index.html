@@ -26,6 +26,23 @@
 			</form>
 		</div>
 		<div>
+<h2 id="inverter">Teljesitmenyek</h2>
+<div class="chart"
+	data-series-1='{"type": "moving_sum_with_sign", "title": "battery/bms/battery_watt_1ora", "params": {"value": "$.battery.bms.battery_watt", "sign":
+									 "$.battery.bms.battery_current", "over": 3600000}}'
+	data-series-2='{"type": "moving_sum_sum_two", "title": "inverter/qpigs/pv_charging_power_sum_1ora", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
+									 "$.inverter.qpigs2.pv_charging_power2", "over": 3600000}}'
+	data-series-3='{"type": "moving_sum", "title": "inverter/qpigs/ac_output_active_power_1ora", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 3600000}}'
+	data-title="teljesitmenyek_1ora"
+></div>
+<div class="chart"
+	data-series-1='{"type": "moving_sum_with_sign", "title": "battery/bms/battery_watt_1nap", "params": {"value": "$.battery.bms.battery_watt", "sign":
+									 "$.battery.bms.battery_current", "over": 86400000}}'
+	data-series-2='{"type": "moving_sum_sum_two", "title": "inverter/qpigs/pv_charging_power_sum_1nap", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
+									 "$.inverter.qpigs2.pv_charging_power2", "over": 86400000}}'
+	data-series-3='{"type": "moving_sum", "title": "inverter/qpigs/ac_output_active_power_1nap", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 86400000}}'
+	data-title="teljesitmenyek_1nap"
+></div>
 <h2 id="inverter">Inverter</h2>
 <div class="chart"
 	data-series-1='{"type": "simple", "title": "inverter/qpigs/pv_charging_power1", "params": {"value": "$.inverter.qpigs.pv_charging_power1"}, "lineStyle": {"normal": {"width": 2, "type": "dashed"}}}'
@@ -33,6 +50,13 @@
 	data-series-3='{"type": "sum_two", "title": "inverter/pv_charging_power_sum", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
 									 "$.inverter.qpigs2.pv_charging_power2"}, "lineStyle": {"normal": {"width": 2}}}'
 	data-title="inverter/qpigs/pv_charging_power"
+></div>
+<div class="chart"
+	data-series-1='{"type": "moving_sum", "title": "inverter/qpigs/pv_charging_power1_1ora", "params": {"value": "$.inverter.qpigs.pv_charging_power1", "over": 3600000}}'
+	data-series-2='{"type": "moving_sum", "title": "inverter/qpigs/pv_charging_power2_1ora", "params": {"value": "$.inverter.qpigs2.pv_charging_power2", "over": 3600000}}'
+	data-series-3='{"type": "moving_sum_sum_two", "title": "inverter/qpigs/pv_charging_power_sum_1ora", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
+									 "$.inverter.qpigs2.pv_charging_power2", "over": 3600000}}'
+	data-title="inverter/qpigs/pv_charging_power_sum_1ora"
 ></div>
 <div class="chart"
 	data-series-1='{"type": "moving_sum", "title": "inverter/qpigs/pv_charging_power1_1nap", "params": {"value": "$.inverter.qpigs.pv_charging_power1", "over": 86400000}}'
@@ -51,6 +75,10 @@
 <div class="chart"
 	data-series-1='{"type": "simple", "title": "inverter/qpigs/ac_output_active_power", "params": {"value": "$.inverter.qpigs.ac_output_active_power"}}'
 	data-title="inverter/qpigs/ac_output_active_power"
+></div>
+<div class="chart"
+	data-series-1='{"type": "moving_sum", "title": "inverter/qpigs/ac_output_active_power_1ora", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 3600000}}'
+	data-title="inverter/qpigs/ac_output_active_power_1ora"
 ></div>
 <div class="chart"
 	data-series-1='{"type": "moving_sum", "title": "inverter/qpigs/ac_output_active_power_1nap", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 86400000}}'
@@ -399,6 +427,14 @@
 <div class="chart"
 	data-series-1='{"type": "simple", "title": "battery/bms/battery_watt", "params": {"value": "$.battery.bms.battery_watt"}}'
 	data-title="battery/bms/battery_watt"
+></div>
+<div class="chart"
+	data-series-1='{"type": "simple", "title": "battery/bms/battery_current", "params": {"value": "$.battery.bms.battery_current"}}'
+	data-title="battery/bms/battery_current"
+></div>
+<div class="chart"
+	data-series-1='{"type": "simple_with_sign", "title": "battery/bms/battery_watt", "params": {"value": "$.battery.bms.battery_watt", "sign": "$.battery.bms.battery_current"}}'
+	data-title="battery/bms/battery_watt_signed"
 ></div>
 <div class="chart"
 	data-series-1='{"type": "simple", "title": "battery/bms/battery_current", "params": {"value": "$.battery.bms.battery_current"}}'

@@ -53,4 +53,6 @@ export const statements = {
 	sum_two: database.prepare("SELECT timestamp, (ifnull(json_extract(value, :value1), 0) + ifnull(json_extract(value, :value2), 0)) as data FROM data WHERE data is not null AND timestamp >= :from AND timestamp <= :to;"),
 	moving_sum: database.prepare(makeMovingSum("SELECT timestamp, json_extract(value, :value) as data FROM data WHERE data is not null")),
 	moving_sum_sum_two: database.prepare(makeMovingSum("SELECT timestamp, (ifnull(json_extract(value, :value1), 0) + ifnull(json_extract(value, :value2), 0)) as data FROM data WHERE data is not null")),
+	simple_with_sign: database.prepare("SELECT timestamp, (json_extract(value, :value) * ifnull(sign(json_extract(value, :sign)), 0)) as data FROM data WHERE json_extract(value, :value) is not null AND timestamp >= :from AND timestamp <= :to;"),
+	moving_sum_with_sign: database.prepare(makeMovingSum("SELECT timestamp, (json_extract(value, :value) * ifnull(sign(json_extract(value, :sign)), 0)) as data FROM data WHERE json_extract(value, :value) is not null")),
 };
