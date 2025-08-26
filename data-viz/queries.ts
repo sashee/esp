@@ -55,4 +55,31 @@ export const statements = {
 	moving_sum_sum_two: database.prepare(makeMovingSum("SELECT timestamp, (ifnull(json_extract(value, :value1), 0) + ifnull(json_extract(value, :value2), 0)) as data FROM data WHERE data is not null")),
 	simple_with_sign: database.prepare("SELECT timestamp, (json_extract(value, :value) * ifnull(sign(json_extract(value, :sign)), 0)) as data FROM data WHERE json_extract(value, :value) is not null AND timestamp >= :from AND timestamp <= :to;"),
 	moving_sum_with_sign: database.prepare(makeMovingSum("SELECT timestamp, (json_extract(value, :value) * ifnull(sign(json_extract(value, :sign)), 0)) as data FROM data WHERE json_extract(value, :value) is not null")),
+	derivation: database.prepare(`
+SELECT
+	timestamp,
+	(timestamp - prev_timestamp)*1.0 * (data - prev) /1000/60/60/24 as data
+FROM (
+	SELECT
+		timestamp,
+		data,
+		LAG(data) OVER (ORDER BY timestamp asc) prev,
+		LAG(timestamp) OVER (ORDER BY timestamp asc) prev_timestamp
+	FROM (
+		SELECT
+			timestamp,
+			data,
+			LAG(data) OVER (ORDER BY timestamp asc) prev,
+			LAG(timestamp) OVER (ORDER BY timestamp asc) prev_timestamp
+		FROM (
+			SELECT timestamp, json_extract(value, :value) as data FROM data WHERE data is not null
+		)
+	)
+	WHERE
+		data is not null AND
+		data != prev
+)
+WHERE
+	timestamp >= :from AND timestamp <= :to
+;`),
 };
