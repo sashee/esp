@@ -9,53 +9,75 @@ export const database = (() => {
 	}
 })();
 
-const makeMovingSum = (prepareDataQuery: string) => `
+const increaseIndent = (str: string) => str.split("\n").map((l) => `\t${l}`).join("\n");
+
+const makeMovingSum = (query: string) => `
 SELECT
-	timestamp, data
+	timestamp,
+	sum(rectangle_area) OVER (
+		ORDER BY timestamp
+		RANGE BETWEEN :over PRECEDING
+		AND CURRENT ROW
+	) as data
 FROM (
 	SELECT
 		timestamp,
-		sum(rectangle_area) OVER (
-			ORDER BY timestamp
-			RANGE BETWEEN :over PRECEDING
-			AND CURRENT ROW
-		) as data
+		(abs(timestamp - prev_timestamp) / 2 + abs(timestamp - next_timestamp) / 2) * data / 60 / 60 / 1000 as rectangle_area
 	FROM (
 		SELECT
 			timestamp,
-			(abs(timestamp - prev_timestamp) / 2 + abs(timestamp - next_timestamp) / 2) * data / 60 / 60 / 1000 as rectangle_area
+			data,
+			LAG(data) OVER (ORDER BY timestamp asc) prev,
+			LAG(timestamp) OVER (ORDER BY timestamp asc) prev_timestamp,
+			LEAD(data) OVER (ORDER BY timestamp asc) next,
+			LEAD(timestamp) OVER (ORDER BY timestamp asc) next_timestamp
 		FROM (
-			SELECT
-				timestamp,
-				data,
-				LAG(data) OVER (ORDER BY timestamp asc) prev,
-				LAG(timestamp) OVER (ORDER BY timestamp asc) prev_timestamp,
-				LEAD(data) OVER (ORDER BY timestamp asc) next,
-				LEAD(timestamp) OVER (ORDER BY timestamp asc) next_timestamp
-			FROM (
-				${prepareDataQuery}
-			)
+			${increaseIndent(query)}
 		)
-		WHERE
-			prev is not null AND
-			next is not null AND
-			abs(next_timestamp-timestamp) < 15*60*1000 AND
-			abs(prev_timestamp-timestamp) < 15*60*1000
 	)
+	WHERE
+		prev is not null AND
+		next is not null AND
+		abs(next_timestamp-timestamp) < 15*60*1000 AND
+		abs(prev_timestamp-timestamp) < 15*60*1000
 )
-WHERE
-	timestamp >= :from AND timestamp <= :to
-;`;
+`;
 
-export const statements = {
-	simple: database.prepare("SELECT timestamp, json_extract(value, :value) as data FROM data WHERE data is not null AND timestamp >= :from AND timestamp <= :to;"),
-	three_state_value: database.prepare("SELECT timestamp, CASE json_extract(value, :value) WHEN :zero then 0 WHEN :one THEN 1 ELSE 2 END as data FROM data WHERE data is not null AND timestamp >= :from AND timestamp <= :to;"),
-	sum_two: database.prepare("SELECT timestamp, (ifnull(json_extract(value, :value1), 0) + ifnull(json_extract(value, :value2), 0)) as data FROM data WHERE data is not null AND timestamp >= :from AND timestamp <= :to;"),
-	moving_sum: database.prepare(makeMovingSum("SELECT timestamp, json_extract(value, :value) as data FROM data WHERE data is not null")),
-	moving_sum_sum_two: database.prepare(makeMovingSum("SELECT timestamp, (ifnull(json_extract(value, :value1), 0) + ifnull(json_extract(value, :value2), 0)) as data FROM data WHERE data is not null")),
-	simple_with_sign: database.prepare("SELECT timestamp, (json_extract(value, :value) * ifnull(sign(json_extract(value, :sign)), 0)) as data FROM data WHERE json_extract(value, :value) is not null AND timestamp >= :from AND timestamp <= :to;"),
-	moving_sum_with_sign: database.prepare(makeMovingSum("SELECT timestamp, (json_extract(value, :value) * ifnull(sign(json_extract(value, :sign)), 0)) as data FROM data WHERE json_extract(value, :value) is not null")),
-	derivation: database.prepare(`
+const flow = (...arr) => {
+	return arr.reduce((memo, fn) => {
+		return fn(memo);
+	}, undefined);
+};
+
+const timerange = (query: string) => `
+SELECT * FROM (${increaseIndent(query)}) WHERE timestamp >= :from AND timestamp <= :to
+`;
+
+const extractFromData = (namedParameter: string) => () => `
+SELECT timestamp, json_extract(value, :${namedParameter}) as data FROM data
+`;
+
+const dropNullData = (dataName: string = "data") => (query: string) => `
+SELECT * FROM (${increaseIndent(query)}) where ${dataName} is not null
+`;
+
+const extractTwoFromData = (namedParameter1: string, namedParameter2: string) => () => `
+SELECT timestamp, json_extract(value, :${namedParameter1}) as data1, json_extract(value, :${namedParameter2}) as data2 FROM data
+`;
+
+const sumTwoData = (query: string) => `
+SELECT timestamp, ifnull(data1, 0) + ifnull(data2, 0) as data FROM (${increaseIndent(query)})
+`;
+
+const threestate = (zeroNamedParameter: string, oneNamedParameter: string) => (query: string) => `
+SELECT timestamp, CASE data WHEN :${zeroNamedParameter} then 0 WHEN :${oneNamedParameter} THEN 1 ELSE 2 END as data FROM (${increaseIndent(query)})
+`;
+
+const multipleWithSign = (dataName: string, signName: string) => (query: string) => `
+SELECT timestamp, (${dataName} * ifnull(sign(${signName}), 0)) as data FROM (${increaseIndent(query)})
+`;
+
+const derivation = (query: string) => `
 SELECT
 	timestamp,
 	(timestamp - prev_timestamp)*1.0 * (data - prev) /1000/60/60/24 as data
@@ -72,14 +94,33 @@ FROM (
 			LAG(data) OVER (ORDER BY timestamp asc) prev,
 			LAG(timestamp) OVER (ORDER BY timestamp asc) prev_timestamp
 		FROM (
-			SELECT timestamp, json_extract(value, :value) as data FROM data WHERE data is not null
+			${increaseIndent(query)}
 		)
 	)
 	WHERE
 		data is not null AND
 		data != prev
 )
-WHERE
-	timestamp >= :from AND timestamp <= :to
-;`),
+`;
+
+const queries = {
+	simple: flow(extractFromData("value"), dropNullData(), timerange),
+	three_state_value: flow(extractFromData("value"), dropNullData(), threestate("zero", "one"), timerange),
+	sum_two: flow(extractTwoFromData("value1", "value2"), sumTwoData, timerange),
+	moving_sum: flow(extractFromData("value"), dropNullData(), makeMovingSum, timerange),
+	moving_sum_sum_two: flow(extractTwoFromData("value1", "value2"), sumTwoData, makeMovingSum, timerange),
+	simple_with_sign: flow(extractTwoFromData("value", "sign"), dropNullData("data1"), multipleWithSign("data1", "data2"), timerange),
+	moving_sum_with_sign: flow(extractTwoFromData("value", "sign"), dropNullData("data1"), multipleWithSign("data1", "data2"), makeMovingSum, timerange),
+	derivation: flow(extractFromData("value"), dropNullData(), derivation, timerange),
 };
+
+export const statements = Object.fromEntries(Object.entries(queries).map(([k, v]) => {
+	try {
+		const prepared = database.prepare(v + ";");
+		return [k, prepared];
+	}catch(e) {
+		console.error(v);
+		throw e;
+	}
+}));
+
