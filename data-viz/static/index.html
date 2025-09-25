@@ -28,19 +28,33 @@
 		<div>
 <h2 id="inverter">Teljesitmenyek</h2>
 <div class="chart"
-	data-series-1='{"type": "moving_sum_with_sign", "title": "battery/bms/battery_watt_1ora", "params": {"value": "$.battery.bms.battery_watt", "sign":
-									 "$.battery.bms.battery_current", "over": 3600000}}'
-	data-series-2='{"type": "moving_sum_sum_two", "title": "inverter/qpigs/pv_charging_power_sum_1ora", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
-									 "$.inverter.qpigs2.pv_charging_power2", "over": 3600000}}'
-	data-series-3='{"type": "moving_sum", "title": "inverter/qpigs/ac_output_active_power_1ora", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 3600000}}'
+	data-series-1='{"type": "telj_battery_watt", "title": "battery/bms/battery_telj", "params": {"value": "$.battery.bms.battery_watt", "sign":
+									 "$.battery.bms.battery_current"}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-2='{"type": "telj_pv_sum", "title": "inverter/qpigs/pv_charging_power_sum", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
+									 "$.inverter.qpigs2.pv_charging_power2"}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-3='{"type": "telj_active_power", "title": "inverter/qpigs/ac_output_active_power_telj", "params": {"value": "$.inverter.qpigs.ac_output_active_power"}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-4='{"type": "telj_sum", "title": "telj", "params": {"pv1": "$.inverter.qpigs.pv_charging_power1", "pv2": "$.inverter.qpigs2.pv_charging_power2",
+									 "battery_watt": "$.battery.bms.battery_watt", "battery_sign": "$.battery.bms.battery_current", "ac_output": "$.inverter.qpigs.ac_output_active_power"}}'
+	data-title="teljesitmenyek"
+></div>
+<div class="chart"
+	data-series-1='{"type": "telj_moving_sum_battery_watt", "title": "battery/bms/battery_telj", "params": {"value": "$.battery.bms.battery_watt", "sign":
+									 "$.battery.bms.battery_current", "over": 3600000}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-2='{"type": "telj_moving_sum_pv_sum", "title": "inverter/qpigs/pv_charging_power_sum", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
+									 "$.inverter.qpigs2.pv_charging_power2", "over": 3600000}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-3='{"type": "telj_moving_sum_active_power", "title": "inverter/qpigs/ac_output_active_power_telj", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 3600000}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-4='{"type": "telj_moving_sum_sum", "title": "telj", "params": {"pv1": "$.inverter.qpigs.pv_charging_power1", "pv2": "$.inverter.qpigs2.pv_charging_power2",
+									 "battery_watt": "$.battery.bms.battery_watt", "battery_sign": "$.battery.bms.battery_current", "ac_output": "$.inverter.qpigs.ac_output_active_power", "over": 3600000}}'
 	data-title="teljesitmenyek_1ora"
 ></div>
 <div class="chart"
-	data-series-1='{"type": "moving_sum_with_sign", "title": "battery/bms/battery_watt_1nap", "params": {"value": "$.battery.bms.battery_watt", "sign":
-									 "$.battery.bms.battery_current", "over": 86400000}}'
-	data-series-2='{"type": "moving_sum_sum_two", "title": "inverter/qpigs/pv_charging_power_sum_1nap", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
-									 "$.inverter.qpigs2.pv_charging_power2", "over": 86400000}}'
-	data-series-3='{"type": "moving_sum", "title": "inverter/qpigs/ac_output_active_power_1nap", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 86400000}}'
+	data-series-1='{"type": "telj_moving_sum_battery_watt", "title": "battery/bms/battery_telj", "params": {"value": "$.battery.bms.battery_watt", "sign":
+									 "$.battery.bms.battery_current", "over": 86400000}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-2='{"type": "telj_moving_sum_pv_sum", "title": "inverter/qpigs/pv_charging_power_sum", "params": {"value1": "$.inverter.qpigs.pv_charging_power1", "value2":
+									 "$.inverter.qpigs2.pv_charging_power2", "over": 86400000}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-3='{"type": "telj_moving_sum_active_power", "title": "inverter/qpigs/ac_output_active_power_telj", "params": {"value": "$.inverter.qpigs.ac_output_active_power", "over": 86400000}, "lineStyle": {"normal": {"width": 1, "type": "dashed"}}}'
+	data-series-4='{"type": "telj_moving_sum_sum", "title": "telj", "params": {"pv1": "$.inverter.qpigs.pv_charging_power1", "pv2": "$.inverter.qpigs2.pv_charging_power2",
+									 "battery_watt": "$.battery.bms.battery_watt", "battery_sign": "$.battery.bms.battery_current", "ac_output": "$.inverter.qpigs.ac_output_active_power", "over": 86400000}}'
 	data-title="teljesitmenyek_1nap"
 ></div>
 <h2 id="inverter">Inverter</h2>
