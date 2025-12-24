@@ -11,7 +11,7 @@ Restart=always
 RestartSec=60
 User=pi
 
-ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/remote_control.ts
+ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node-unsafe /home/pi/esp/remote_control.ts
 
 [Install]
 WantedBy=multi-user.target

@@ -10,7 +10,7 @@ Restart=always
 RestartSec=60
 User=pi
 
-ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node /home/pi/esp/logger.ts
+ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node-unsafe /home/pi/esp/logger.ts
 
 [Install]
 WantedBy=multi-user.target
