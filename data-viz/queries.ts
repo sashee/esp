@@ -96,7 +96,7 @@ SELECT ${["timestamp", `round(${columnName}, ${decimals}) as ${resultColumnName}
 const derivation = (query: string) => `
 SELECT
 	timestamp,
-	(timestamp - prev_timestamp)*1.0 * (data - prev) /1000/60/60/24 as data
+	(timestamp - prev_timestamp)*1.0 / (data - prev) /1000/60/60/24 as data
 FROM (
 	SELECT
 		timestamp,
