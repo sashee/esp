@@ -18,9 +18,10 @@ const port = 8080;
 console.log(statements.moving_sum.all({from: 1755445318570, to: 1756050118570, value: "$.inverter.qpigs.pv_charging_power1", over: 1000 * 60 * 60 * 24}));
 
 const latestValue = JSON.parse(database.prepare("SELECT value FROM data ORDER BY timestamp desc LIMIT 1;").get().value);
-//console.log(latestValue);
+console.log(latestValue);
 console.log("");
 
+/*
 Object.entries(latestValue).flatMap(([tl, tv]) => {
 	return Object.entries(tv).flatMap(([ll, lv]) => {
 		return Object.entries(lv).flatMap(([kl, kv]) => {
@@ -40,6 +41,7 @@ Object.entries(latestValue).flatMap(([tl, tv]) => {
 		})
 	})
 })
+*/
 
 //console.log(database.prepare("SELECT json_extract(value, '$.battery.bms.trailer') as value FROM data ORDER BY timestamp desc;").all());
 
