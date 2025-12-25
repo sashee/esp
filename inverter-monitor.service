@@ -7,7 +7,7 @@ LoadCredentialEncrypted=thingspeak-key:/etc/inverter-monitor/thingspeak-key
 
 Type=simple
 Restart=always
-RestartSec=60
+RestartSec=300
 User=pi
 
 ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node-unsafe /home/pi/esp/logger.ts

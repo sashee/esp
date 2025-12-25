@@ -1,9 +1,7 @@
 import fs from "node:fs/promises";
 import {modifiedCrc, commands, bms} from "./utils.ts";
-import {setTimeout} from "node:timers/promises";
 import process from "node:process";
 import path from "node:path";
-import net from "node:net";
 import { autoDetect } from "@serialport/bindings-cpp";
 import { Buffer } from 'node:buffer';
 import {DatabaseSync} from "node:sqlite";
@@ -255,47 +253,62 @@ const readCredential = async (credentialName: string, envVarName: string) => {
 
 const thingspeakKey = await readCredential("thingspeak-key", "THINGSPEAK_KEY");
 
-while (true) {
-	const [{qpigs, qpigs2, qpiws}, bms] = await Promise.all([
-		(async () => {
-			const qpigs = await request(inverterPath, commands.find(({command}) => command === "QPIGS")!, AbortSignal.timeout(2000));
-			console.log(qpigs);
-			const qpigs2 = await request(inverterPath, commands.find(({command}) => command === "QPIGS2")!, AbortSignal.timeout(2000));
-			console.log(qpigs2);
-			const qpiws = await request(inverterPath, commands.find(({command}) => command === "QPIWS")!, AbortSignal.timeout(2000));
-			console.log(qpiws);
-			return {qpigs, qpigs2, qpiws};
-		})(),
-		(async () => {
-			return await readBms(bmsPath, AbortSignal.timeout(10000));
-		})(),
-	]);
-	console.log(bms);
+const [inverterValuesRes, bmsValuesRes, systemRes] = await Promise.allSettled([
+	(async () => {
+		const qpigs = await request(inverterPath, commands.find(({command}) => command === "QPIGS")!, AbortSignal.timeout(2000));
+		console.log(qpigs);
+		const qpigs2 = await request(inverterPath, commands.find(({command}) => command === "QPIGS2")!, AbortSignal.timeout(2000));
+		console.log(qpigs2);
+		const qpiws = await request(inverterPath, commands.find(({command}) => command === "QPIWS")!, AbortSignal.timeout(2000));
+		console.log(qpiws);
+		return {qpigs, qpigs2, qpiws};
+	})(),
+	(async () => {
+		return await readBms(bmsPath, AbortSignal.timeout(10000));
+	})(),
+	(async () => {
+		const uptimeRaw = await fs.readFile("/proc/uptime", "utf8");
+		return {
+			uptime: Math.round(Number(uptimeRaw.split(" ")[0])),
+		};
+	})(),
+]);
 
+console.log(bmsValuesRes);
+console.log(inverterValuesRes);
+console.log(systemRes);
+
+// check charge/discharge from inverter
+if(inverterValuesRes.status === "fulfilled") {
+	const {qpigs} = inverterValuesRes.value;
 	if (qpigs.battery_charging_current !== 0 && qpigs.battery_discharge_current !== 0) {
 		throw new Error(`Both battery charging current and battery discharge current are non-null! qpigs.battery_charging_current = ${qpigs.battery_charging_current}, qpigs.battery_discharge_current = ${qpigs.battery_discharge_current}`);
 	}
+}
 
-	insertIntoDb.run(new Date().getTime(), JSON.stringify({inverter: {qpigs, qpigs2, qpiws}, battery: {bms}}));
+insertIntoDb.run(new Date().getTime(), JSON.stringify({inverter: (inverterValuesRes.status === "fulfilled" ? inverterValuesRes.value : null), battery: bmsValuesRes.status === "fulfilled" ? {bms: bmsValuesRes.value} : null, system: (systemRes.status === "fulfilled" ? systemRes.value : null)}));
 
-	const fields = {
-		field1: (new Date().getTime() - startTime) / 1000,
-		field2: qpigs.ac_output_active_power,
-		field3: qpigs.battery_voltage,
-		field4: qpigs.battery_charging_current - qpigs.battery_discharge_current,
-		field5: bms.state_of_charge,
-		field6: bms.cycle_count,
-		field7: qpigs.pv_charging_power1,
-		field8: qpigs2.pv_charging_power2,
-	};
-	console.log(fields);
-	const req = await fetch("https://api.thingspeak.com/update" + 
-		"?api_key=" + thingspeakKey + Object.entries(fields).map(([k, v]) => `&${k}=${v}`).join(""));
-	if (!req.ok) {
-		console.error(req);
-		throw new Error("Could not upload to thingspeak");
-	}
-
-	await setTimeout(1000 * 60 * 5);
+const fields = {
+	...(systemRes.status === "fulfilled" ? {
+		field1: systemRes.value.uptime,
+	} : {}),
+	...(inverterValuesRes.status === "fulfilled" ? {
+		field2: inverterValuesRes.value.qpigs.ac_output_active_power,
+		field3: inverterValuesRes.value.qpigs.battery_voltage,
+		field4: inverterValuesRes.value.qpigs.battery_charging_current - inverterValuesRes.value.qpigs.battery_discharge_current,
+		field7: inverterValuesRes.value.qpigs.pv_charging_power1,
+		field8: inverterValuesRes.value.qpigs2.pv_charging_power2,
+	} : {}),
+	...(bmsValuesRes.status === "fulfilled" ? {
+		field5: bmsValuesRes.value.state_of_charge,
+		field6: bmsValuesRes.value.cycle_count,
+	} : {}),
+};
+console.log(fields);
+const req = await fetch("https://api.thingspeak.com/update" + 
+	"?api_key=" + thingspeakKey + Object.entries(fields).map(([k, v]) => `&${k}=${v}`).join(""));
+if (!req.ok) {
+	console.error(req);
+	throw new Error("Could not upload to thingspeak");
 }
 

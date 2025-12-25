@@ -8,7 +8,7 @@ await Promise.all([...document.querySelectorAll(".chart")].map(async (e) => {
 			console.log(sql)
 			console.log((e.dataset))
 			const timePeriod = {
-				from: new Date(new Date().getTime() - 1000*60*60*24*14).getTime(),
+				from: new Date(new Date().getTime() - 1000*60*60*24*1).getTime(),
 				to: new Date().getTime(),
 			};
 			const datas = await Promise.all(Object.entries(e.dataset).filter(([n]) => n.startsWith("series-")).map(async ([, series]) => {

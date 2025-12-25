@@ -7,7 +7,8 @@ import {statements, database} from "./queries.ts";
 
 const piscina = new Piscina({
   // The URL must be a file:// URL
-  filename: new URL('./worker.ts', import.meta.url).href
+  filename: new URL('./worker.ts', import.meta.url).href,
+	idleTimeout: 10000,
 });
 
 const app = express();
