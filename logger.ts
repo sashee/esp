@@ -807,7 +807,8 @@ const boolToNumber = (b) => {
 
 insertIntoFlat.run({
   timestamp,
-  value: JSON.stringify({inverter: inverterData, battery: batteryData ? {bms: batteryData} : null, system: systemData}),
+  //value: JSON.stringify({inverter: inverterData, battery: batteryData ? {bms: batteryData} : null, system: systemData}),
+  value: null,
   system_uptime: systemData?.uptime,
   inverter_qpigs_grid_voltage: inverterData?.qpigs?.grid_voltage ?? null,
   inverter_qpigs_grid_frequency: inverterData?.qpigs?.grid_frequency ?? null,
