@@ -11,7 +11,6 @@ const database = new DatabaseSync(path.join(process.env.HOME, "monitoring-data",
 database.exec(`
   CREATE TABLE IF NOT EXISTS data(
     timestamp INTEGER PRIMARY KEY,
-    value TEXT,
     system_uptime REAL,
     inverter_qpigs_grid_voltage REAL,
     inverter_qpigs_grid_frequency REAL,
@@ -273,7 +272,7 @@ database.exec(`
 
 const insertIntoFlat = database.prepare(`
   INSERT INTO data (
-    timestamp, value,
+    timestamp,
     system_uptime,
     inverter_qpigs_grid_voltage, inverter_qpigs_grid_frequency, inverter_qpigs_ac_output_voltage,
     inverter_qpigs_ac_output_frequency, inverter_qpigs_ac_output_apparent_power,
@@ -397,7 +396,7 @@ const insertIntoFlat = database.prepare(`
     battery_bms_temperature_sensor_status_unknown1,
     battery_bms_temperature_sensor_status_unknown2
   ) VALUES (
-    :timestamp, :value,
+    :timestamp,
     :system_uptime,
     :inverter_qpigs_grid_voltage, :inverter_qpigs_grid_frequency, :inverter_qpigs_ac_output_voltage,
     :inverter_qpigs_ac_output_frequency, :inverter_qpigs_ac_output_apparent_power,
@@ -807,8 +806,6 @@ const boolToNumber = (b) => {
 
 insertIntoFlat.run({
   timestamp,
-  //value: JSON.stringify({inverter: inverterData, battery: batteryData ? {bms: batteryData} : null, system: systemData}),
-  value: null,
   system_uptime: systemData?.uptime,
   inverter_qpigs_grid_voltage: inverterData?.qpigs?.grid_voltage ?? null,
   inverter_qpigs_grid_frequency: inverterData?.qpigs?.grid_frequency ?? null,
