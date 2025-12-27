@@ -7,6 +7,8 @@ LoadCredentialEncrypted=remote-control-token:/etc/remote-control/remote-control-
 LoadCredentialEncrypted=remote-control-chat_id:/etc/remote-control/remote-control-chat_id
 
 Type=simple
+RuntimeMaxSec=24h
+RuntimeRandomizedExtraSec=4h
 Restart=always
 RestartSec=60
 User=pi
