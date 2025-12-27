@@ -53,21 +53,21 @@ const timerange = (query: string) => `
 SELECT * FROM (${increaseIndent(query)}) WHERE timestamp >= :from AND timestamp <= :to
 `;
 
-const extractFromData = (namedParameter: string) => () => `
-SELECT timestamp, json_extract(value, :${namedParameter}) as data FROM data
-`;
+const selectColumn = (paramName: string = "value") => () => {
+	return `SELECT timestamp, ${paramName} as data FROM data`;
+};
 
 const dropNullData = (dataName: string = "data") => (query: string) => `
 SELECT * FROM (${increaseIndent(query)}) where ${dataName} is not null
 `;
 
-const extractTwoFromData = (namedParameter1: string, namedParameter2: string) => () => `
-SELECT timestamp, json_extract(value, :${namedParameter1}) as data1, json_extract(value, :${namedParameter2}) as data2 FROM data
-`;
+const selectTwoColumns = (paramName1: string = "value1", paramName2: string = "value2") => () => {
+	return `SELECT timestamp, ${paramName1} as data1, ${paramName2} as data2 FROM data`;
+};
 
-const extractFiveFromData = (resultColum1: string = "data1", resultColum2: string = "data2", resultColum3: string = "data3", resultColum4: string = "data4", resultColum5: string = "data5") => (namedParameter1: string, namedParameter2: string, namedParameter3: string, namedParameter4: string, namedParameter5: string) => () => `
-SELECT timestamp, json_extract(value, :${namedParameter1}) as ${resultColum1}, json_extract(value, :${namedParameter2}) as ${resultColum2}, json_extract(value, :${namedParameter3}) as ${resultColum3}, json_extract(value, :${namedParameter4}) as ${resultColum4}, json_extract(value, :${namedParameter5}) as ${resultColum5} FROM data
-`;
+const selectFiveColumns = (paramName1: string = "pv1", paramName2: string = "pv2", paramName3: string = "battery_watt", paramName4: string = "battery_sign", paramName5: string = "ac_output") => (resultColum1: string = "data1", resultColum2: string = "data2", resultColum3: string = "data3", resultColum4: string = "data4", resultColum5: string = "data5") => () => {
+	return `SELECT timestamp, ${paramName1} as ${resultColum1}, ${paramName2} as ${resultColum2}, ${paramName3} as ${resultColum3}, ${paramName4} as ${resultColum4}, ${paramName5} as ${resultColum5} FROM data`;
+};
 
 const multiply = (extraColumns: string[] = [], columnName: string = "data") => (amount: number) => (query: string) => `
 SELECT ${["timestamp", `${columnName} * ${amount} as ${columnName}`, ...extraColumns].join(", ")} fROM (${increaseIndent(query)})
@@ -120,42 +120,34 @@ FROM (
 `;
 
 const teljesitmenyek = {
-	battery_watt: [extractTwoFromData("value", "sign"), dropNullData("data1"), multipleWithSign()("data1", "data2"), multiply()(-1)],
-	pv: [extractFromData("value"), dropNullData()],
-	pv_sum: [extractTwoFromData("value1", "value2"), sumTwoData()("data1", "data2")],
-	active_power: [extractFromData("value"), dropNullData(), multiply()(-1)],
-	sum: [extractFiveFromData("pv1", "pv2", "battery_watt", "battery_sign", "ac_output")("pv1", "pv2", "battery_watt", "battery_sign", "ac_output"), sumTwoData(["battery_watt", "battery_sign", "ac_output"], "pv_sum")("pv1", "pv2"), multipleWithSign(["pv_sum", "ac_output"], "battery_watt_signed")("battery_watt", "battery_sign"), multiply(["pv_sum", "ac_output"], "battery_watt_signed")(-1), multiply(["pv_sum", "battery_watt_signed"], "ac_output")(-1), sumThreeData([], "data")("pv_sum", "battery_watt_signed", "ac_output")],
+	battery_watt: [selectTwoColumns("battery_bms_battery_watt", "battery_bms_battery_current"), dropNullData("data1"), multipleWithSign()("data1", "data2"), multiply()(-1)],
+	pv: [selectColumn("inverter_qpigs_pv_charging_power1"), dropNullData()],
+	pv_sum: [selectTwoColumns("inverter_qpigs_pv_charging_power1", "inverter_qpigs2_pv_charging_power2"), sumTwoData()("data1", "data2")],
+	active_power: [selectColumn("inverter_qpigs_ac_output_active_power"), dropNullData(), multiply()(-1)],
+	sum: [selectFiveColumns("inverter_qpigs_pv_charging_power1", "inverter_qpigs2_pv_charging_power2", "battery_bms_battery_watt", "battery_bms_battery_current", "inverter_qpigs_ac_output_active_power")("pv1", "pv2", "battery_watt", "battery_sign", "ac_output"), sumTwoData(["battery_watt", "battery_sign", "ac_output"], "pv_sum")("pv1", "pv2"), multipleWithSign(["pv_sum", "ac_output"], "battery_watt_signed")("battery_watt", "battery_sign"), multiply(["pv_sum", "ac_output"], "battery_watt_signed")(-1), multiply(["pv_sum", "battery_watt_signed"], "ac_output")(-1), sumThreeData([], "data")("pv_sum", "battery_watt_signed", "ac_output")],
 
 };
 
 const queries = {
-	simple: flow(extractFromData("value"), dropNullData(), timerange),
-	three_state_value: flow(extractFromData("value"), dropNullData(), threestate("zero", "one"), timerange),
-	sum_two: flow(extractTwoFromData("value1", "value2"), sumTwoData()("data1", "data2"), timerange),
-	moving_sum: flow(extractFromData("value"), dropNullData(), makeMovingSum, timerange),
-	moving_sum_sum_two: flow(extractTwoFromData("value1", "value2"), sumTwoData()("data1", "data2"), makeMovingSum, timerange),
-	simple_with_sign: flow(extractTwoFromData("value", "sign"), dropNullData("data1"), multipleWithSign()("data1", "data2"), timerange),
-	moving_sum_with_sign: flow(extractTwoFromData("value", "sign"), dropNullData("data1"), multipleWithSign()("data1", "data2"), makeMovingSum, timerange),
-	derivation: flow(extractFromData("value"), dropNullData(), derivation, timerange),
-	telj_battery_watt: flow(...teljesitmenyek.battery_watt, round()(), timerange),
-	telj_pv: flow(...teljesitmenyek.pv, round()(), timerange),
-	telj_pv_sum: flow(...teljesitmenyek.pv_sum, round()(), timerange),
-	telj_active_power: flow(...teljesitmenyek.active_power, round()(), timerange),
-	telj_sum: flow(...teljesitmenyek.sum, round()(), timerange),
-	telj_moving_sum_battery_watt: flow(...teljesitmenyek.battery_watt, makeMovingSum, round()(), timerange),
-	telj_moving_sum_pv: flow(...teljesitmenyek.pv, makeMovingSum, round()(), timerange),
-	telj_moving_sum_pv_sum: flow(...teljesitmenyek.pv_sum, makeMovingSum, round()(), timerange),
-	telj_moving_sum_active_power: flow(...teljesitmenyek.active_power, makeMovingSum, round()(), timerange),
-	telj_moving_sum_sum: flow(...teljesitmenyek.sum, makeMovingSum, round()(), timerange),
+	simple: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), timerange),
+	three_state_value: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), threestate("zero", "one"), timerange),
+	sum_two: (params: {_value1: string, _value2: string}) => flow(selectTwoColumns(params._value1, params._value2), dropNullData("data1"), sumTwoData()("data1", "data2"), timerange),
+	moving_sum: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), makeMovingSum, timerange),
+	moving_sum_sum_two: (params: {_value1: string, _value2: string}) => flow(selectTwoColumns(params._value1, params._value2), dropNullData("data1"), sumTwoData()("data1", "data2"), makeMovingSum, timerange),
+	simple_with_sign: (params: {_value: string, _sign: string}) => flow(selectTwoColumns(params._value, params._sign), dropNullData("data1"), multipleWithSign()("data1", "data2"), timerange),
+	moving_sum_with_sign: (params: {_value: string, _sign: string}) => flow(selectTwoColumns(params._value, params._sign), dropNullData("data1"), multipleWithSign()("data1", "data2"), makeMovingSum, timerange),
+	derivation: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), derivation, timerange),
+	telj_battery_watt: () => flow(...teljesitmenyek.battery_watt, round()(), timerange),
+	telj_pv: () => flow(...teljesitmenyek.pv, round()(), timerange),
+	telj_pv_sum: () => flow(...teljesitmenyek.pv_sum, round()(), timerange),
+	telj_active_power: () => flow(...teljesitmenyek.active_power, round()(), timerange),
+	telj_sum: () => flow(...teljesitmenyek.sum, round()(), timerange),
+	telj_moving_sum_battery_watt: () => flow(...teljesitmenyek.battery_watt, makeMovingSum, round()(), timerange),
+	telj_moving_sum_pv: () => flow(...teljesitmenyek.pv, makeMovingSum, round()(), timerange),
+	telj_moving_sum_pv_sum: () => flow(...teljesitmenyek.pv_sum, makeMovingSum, round()(), timerange),
+	telj_moving_sum_active_power: () => flow(...teljesitmenyek.active_power, makeMovingSum, round()(), timerange),
+	telj_moving_sum_sum: () => flow(...teljesitmenyek.sum, makeMovingSum, round()(), timerange),
 };
 
-export const statements = Object.fromEntries(Object.entries(queries).map(([k, v]) => {
-	try {
-		const prepared = database.prepare(v + ";");
-		return [k, prepared];
-	}catch(e) {
-		console.error(v);
-		throw e;
-	}
-}));
+export const statements = queries;
 
