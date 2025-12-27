@@ -1,0 +1,11 @@
+[Unit]
+Description=Database backup with restic
+After=network-online.target
+
+[Timer]
+Persistent=true
+OnCalendar=daily
+RandomizedDelaySec=60m
+
+[Install]
+WantedBy=timers.target
