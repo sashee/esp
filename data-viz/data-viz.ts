@@ -57,7 +57,7 @@ Object.entries(latestValue).flatMap(([tl, tv]) => {
 
 //console.log(database.prepare("SELECT json_extract(value, '$.battery.bms.trailer') as value FROM data ORDER BY timestamp desc;").all());
 
-app.use(express.static('static'))
+app.use(express.static(path.join(import.meta.dirname, 'static')))
 
 app.get('/sql', async (req, res) => {
 	console.log(req.query.sql)

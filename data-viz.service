@@ -1,0 +1,17 @@
+[Unit]
+Description=Data visualization
+Wants=network.target
+
+[Service]
+Type=simple
+RuntimeMaxSec=24h
+RuntimeRandomizedExtraSec=4h
+Restart=always
+RestartSec=60
+User=pi
+
+ExecStart=/home/pi/dotfiles/nix-utils/result/bin/node-unsafe /home/pi/esp/data-viz/data-viz.ts
+
+[Install]
+WantedBy=multi-user.target
+
