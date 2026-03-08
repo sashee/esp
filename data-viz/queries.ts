@@ -3,9 +3,9 @@ import path from "node:path";
 
 export const database = (() => {
 	try {
-		return new DatabaseSync(path.join(process.env.HOME, "monitoring-data", "data.db"), {readOnly: true});
+		return new DatabaseSync(path.join(process.env.HOME, "monitoring-data", "data.db"), {readOnly: true, timeout: 5000});
 	}catch(e) {
-		return new DatabaseSync("data.db", {readOnly: true});
+		return new DatabaseSync("data.db", {readOnly: true, timeout: 5000});
 	}
 })();
 
@@ -43,6 +43,60 @@ FROM (
 )
 `;
 
+const bucketExpression = (bucket: string) => {
+	if (bucket === "day") {
+		return "strftime('%Y-%m-%d', timestamp / 1000, 'unixepoch', 'localtime')";
+	}
+	if (bucket === "week") {
+		return "strftime('%Y-%W', timestamp / 1000, 'unixepoch', 'localtime')";
+	}
+	if (bucket === "month") {
+		return "strftime('%Y-%m', timestamp / 1000, 'unixepoch', 'localtime')";
+	}
+	if (bucket === "year") {
+		return "strftime('%Y', timestamp / 1000, 'unixepoch', 'localtime')";
+	}
+
+	throw new Error(`invalid bucket '${bucket}', expected day|week|month|year`);
+};
+
+const makeCumulativeByBucket = (bucket: string) => (query: string) => {
+	const bucketExpr = bucketExpression(bucket);
+
+	return `
+SELECT
+	timestamp,
+	sum(rectangle_area) OVER (
+		PARTITION BY bucket_key
+		ORDER BY timestamp
+		ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+	) as data
+FROM (
+	SELECT
+		timestamp,
+		${bucketExpr} as bucket_key,
+		(abs(timestamp - prev_timestamp) / 2 + abs(timestamp - next_timestamp) / 2) * data / 60 / 60 / 1000 as rectangle_area
+	FROM (
+		SELECT
+			timestamp,
+			data,
+			LAG(data) OVER (ORDER BY timestamp asc) prev,
+			LAG(timestamp) OVER (ORDER BY timestamp asc) prev_timestamp,
+			LEAD(data) OVER (ORDER BY timestamp asc) next,
+			LEAD(timestamp) OVER (ORDER BY timestamp asc) next_timestamp
+		FROM (
+			${increaseIndent(query)}
+		)
+	)
+	WHERE
+		prev is not null AND
+		next is not null AND
+		abs(next_timestamp-timestamp) < 15*60*1000 AND
+		abs(prev_timestamp-timestamp) < 15*60*1000
+)
+`;
+};
+
 const flow = (...arr) => {
 	return arr.reduce((memo, fn) => {
 		return fn(memo);
@@ -52,6 +106,46 @@ const flow = (...arr) => {
 const timerange = (query: string) => `
 SELECT * FROM (${increaseIndent(query)}) WHERE timestamp >= :from AND timestamp <= :to
 `;
+
+const latest = (query: string) => `
+SELECT * FROM (${increaseIndent(query)}) ORDER BY timestamp DESC LIMIT 1
+`;
+
+type FieldBuilder = (query: string) => string;
+
+export const buildInfoPanelQuery = (fields: Record<string, FieldBuilder[]>) => {
+    const entries = Object.entries(fields);
+    if (entries.length === 0) {
+        throw new Error("buildInfoPanelQuery requires at least one field");
+    }
+
+    const ctes = entries.map(([key, builders]) => {
+        const cteName = `panel_${key.replace(/[^A-Za-z0-9_]/g, "_")}`;
+        const query = flow(...builders, latest);
+        return {
+            key,
+            cteName,
+            sql: `${cteName} AS (\n${increaseIndent(query)}\n)`,
+        };
+    });
+
+    const selectColumns = ctes
+        .flatMap(({key, cteName}) => [
+            `${cteName}.data AS ${key}`,
+            `${cteName}.timestamp AS ${key}_timestamp`,
+        ])
+        .join(",\n\t");
+    const joins = ctes.map(({cteName}) => `LEFT JOIN ${cteName} ON 1=1`).join("\n");
+
+    return `
+WITH
+${ctes.map(({sql}) => sql).join(",\n")}
+SELECT
+\t${selectColumns}
+FROM (SELECT 1) AS one
+${joins}
+`;
+};
 
 const selectColumn = (paramName: string = "value") => () => {
 	return `SELECT timestamp, ${paramName} as data FROM data`;
@@ -130,6 +224,20 @@ const teljesitmenyek = {
 
 const queries = {
 	simple: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), timerange),
+	info_panel: () => buildInfoPanelQuery({
+		state_of_charge: [selectColumn("battery_bms_state_of_charge"), dropNullData(), timerange],
+		battery_charging_watt: [...teljesitmenyek.battery_watt, multiply()(-1), round()(), timerange],
+		pv_energy_day_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("day"), round()(), timerange],
+		pv_energy_week_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("week"), round()(), timerange],
+		pv_energy_month_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("month"), round()(), timerange],
+		pv_energy_year_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("year"), round()(), timerange],
+		mos_temperature: [selectColumn("battery_bms_mos_temperature"), dropNullData(), timerange],
+		battery_temperature_1: [selectColumn("battery_bms_battery_temperature_1"), dropNullData(), timerange],
+		battery_temperature_2: [selectColumn("battery_bms_battery_temperature_2"), dropNullData(), timerange],
+		battery_temperature_3: [selectColumn("battery_bms_battery_temperature_3"), dropNullData(), timerange],
+		battery_temperature_4: [selectColumn("battery_bms_battery_temperature_4"), dropNullData(), timerange],
+		battery_temperature_5: [selectColumn("battery_bms_battery_temperature_5"), dropNullData(), timerange],
+	}),
 	three_state_value: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), threestate("zero", "one"), timerange),
 	sum_two: (params: {_value1: string, _value2: string}) => flow(selectTwoColumns(params._value1, params._value2), dropNullData("data1"), sumTwoData()("data1", "data2"), timerange),
 	moving_sum: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), makeMovingSum, timerange),
@@ -145,9 +253,9 @@ const queries = {
 	telj_moving_sum_battery_watt: () => flow(...teljesitmenyek.battery_watt, makeMovingSum, round()(), timerange),
 	telj_moving_sum_pv: () => flow(...teljesitmenyek.pv, makeMovingSum, round()(), timerange),
 	telj_moving_sum_pv_sum: () => flow(...teljesitmenyek.pv_sum, makeMovingSum, round()(), timerange),
+	telj_pv_energy_cumulative: (params: {_bucket: string}) => flow(...teljesitmenyek.pv_sum, makeCumulativeByBucket(params._bucket), round()(), timerange),
 	telj_moving_sum_active_power: () => flow(...teljesitmenyek.active_power, makeMovingSum, round()(), timerange),
 	telj_moving_sum_sum: () => flow(...teljesitmenyek.sum, makeMovingSum, round()(), timerange),
 };
 
 export const statements = queries;
-

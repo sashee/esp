@@ -7,9 +7,10 @@ await Promise.all([...document.querySelectorAll(".chart")].map(async (e) => {
 			const sql = e.dataset.sql;
 			console.log(sql)
 			console.log((e.dataset))
+			const now = new Date().getTime();
 			const timePeriod = {
-				from: new Date(new Date().getTime() - 1000*60*60*24*2).getTime(),
-				to: new Date().getTime(),
+				from: new Date(now - 1000*60*60*24*2).getTime(),
+				to: now,
 			};
 			const datas = await Promise.all(Object.entries(e.dataset).filter(([n]) => n.startsWith("series-")).map(async ([, series]) => {
 				const {type, params, ...rest} = JSON.parse(series);

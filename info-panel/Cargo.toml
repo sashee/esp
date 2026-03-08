@@ -24,7 +24,6 @@ esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-
 embassy-time = { version = "0.4.0", features = ["generic-queue-8"] }
 embedded-svc = "0.28.1"
 rgb-led = { path = "../common/lib/rgb-led" }
-png = "0.17"
 
 [build-dependencies]
 embuild = "0.33"

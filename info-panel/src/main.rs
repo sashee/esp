@@ -22,9 +22,7 @@ use esp_idf_svc::{
     wifi::{config::ScanConfig, ClientConfiguration, Configuration as WifiConfiguration, EspWifi},
 };
 use log::{error, info};
-use png::ColorType;
 use rgb_led::{RGB8, WS2812RMT};
-use std::io::Cursor;
 
 const TFT_WIDTH: u16 = 128;
 const TFT_HEIGHT: u16 = 160;
@@ -56,8 +54,8 @@ async fn async_main() -> Result<()> {
     if KNOWN_WIFIS.is_empty() {
         return reboot_with_error(&mut led, "known_wifis is empty").await;
     }
-    if PNG_URL.is_empty() {
-        return reboot_with_error(&mut led, "png_url is empty").await;
+    if INFO_PANEL_URL.is_empty() {
+        return reboot_with_error(&mut led, "info_panel_url is empty").await;
     }
 
     let mut wifi = match connect_known_wifi(peripherals.modem, sysloop, KNOWN_WIFIS, &mut led).await
@@ -100,8 +98,8 @@ async fn async_main() -> Result<()> {
 
     Timer::after(Duration::from_millis(500)).await;
 
-    if let Err(err) = fetch_and_draw_png_with_retries(&mut spi, &mut dc, PNG_URL).await {
-        return reboot_with_error(&mut led, &format!("png download failed: {err:#}")).await;
+    if let Err(err) = fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, INFO_PANEL_URL).await {
+        return reboot_with_error(&mut led, &format!("rgb565 download failed: {err:#}")).await;
     }
 
     loop {
@@ -111,28 +109,33 @@ async fn async_main() -> Result<()> {
             return reboot_with_error(&mut led, "wifi disconnected").await;
         }
 
-        if let Err(err) = fetch_and_draw_png_with_retries(&mut spi, &mut dc, PNG_URL).await {
-            return reboot_with_error(&mut led, &format!("png refresh failed: {err:#}")).await;
+        if let Err(err) =
+            fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, INFO_PANEL_URL).await
+        {
+            return reboot_with_error(&mut led, &format!("rgb565 refresh failed: {err:#}")).await;
         }
     }
 }
 
-async fn fetch_and_draw_png_with_retries<'d>(
+async fn fetch_and_draw_rgb565_with_retries<'d>(
     spi: &mut SpiDev<'d>,
     dc: &mut DcPin<'d>,
     url: &str,
 ) -> Result<()> {
     let mut last_err: Option<anyhow::Error> = None;
     for _ in 0..3 {
-        match download_png(url) {
-            Ok(png_bytes) => {
-                info!("PNG downloaded successfully: {} bytes", png_bytes.len());
-                draw_png_on_tft(spi, dc, &png_bytes)?;
-                info!("PNG rendered on TFT");
+        match download_rgb565(url) {
+            Ok(frame_bytes) => {
+                info!(
+                    "RGB565 frame downloaded successfully: {} bytes",
+                    frame_bytes.len()
+                );
+                draw_rgb565_on_tft(spi, dc, &frame_bytes)?;
+                info!("RGB565 frame rendered on TFT");
                 return Ok(());
             }
             Err(err) => {
-                error!("png download attempt failed: {err:#}");
+                error!("rgb565 download attempt failed: {err:#}");
                 last_err = Some(err);
                 Timer::after(Duration::from_secs(1)).await;
             }
@@ -141,7 +144,7 @@ async fn fetch_and_draw_png_with_retries<'d>(
 
     match last_err {
         Some(err) => Err(err),
-        None => bail!("png download failed with unknown error"),
+        None => bail!("rgb565 download failed with unknown error"),
     }
 }
 
@@ -242,63 +245,23 @@ fn fill_rect<'d>(
     Ok(())
 }
 
-fn draw_png_on_tft<'d>(spi: &mut SpiDev<'d>, dc: &mut DcPin<'d>, png_bytes: &[u8]) -> Result<()> {
-    let decoder = png::Decoder::new(Cursor::new(png_bytes));
-    let mut reader = decoder.read_info()?;
-
-    let out_size = reader.output_buffer_size();
-    let mut raw = vec![0u8; out_size];
-    let info = reader.next_frame(&mut raw)?;
-    let width = info.width as u16;
-    let height = info.height as u16;
-
-    if width != TFT_WIDTH || height != TFT_HEIGHT {
+fn draw_rgb565_on_tft<'d>(
+    spi: &mut SpiDev<'d>,
+    dc: &mut DcPin<'d>,
+    frame_bytes: &[u8],
+) -> Result<()> {
+    let expected_len = (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2;
+    if frame_bytes.len() != expected_len {
         bail!(
-            "unexpected PNG dimensions {}x{}, expected {}x{}",
-            width,
-            height,
-            TFT_WIDTH,
-            TFT_HEIGHT
+            "unexpected RGB565 payload size {}, expected {}",
+            frame_bytes.len(),
+            expected_len
         );
     }
 
-    let bytes = &raw[..info.buffer_size()];
-    let mut line = [0u8; (TFT_WIDTH as usize) * 2];
-
-    for y in 0..height {
-        set_window(spi, dc, 0, y, width, 1)?;
-        dc.set_high()?;
-
-        for x in 0..(width as usize) {
-            let (r, g, b) = match info.color_type {
-                ColorType::Rgb => {
-                    let idx = ((y as usize) * (width as usize) + x) * 3;
-                    (bytes[idx], bytes[idx + 1], bytes[idx + 2])
-                }
-                ColorType::Rgba => {
-                    let idx = ((y as usize) * (width as usize) + x) * 4;
-                    (bytes[idx], bytes[idx + 1], bytes[idx + 2])
-                }
-                ColorType::Grayscale => {
-                    let idx = (y as usize) * (width as usize) + x;
-                    let v = bytes[idx];
-                    (v, v, v)
-                }
-                ColorType::GrayscaleAlpha => {
-                    let idx = ((y as usize) * (width as usize) + x) * 2;
-                    let v = bytes[idx];
-                    (v, v, v)
-                }
-                ColorType::Indexed => bail!("indexed PNG not supported"),
-            };
-
-            let c = rgb565(r, g, b);
-            line[x * 2] = (c >> 8) as u8;
-            line[x * 2 + 1] = (c & 0xFF) as u8;
-        }
-
-        spi.write(&line[..(width as usize) * 2])?;
-    }
+    set_window(spi, dc, 0, 0, TFT_WIDTH, TFT_HEIGHT)?;
+    dc.set_high()?;
+    spi.write(frame_bytes)?;
 
     Ok(())
 }
@@ -386,7 +349,7 @@ async fn connect_known_wifi(
     bail!("timed out waiting for Wi-Fi netif/DHCP")
 }
 
-fn download_png(url: &str) -> Result<Vec<u8>> {
+fn download_rgb565(url: &str) -> Result<Vec<u8>> {
     let connection = EspHttpConnection::new(&HttpConfiguration {
         use_global_ca_store: false,
         ..Default::default()

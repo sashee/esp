@@ -13,7 +13,8 @@ struct AppConfig {
     #[serde(default)]
     known_wifis: Vec<KnownWifiCfg>,
     #[serde(default)]
-    png_url: String,
+    #[serde(alias = "png_url")]
+    info_panel_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,8 +38,9 @@ fn main() {
 
     let cfg_raw = fs::read_to_string("cfg.toml")
         .expect("missing cfg.toml; copy cfg.toml.example to cfg.toml and fill known_wifis");
-    let parsed: RootConfig = toml::from_str(&cfg_raw)
-        .expect("invalid cfg.toml; expected [info-panel].known_wifis array");
+    let parsed: RootConfig = toml::from_str(&cfg_raw).expect(
+        "invalid cfg.toml; expected [info-panel].known_wifis and [info-panel].info_panel_url",
+    );
 
     let mut out = String::from("const KNOWN_WIFIS: &[KnownWifi] = &[\n");
     for entry in &parsed.info_panel.known_wifis {
@@ -49,8 +51,8 @@ fn main() {
         out.push_str("\" },\n");
     }
     out.push_str("];\n");
-    out.push_str("const PNG_URL: &str = \"");
-    out.push_str(&escape_rust_string(&parsed.info_panel.png_url));
+    out.push_str("const INFO_PANEL_URL: &str = \"");
+    out.push_str(&escape_rust_string(&parsed.info_panel.info_panel_url));
     out.push_str("\";\n");
 
     let out_path =

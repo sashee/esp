@@ -6,7 +6,7 @@ import { autoDetect } from "@serialport/bindings-cpp";
 import { Buffer } from 'node:buffer';
 import {DatabaseSync} from "node:sqlite";
 
-const database = new DatabaseSync(path.join(process.env.HOME, "monitoring-data", "data.db"));
+const database = new DatabaseSync(path.join(process.env.HOME, "monitoring-data", "data.db"), {timeout: 5000});
 
 database.exec(`
   CREATE TABLE IF NOT EXISTS data(
