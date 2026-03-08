@@ -22,7 +22,7 @@ RUN rustup toolchain install stable --component rust-src
 # For std applications, you need to use nightly (https://docs.esp-rs.org/book/installation/riscv.html)
 RUN rustup toolchain install nightly --component rust-src
 
-RUN cargo install espflash
+RUN cargo install --version 3.3.0 espflash
 RUN cargo install cargo-generate
 RUN cargo install esp-generate
 

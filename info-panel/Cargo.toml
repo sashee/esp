@@ -1,0 +1,32 @@
+[package]
+name = "info-panel"
+version = "0.1.0"
+authors = ["root"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.85.1"
+
+[[bin]]
+name = "info-panel"
+harness = false
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+embassy-time = { version = "0.4.0", features = ["generic-queue-8"] }
+embedded-svc = "0.28.1"
+rgb-led = { path = "../common/lib/rgb-led" }
+png = "0.17"
+
+[build-dependencies]
+embuild = "0.33"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

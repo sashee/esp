@@ -1,0 +1,6 @@
+[info-panel]
+png_url = "http://192.168.1.101:8000/panel.png"
+known_wifis = [
+  { ssid = "HomeWifi", password = "replace-me" },
+  { ssid = "PhoneHotspot", password = "replace-me-too" },
+]
