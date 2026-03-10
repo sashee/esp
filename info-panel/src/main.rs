@@ -56,7 +56,7 @@ const REQUIRED_PORTAL_TIMING: PortalTiming = PortalTiming {
     connected_timeout: Duration::from_secs(10 * 60),
 };
 
-const RUNTIME_ERROR_REBOOT_DELAY: Duration = Duration::from_secs(45);
+const RUNTIME_ERROR_REBOOT_DELAY: Duration = Duration::from_secs(10 * 60);
 
 type SpiDev<'d> = SpiDeviceDriver<'d, SpiDriver<'d>>;
 type DcPin<'d> = PinDriver<'d, Gpio2, Output>;
@@ -473,6 +473,7 @@ const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
 
 fn download_rgb565(url: &str) -> Result<Vec<u8>> {
     let connection = EspHttpConnection::new(&HttpConfiguration {
+        timeout: Some(core::time::Duration::from_secs(30)),
         use_global_ca_store: false,
         ..Default::default()
     })?;
