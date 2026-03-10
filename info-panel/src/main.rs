@@ -1,4 +1,7 @@
 use anyhow::{anyhow, bail, Result};
+use config_portal::{
+    enter_config_mode, read_nvs, FieldSpec, NvsConfigState, PortalSpec, PortalTiming, StoredConfig,
+};
 use embassy_time::{Duration, Timer};
 use embedded_svc::{
     http::{client::Client, Method},
@@ -9,9 +12,9 @@ use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
         gpio::{AnyIOPin, Gpio1, Gpio2, Output, PinDriver},
-        modem::Modem,
         peripherals::Peripherals,
         prelude::*,
+        reset::ResetReason,
         spi::{
             config::{Config as SpiConfig, DriverConfig as SpiDriverConfig},
             SpiDeviceDriver, SpiDriver,
@@ -19,25 +22,68 @@ use esp_idf_svc::{
         task::block_on,
     },
     http::client::{Configuration as HttpConfiguration, EspHttpConnection},
-    wifi::{config::ScanConfig, ClientConfiguration, Configuration as WifiConfiguration, EspWifi},
+    nvs::EspDefaultNvsPartition,
+    wifi::{AuthMethod, ClientConfiguration, Configuration as WifiConfiguration, EspWifi},
 };
 use log::{error, info};
 use rgb_led::{RGB8, WS2812RMT};
+use std::string::String;
 
 const TFT_WIDTH: u16 = 128;
 const TFT_HEIGHT: u16 = 160;
 
-#[derive(Debug, Clone, Copy)]
-struct KnownWifi {
-    ssid: &'static str,
-    password: &'static str,
-}
+static PORTAL_FIELDS: &[FieldSpec] = &[
+    FieldSpec::text("ssid", "Wi-Fi SSID"),
+    FieldSpec::password("pw", "Wi-Fi password"),
+    FieldSpec::text("url", "Info panel URL"),
+    FieldSpec::number("led_brightness", "LED brightness", 0, 255),
+];
+
+static PORTAL_SPEC: PortalSpec = PortalSpec {
+    namespace: "config",
+    ap_prefix: "InfoPanel",
+    title: "Info Panel Setup",
+    fields: PORTAL_FIELDS,
+};
+
+const PREBOOT_PORTAL_TIMING: PortalTiming = PortalTiming {
+    idle_timeout: Duration::from_secs(30),
+    connected_timeout: Duration::from_secs(10 * 60),
+};
+
+const REQUIRED_PORTAL_TIMING: PortalTiming = PortalTiming {
+    idle_timeout: Duration::from_secs(60),
+    connected_timeout: Duration::from_secs(10 * 60),
+};
+
+const RUNTIME_ERROR_REBOOT_DELAY: Duration = Duration::from_secs(45);
 
 type SpiDev<'d> = SpiDeviceDriver<'d, SpiDriver<'d>>;
 type DcPin<'d> = PinDriver<'d, Gpio2, Output>;
 type RstPin<'d> = PinDriver<'d, Gpio1, Output>;
 
-include!(concat!(env!("OUT_DIR"), "/wifi_config.rs"));
+#[derive(Debug, Clone)]
+struct DeviceConfig {
+    ssid: String,
+    password: String,
+    url: String,
+    led_brightness: u8,
+}
+
+impl DeviceConfig {
+    fn from_stored(config: StoredConfig) -> Result<Self> {
+        Ok(Self {
+            ssid: config.get("ssid").unwrap_or("").to_string(),
+            password: config.get("pw").unwrap_or("").to_string(),
+            url: config.get("url").unwrap_or("").to_string(),
+            led_brightness: config
+                .get("led_brightness")
+                .ok_or_else(|| anyhow!("LED brightness missing from stored config"))?
+                .parse()
+                .map_err(|_| anyhow!("LED brightness is not a valid u8"))?,
+        })
+    }
+}
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -48,73 +94,210 @@ fn main() -> Result<()> {
 async fn async_main() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
+    let nvs = EspDefaultNvsPartition::take()?;
+    let reset_reason = ResetReason::get();
+    info!("boot reset reason: {:?}", reset_reason);
+
+    let modem = peripherals.modem;
+    let spi2 = peripherals.spi2;
     let mut pins = peripherals.pins;
     let mut led = WS2812RMT::new(pins.gpio8, peripherals.rmt.channel0)?;
+    let mut wifi = EspWifi::new(modem, sysloop, Some(nvs.clone()))?;
 
-    if KNOWN_WIFIS.is_empty() {
-        return reboot_with_error(&mut led, "known_wifis is empty").await;
-    }
-    if INFO_PANEL_URL.is_empty() {
-        return reboot_with_error(&mut led, "info_panel_url is empty").await;
-    }
-
-    let mut wifi = match connect_known_wifi(peripherals.modem, sysloop, KNOWN_WIFIS, &mut led).await
-    {
-        Ok(wifi) => wifi,
-        Err(err) => {
-            return reboot_with_error(&mut led, &format!("wifi connect failed: {err:#}")).await
+    let config = match read_nvs(&PORTAL_SPEC, nvs.clone())? {
+        NvsConfigState::Ready(config) => match DeviceConfig::from_stored(config) {
+            Ok(config) => config,
+            Err(err) => {
+                return enter_required_config_mode(
+                    &mut led,
+                    &mut wifi,
+                    nvs,
+                    &format!("stored configuration is invalid: {err:#}"),
+                )
+                .await;
+            }
+        },
+        NvsConfigState::Missing => {
+            return enter_required_config_mode(&mut led, &mut wifi, nvs, "configuration missing")
+                .await;
+        }
+        NvsConfigState::SchemaMismatch(_) => {
+            return enter_required_config_mode(
+                &mut led,
+                &mut wifi,
+                nvs,
+                "stored configuration schema mismatch",
+            )
+            .await;
         }
     };
 
-    led.set_pixel(RGB8::new(0, 0, 12))?;
-    info!("Wi-Fi connected");
-
-    let spi_driver = SpiDriver::new(
-        peripherals.spi2,
-        pins.gpio4,
-        pins.gpio5,
-        Option::<AnyIOPin>::None,
-        &SpiDriverConfig::new(),
-    )?;
-    let spi_cfg = SpiConfig::new().baudrate(26.MHz().into());
-    let mut spi = SpiDeviceDriver::new(spi_driver, Some(pins.gpio3), &spi_cfg)?;
-    let mut dc = PinDriver::output(pins.gpio2)?;
-    let mut rst = PinDriver::output(pins.gpio1)?;
-
-    if let Err(err) = init_tft(&mut spi, &mut dc, &mut rst).await {
-        return reboot_with_error(&mut led, &format!("tft init failed: {err:#}")).await;
-    }
-    if let Err(err) = fill_rect(
-        &mut spi,
-        &mut dc,
-        0,
-        0,
-        TFT_WIDTH,
-        TFT_HEIGHT,
-        rgb565(0, 0, 0),
-    ) {
-        return reboot_with_error(&mut led, &format!("tft clear failed: {err:#}")).await;
+    if should_offer_preboot_config(reset_reason) {
+        if let Err(err) = maybe_run_preboot_config_portal(&mut led, &mut wifi, nvs.clone()).await {
+            error!("preboot config portal failed: {err:#}");
+        }
+    } else {
+        info!(
+            "skipping preboot config portal for reset reason: {:?}",
+            reset_reason
+        );
     }
 
-    Timer::after(Duration::from_millis(500)).await;
+    let managed_run = async {
+        connect_device_wifi(&mut wifi, &config, &mut led).await?;
 
-    if let Err(err) = fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, INFO_PANEL_URL).await {
-        return reboot_with_error(&mut led, &format!("rgb565 download failed: {err:#}")).await;
+        led.set_pixel(brightness_color(config.led_brightness, 0, 0, 255))?;
+        info!("Wi-Fi connected");
+
+        let spi_driver = SpiDriver::new(
+            spi2,
+            pins.gpio4,
+            pins.gpio3,
+            Option::<AnyIOPin>::None,
+            &SpiDriverConfig::new(),
+        )?;
+        let spi_cfg = SpiConfig::new().baudrate(26.MHz().into());
+        let mut spi = SpiDeviceDriver::new(spi_driver, Some(pins.gpio5), &spi_cfg)?;
+        let mut dc = PinDriver::output(pins.gpio2)?;
+        let mut rst = PinDriver::output(pins.gpio1)?;
+
+        init_tft(&mut spi, &mut dc, &mut rst).await?;
+
+        fill_rect(
+            &mut spi,
+            &mut dc,
+            0,
+            0,
+            TFT_WIDTH,
+            TFT_HEIGHT,
+            rgb565(0, 0, 0),
+        )?;
+
+        Timer::after(Duration::from_millis(500)).await;
+
+        fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, &config.url).await?;
+
+        loop {
+            Timer::after(Duration::from_secs(30)).await;
+
+            if !wifi.is_connected().unwrap_or(false) {
+                bail!("wifi disconnected");
+            }
+
+            fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, &config.url).await?;
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if let Err(err) = managed_run {
+        return handle_runtime_error(&mut led, &mut wifi, &config, &format!("{err:#}")).await;
     }
 
-    loop {
-        Timer::after(Duration::from_secs(30)).await;
+    Ok(())
+}
 
-        if !wifi.is_connected().unwrap_or(false) {
-            return reboot_with_error(&mut led, "wifi disconnected").await;
+async fn maybe_run_preboot_config_portal(
+    led: &mut WS2812RMT<'_>,
+    wifi: &mut EspWifi<'static>,
+    nvs: EspDefaultNvsPartition,
+) -> Result<()> {
+    let _ = led.set_pixel(RGB8::new(0, 8, 15));
+    enter_config_mode(
+        &PORTAL_SPEC,
+        "preboot configuration window",
+        wifi,
+        nvs,
+        PREBOOT_PORTAL_TIMING,
+    )
+    .await?;
+    let _ = led.set_pixel(RGB8::new(0, 0, 0));
+    Ok(())
+}
+
+async fn enter_required_config_mode(
+    led: &mut WS2812RMT<'_>,
+    wifi: &mut EspWifi<'static>,
+    nvs: EspDefaultNvsPartition,
+    message: &str,
+) -> Result<()> {
+    error!("{message}");
+    let _ = led.set_pixel(RGB8::new(0, 15, 0));
+    enter_config_mode(&PORTAL_SPEC, message, wifi, nvs, REQUIRED_PORTAL_TIMING).await?;
+    reboot();
+}
+
+async fn handle_runtime_error(
+    led: &mut WS2812RMT<'_>,
+    wifi: &mut EspWifi<'static>,
+    config: &DeviceConfig,
+    message: &str,
+) -> Result<()> {
+    error!("runtime error: {message}");
+    let _ = led.set_pixel(brightness_color(config.led_brightness, 0, 255, 0));
+    let _ = wifi.disconnect();
+    let _ = wifi.stop();
+    info!(
+        "waiting {:?} before restart after runtime error",
+        RUNTIME_ERROR_REBOOT_DELAY
+    );
+    Timer::after(RUNTIME_ERROR_REBOOT_DELAY).await;
+    reboot();
+}
+
+fn should_offer_preboot_config(reset_reason: ResetReason) -> bool {
+    matches!(reset_reason, ResetReason::PowerOn)
+}
+
+async fn connect_device_wifi(
+    wifi: &mut EspWifi<'static>,
+    config: &DeviceConfig,
+    led: &mut WS2812RMT<'_>,
+) -> Result<()> {
+    led.set_pixel(brightness_color(config.led_brightness, 255, 200, 0))?;
+    info!("Starting Wi-Fi (yellow: connecting)");
+
+    let _ = wifi.disconnect();
+    let _ = wifi.stop();
+
+    let mut client_cfg = ClientConfiguration::default();
+    client_cfg.ssid = config
+        .ssid
+        .as_str()
+        .try_into()
+        .map_err(|_| anyhow!("SSID is too long"))?;
+    client_cfg.password = config
+        .password
+        .as_str()
+        .try_into()
+        .map_err(|_| anyhow!("password is too long"))?;
+
+    if config.password.is_empty() {
+        client_cfg.auth_method = AuthMethod::None;
+    }
+
+    wifi.set_configuration(&WifiConfiguration::Client(client_cfg))?;
+    wifi.start()?;
+    wifi.connect()?;
+
+    for _ in 0..180 {
+        if wifi.is_connected().unwrap_or(false) {
+            if let Ok(ip_info) = wifi.sta_netif().get_ip_info() {
+                if ip_info.ip.to_string() != "0.0.0.0" {
+                    info!(
+                        "Wi-Fi netif is up: ip={}, mask={}, dns={:?}",
+                        ip_info.ip, ip_info.subnet, ip_info.dns
+                    );
+                    return Ok(());
+                }
+            }
         }
 
-        if let Err(err) =
-            fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, INFO_PANEL_URL).await
-        {
-            return reboot_with_error(&mut led, &format!("rgb565 refresh failed: {err:#}")).await;
-        }
+        Timer::after(Duration::from_millis(250)).await;
     }
+
+    bail!("timed out waiting for Wi-Fi netif/DHCP")
 }
 
 async fn fetch_and_draw_rgb565_with_retries<'d>(
@@ -288,67 +471,6 @@ const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | ((b as u16) >> 3)
 }
 
-async fn connect_known_wifi(
-    modem: Modem,
-    sysloop: EspSystemEventLoop,
-    known_wifis: &[KnownWifi],
-    led: &mut WS2812RMT<'_>,
-) -> Result<EspWifi<'static>> {
-    led.set_pixel(RGB8::new(12, 10, 0))?;
-    info!("Starting Wi-Fi (yellow: scanning/connecting)");
-
-    let mut wifi = EspWifi::new(modem, sysloop, None)?;
-    wifi.set_configuration(&WifiConfiguration::Client(ClientConfiguration::default()))?;
-    wifi.start()?;
-
-    wifi.start_scan(&ScanConfig::default(), false)?;
-
-    let scan_results = loop {
-        if wifi.is_scan_done().unwrap_or(false) {
-            break wifi.get_scan_result()?;
-        }
-        Timer::after(Duration::from_millis(250)).await;
-    };
-
-    let selected = known_wifis
-        .iter()
-        .find(|known| scan_results.iter().any(|ap| ap.ssid.as_str() == known.ssid));
-
-    let selected = selected.ok_or_else(|| anyhow!("none of the configured SSIDs were found"))?;
-    info!("Selected configured SSID: {}", selected.ssid);
-
-    let mut client_cfg = ClientConfiguration::default();
-    client_cfg.ssid = selected
-        .ssid
-        .try_into()
-        .map_err(|_| anyhow!("SSID is too long"))?;
-    client_cfg.password = selected
-        .password
-        .try_into()
-        .map_err(|_| anyhow!("password is too long"))?;
-
-    wifi.set_configuration(&WifiConfiguration::Client(client_cfg))?;
-    wifi.connect()?;
-
-    for _ in 0..180 {
-        if wifi.is_connected().unwrap_or(false) {
-            if let Ok(ip_info) = wifi.sta_netif().get_ip_info() {
-                let ip_str = ip_info.ip.to_string();
-                if ip_str != "0.0.0.0" {
-                    info!(
-                        "Wi-Fi netif is up: ip={}, mask={}, dns={:?}",
-                        ip_info.ip, ip_info.subnet, ip_info.dns
-                    );
-                    return Ok(wifi);
-                }
-            }
-        }
-        Timer::after(Duration::from_millis(250)).await;
-    }
-
-    bail!("timed out waiting for Wi-Fi netif/DHCP")
-}
-
 fn download_rgb565(url: &str) -> Result<Vec<u8>> {
     let connection = EspHttpConnection::new(&HttpConfiguration {
         use_global_ca_store: false,
@@ -377,16 +499,20 @@ fn download_rgb565(url: &str) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-async fn reboot_with_error(led: &mut WS2812RMT<'_>, message: &str) -> Result<()> {
-    error!("{message}");
-    let _ = led.set_pixel(RGB8::new(0, 15, 0));
-    Timer::after(Duration::from_secs(30)).await;
-
+fn reboot() -> ! {
     unsafe {
         esp_idf_svc::sys::esp_restart();
     }
+}
 
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
+fn brightness_color(brightness: u8, r: u8, g: u8, b: u8) -> RGB8 {
+    fn scale(brightness: u8, channel: u8) -> u8 {
+        ((brightness as u16 * channel as u16) / 255) as u8
     }
+
+    RGB8::new(
+        scale(brightness, r),
+        scale(brightness, g),
+        scale(brightness, b),
+    )
 }

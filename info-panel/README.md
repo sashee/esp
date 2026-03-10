@@ -2,12 +2,22 @@
 
 ESP32-C6 Rust scaffold focused on Wi-Fi bring-up.
 
-## Wi-Fi config
+## Runtime config
 
-Create `cfg.toml` from `cfg.toml.example` and fill `known_wifis` in priority order.
-Set `info_panel_url` to the full HTTP URL (including port and path), for example `/info-panel.rgb565`.
-The firmware connects only to listed networks.
-`cfg.toml` is compiled into the firmware at build time, so rebuild after changes.
+The firmware reads `ssid`, `pw`, and `url` from NVS at boot.
+There is no longer any build-time `cfg.toml` for Wi-Fi or URL configuration.
+
+If config is missing, mismatched, or normal mode fails, the device starts a temporary SoftAP on `192.168.4.1`.
+The AP name is generated as `InfoPanel-XXXX` from the device MAC address.
+
+Portal behavior:
+
+- `GET /` shows the current `ssid` and `url`
+- password is never pre-filled
+- empty password submit keeps the existing stored password
+- `POST /reset` clears stored config and reboots
+- no station connected: reboot after 1 minute
+- any station connected: reboot after 10 minutes total
 
 ## Build and flash
 

@@ -226,6 +226,7 @@ const queries = {
 	simple: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), timerange),
 	info_panel: () => buildInfoPanelQuery({
 		state_of_charge: [selectColumn("battery_bms_state_of_charge"), dropNullData(), timerange],
+		pv_sum_watt: [...teljesitmenyek.pv_sum, round()(), timerange],
 		battery_charging_watt: [...teljesitmenyek.battery_watt, multiply()(-1), round()(), timerange],
 		pv_energy_day_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("day"), round()(), timerange],
 		pv_energy_week_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("week"), round()(), timerange],

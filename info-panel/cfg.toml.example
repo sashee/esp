@@ -1,6 +1,0 @@
-[info-panel]
-info_panel_url = "http://192.168.1.101:8080/info-panel.rgb565"
-known_wifis = [
-  { ssid = "HomeWifi", password = "replace-me" },
-  { ssid = "PhoneHotspot", password = "replace-me-too" },
-]

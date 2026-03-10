@@ -78,11 +78,18 @@ app.use(express.static(path.join(import.meta.dirname, 'static')))
 
 app.get('/info-panel.rgb565', (_req, res) => {
   setNoCacheHeaders(res);
-	const TIME_SHIFT_MS = 2173919613;
-	// const TIME_SHIFT_MS = 0;
 	const panelWidth = 128;
 	const panelHeight = 160;
-  const panelTime = new Date(Date.now() - TIME_SHIFT_MS);
+  const now = new Date();
+  const panelTime = true ? new Date(
+    2026,
+    1,
+    11,
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds(),
+  ) : now;
   const infoPanelRow = runInfoPanelQuery(panelTime);
   const rgb565 = buildInfoPanelRgb565(panelWidth, panelHeight)(panelTime, infoPanelRow);
   res.status(200);
