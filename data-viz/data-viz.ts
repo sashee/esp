@@ -81,7 +81,7 @@ app.get('/info-panel.rgb565', (_req, res) => {
 	const panelWidth = 128;
 	const panelHeight = 160;
   const now = new Date();
-  const panelTime = true ? new Date(
+  const panelTime = false ? new Date(
     2026,
     1,
     11,
