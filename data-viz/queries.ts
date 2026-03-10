@@ -43,18 +43,18 @@ FROM (
 )
 `;
 
-const bucketExpression = (bucket: string) => {
+const bucketExpression = (bucket: string, source: string = "timestamp") => {
 	if (bucket === "day") {
-		return "strftime('%Y-%m-%d', timestamp / 1000, 'unixepoch', 'localtime')";
+		return `strftime('%Y-%m-%d', ${source} / 1000, 'unixepoch', 'localtime')`;
 	}
 	if (bucket === "week") {
-		return "strftime('%Y-%W', timestamp / 1000, 'unixepoch', 'localtime')";
+		return `strftime('%Y-%W', ${source} / 1000, 'unixepoch', 'localtime')`;
 	}
 	if (bucket === "month") {
-		return "strftime('%Y-%m', timestamp / 1000, 'unixepoch', 'localtime')";
+		return `strftime('%Y-%m', ${source} / 1000, 'unixepoch', 'localtime')`;
 	}
 	if (bucket === "year") {
-		return "strftime('%Y', timestamp / 1000, 'unixepoch', 'localtime')";
+		return `strftime('%Y', ${source} / 1000, 'unixepoch', 'localtime')`;
 	}
 
 	throw new Error(`invalid bucket '${bucket}', expected day|week|month|year`);
@@ -97,6 +97,18 @@ FROM (
 `;
 };
 
+const currentBucket = (bucket: string) => {
+	const bucketExpr = bucketExpression(bucket);
+	const currentBucketExpr = bucketExpression(bucket, ":to");
+
+	return (query: string) => `
+SELECT * FROM (${increaseIndent(query)})
+WHERE ${bucketExpr} = (
+	SELECT ${currentBucketExpr}
+)
+`;
+};
+
 const flow = (...arr) => {
 	return arr.reduce((memo, fn) => {
 		return fn(memo);
@@ -105,6 +117,10 @@ const flow = (...arr) => {
 
 const timerange = (query: string) => `
 SELECT * FROM (${increaseIndent(query)}) WHERE timestamp >= :from AND timestamp <= :to
+`;
+
+const dropFutureData = (query: string) => `
+SELECT * FROM (${increaseIndent(query)}) WHERE timestamp <= :to
 `;
 
 const latest = (query: string) => `
@@ -168,7 +184,7 @@ SELECT ${["timestamp", `${columnName} * ${amount} as ${columnName}`, ...extraCol
 `;
 
 const sumTwoData = (extraColumns: string[] = [], resultColumnName: string = "data") => (column1Name: string, column2Name: string) => (query: string) => `
-SELECT ${["timestamp", `ifnull(${column1Name}, 0) + ifnull(${column2Name}, 0) as ${resultColumnName}`, ...extraColumns].join(", ")} FROM (${increaseIndent(query)})
+SELECT ${["timestamp", `CASE WHEN ${column1Name} is null AND ${column2Name} is null THEN null ELSE ifnull(${column1Name}, 0) + ifnull(${column2Name}, 0) END as ${resultColumnName}`, ...extraColumns].join(", ")} FROM (${increaseIndent(query)})
 `;
 
 const sumThreeData = (extraColumns: string[] = [], resultColumnName: string = "data") => (column1Name: string, column2Name: string, column3Name: string) => (query: string) => `
@@ -180,7 +196,7 @@ SELECT timestamp, CASE data WHEN :${zeroNamedParameter} then 0 WHEN :${oneNamedP
 `;
 
 const multipleWithSign = (extraColumns: string[] = [], resultColumnName: string = "data") => (dataName: string, signName: string) => (query: string) => `
-SELECT ${["timestamp", `(${dataName} * ifnull(sign(${signName}), 0)) as ${resultColumnName}`, ...extraColumns].join(", ")} FROM (${increaseIndent(query)})
+SELECT ${["timestamp", `CASE WHEN ${dataName} is null OR ${signName} is null THEN null ELSE (${dataName} * sign(${signName})) END as ${resultColumnName}`, ...extraColumns].join(", ")} FROM (${increaseIndent(query)})
 `;
 
 const round = (extraColumns: string[] = [], resultColumnName: string = "data") => (columnName: string = "data", decimals: number = 0) => (query: string) => `
@@ -225,19 +241,19 @@ const teljesitmenyek = {
 const queries = {
 	simple: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), timerange),
 	info_panel: () => buildInfoPanelQuery({
-		state_of_charge: [selectColumn("battery_bms_state_of_charge"), dropNullData(), timerange],
-		pv_sum_watt: [...teljesitmenyek.pv_sum, round()(), timerange],
-		battery_charging_watt: [...teljesitmenyek.battery_watt, multiply()(-1), round()(), timerange],
-		pv_energy_day_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("day"), round()(), timerange],
-		pv_energy_week_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("week"), round()(), timerange],
-		pv_energy_month_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("month"), round()(), timerange],
-		pv_energy_year_wh: [...teljesitmenyek.pv_sum, makeCumulativeByBucket("year"), round()(), timerange],
-		mos_temperature: [selectColumn("battery_bms_mos_temperature"), dropNullData(), timerange],
-		battery_temperature_1: [selectColumn("battery_bms_battery_temperature_1"), dropNullData(), timerange],
-		battery_temperature_2: [selectColumn("battery_bms_battery_temperature_2"), dropNullData(), timerange],
-		battery_temperature_3: [selectColumn("battery_bms_battery_temperature_3"), dropNullData(), timerange],
-		battery_temperature_4: [selectColumn("battery_bms_battery_temperature_4"), dropNullData(), timerange],
-		battery_temperature_5: [selectColumn("battery_bms_battery_temperature_5"), dropNullData(), timerange],
+		state_of_charge: [selectColumn("battery_bms_state_of_charge"), dropFutureData, dropNullData(), timerange],
+		pv_sum_watt: [...teljesitmenyek.pv_sum, dropFutureData, round()(), dropNullData(), timerange],
+		battery_charging_watt: [...teljesitmenyek.battery_watt, dropFutureData, multiply()(-1), round()(), dropNullData(), timerange],
+		pv_energy_day_wh: [...teljesitmenyek.pv_sum, dropFutureData, makeCumulativeByBucket("day"), round()(), dropNullData(), currentBucket("day")],
+		pv_energy_week_wh: [...teljesitmenyek.pv_sum, dropFutureData, makeCumulativeByBucket("week"), round()(), dropNullData(), currentBucket("week")],
+		pv_energy_month_wh: [...teljesitmenyek.pv_sum, dropFutureData, makeCumulativeByBucket("month"), round()(), dropNullData(), currentBucket("month")],
+		pv_energy_year_wh: [...teljesitmenyek.pv_sum, dropFutureData, makeCumulativeByBucket("year"), round()(), dropNullData(), currentBucket("year")],
+		mos_temperature: [selectColumn("battery_bms_mos_temperature"), dropFutureData, dropNullData(), timerange],
+		battery_temperature_1: [selectColumn("battery_bms_battery_temperature_1"), dropFutureData, dropNullData(), timerange],
+		battery_temperature_2: [selectColumn("battery_bms_battery_temperature_2"), dropFutureData, dropNullData(), timerange],
+		battery_temperature_3: [selectColumn("battery_bms_battery_temperature_3"), dropFutureData, dropNullData(), timerange],
+		battery_temperature_4: [selectColumn("battery_bms_battery_temperature_4"), dropFutureData, dropNullData(), timerange],
+		battery_temperature_5: [selectColumn("battery_bms_battery_temperature_5"), dropFutureData, dropNullData(), timerange],
 	}),
 	three_state_value: (params: {_value: string}) => flow(selectColumn(params._value), dropNullData(), threestate("zero", "one"), timerange),
 	sum_two: (params: {_value1: string, _value2: string}) => flow(selectTwoColumns(params._value1, params._value2), dropNullData("data1"), sumTwoData()("data1", "data2"), timerange),
