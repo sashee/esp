@@ -197,7 +197,7 @@ pub fn clear_nvs<T>(spec: &'static PortalSpec, partition: EspNvsPartition<T>) ->
 where
     T: NvsPartitionId,
 {
-    let mut nvs = EspNvs::new(partition, spec.namespace, true)?;
+    let nvs = EspNvs::new(partition, spec.namespace, true)?;
     for field in spec.fields {
         let _ = nvs.remove(field.key)?;
     }
@@ -213,7 +213,7 @@ pub fn save_to_nvs<T>(
 where
     T: NvsPartitionId,
 {
-    let mut nvs = EspNvs::new(partition.clone(), spec.namespace, true)?;
+    let nvs = EspNvs::new(partition.clone(), spec.namespace, true)?;
     let previous = read_existing_config(spec, partition)?;
     validate_submitted(spec, submitted, &previous)?;
 

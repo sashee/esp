@@ -22,10 +22,10 @@ opt-level = "z"
 anyhow = "1"
 config-portal = { path = "../common/lib/config-portal" }
 log = "0.4"
-esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
-embassy-time = { version = "0.4.0", features = ["generic-queue-8"] }
-embedded-svc = "0.28.1"
+esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+embassy-time = { version = "0.5.0", features = ["generic-queue-8"] }
+embedded-svc = "0.29.0"
 rgb-led = { path = "../common/lib/rgb-led" }
 
 [build-dependencies]
-embuild = "0.33"
+embuild = "0.33.1"

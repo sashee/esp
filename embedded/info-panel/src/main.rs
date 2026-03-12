@@ -11,15 +11,15 @@ use embedded_svc::{
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
-        gpio::{AnyIOPin, Gpio1, Gpio2, Output, PinDriver},
+        gpio::{AnyIOPin, Output, PinDriver},
         peripherals::Peripherals,
-        prelude::*,
         reset::ResetReason,
         spi::{
             config::{Config as SpiConfig, DriverConfig as SpiDriverConfig},
             SpiDeviceDriver, SpiDriver,
         },
         task::block_on,
+        units::FromValueType,
     },
     http::client::{Configuration as HttpConfiguration, EspHttpConnection},
     nvs::EspDefaultNvsPartition,
@@ -59,8 +59,8 @@ const REQUIRED_PORTAL_TIMING: PortalTiming = PortalTiming {
 const RUNTIME_ERROR_REBOOT_DELAY: Duration = Duration::from_secs(10 * 60);
 
 type SpiDev<'d> = SpiDeviceDriver<'d, SpiDriver<'d>>;
-type DcPin<'d> = PinDriver<'d, Gpio2, Output>;
-type RstPin<'d> = PinDriver<'d, Gpio1, Output>;
+type DcPin<'d> = PinDriver<'d, Output>;
+type RstPin<'d> = PinDriver<'d, Output>;
 
 #[derive(Debug, Clone)]
 struct DeviceConfig {

@@ -1,8 +1,8 @@
 let
   sources = {
     nixpkgs = builtins.fetchTarball {
-      url = "https://github.com/NixOS/nixpkgs/archive/50ab793786d9de88ee30ec4e4c24fb4236fc2674.tar.gz";
-      sha256 = "1s2gr5rcyqvpr58vxdcb095mdhblij9bfzaximrva2243aal3dgx";
+      url = "https://github.com/NixOS/nixpkgs/archive/0590cd39f728e129122770c029970378a79d076a.tar.gz";
+      sha256 = "1ia5kjykm9xmrpwbzhbaf4cpwi3yaxr7shl6amj8dajvgbyh2yh4";
     };
 
     rust-overlay = builtins.fetchTarball {
@@ -54,14 +54,14 @@ let
     "embedded/common/lib/rgb-led/Cargo.toml"
   ];
 
-  rustToolchain = pkgs.rust-bin.nightly."2026-03-07".default.override {
+  rustToolchain = pkgs.rust-bin.nightly."2026-03-12".default.override {
     extensions = [ "rust-src" ];
     targets = [ "riscv32imac-unknown-none-elf" ];
   };
 
   stdManifest = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.toml";
 
-  espIdfRev = "c9763f62dd00c887a1a8fafe388db868a7e44069";
+  espIdfRev = "2c211b236707889e8400c4dc5644dd5c4ee071e0";
 
   espIdfFetched = pkgs.stdenvNoCC.mkDerivation {
     pname = "esp-idf-source";
@@ -70,7 +70,7 @@ let
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-Pa7V5tG18t2K3oHyP8lpxRoTcKx0u0eEcyDVa/PTf7Q=";
+    outputHash = "sha256-ah7ErhyEbd9WfQaxOn/Ua2H/t06HFR6SVMn8D4gkyv0=";
 
     dontUnpack = true;
     dontConfigure = true;
@@ -113,7 +113,7 @@ let
 
   espIdfConstraints = pkgs.fetchurl {
     url = "https://dl.espressif.com/dl/esp-idf/espidf.constraints.v${espIdfConstraintVersion}.txt";
-    sha256 = "04vqasv6j8pw4r45h7l39abwbrcmmfs95gzxg2h2a4yldifh9gsz";
+    sha256 = "sha256-Ze7yyJ/glmhLsP2ltyRlFecCR4qRNH0PvimFyB6PDf0=";
   };
 
   # Switch back to pkgs.python3Packages.pip once the pinned nixpkgs package reaches a
@@ -169,7 +169,7 @@ let
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-YUuEdd/XTs+ZNmQZ4t3UK7o5gN+mZPlnT9CSoXz46es=";
+    outputHash = "sha256-FsO6QqKKO9F5Q+vk/Gm6mFWLgUdjG5kuv5qot+1wJu4=";
 
     installPhase = ''
       runHook preInstall
@@ -261,7 +261,7 @@ let
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-t25DqR0L8Vjq+d/jHgjzXQRm6VpSwMgbd7VA5GIES/A=";
+    outputHash = "sha256-YjbiBRAp94oRdE9wJZT5t/L/ekgmWVzrPxwbLgT2ZYc=";
 
     installPhase = ''
       export HOME="$TMPDIR"
