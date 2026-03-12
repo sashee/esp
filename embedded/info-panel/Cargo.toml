@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 resolver = "2"
 rust-version = "1.85.1"
+build = "build.rs"
 
 [[bin]]
 name = "info-panel"
+path = "src/main.rs"
 harness = false
 
 [profile.release]

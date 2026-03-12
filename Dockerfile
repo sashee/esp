@@ -31,6 +31,6 @@ RUN cargo install bacon
 RUN rustup target add riscv32imac-unknown-none-elf
 RUN cargo install ldproxy
 
-WORKDIR /opt/esp/project
+WORKDIR /opt/esp/embedded/project
 
 ENTRYPOINT ["/bin/fish"]

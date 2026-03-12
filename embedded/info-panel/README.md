@@ -21,7 +21,7 @@ Portal behavior:
 
 ## Build and flash
 
-From `info-panel/`:
+From `embedded/info-panel/`:
 
 ```bash
 cargo run
