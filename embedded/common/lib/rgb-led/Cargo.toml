@@ -9,8 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow      = "=1.0.102"
-esp-idf-svc = "=0.52.1"
-esp-idf-hal ={ version = "=0.46.2", features = ["rmt-legacy"] }
+esp-idf-hal = "=0.46.2"
 log         = "=0.4.29"
 rgb         = "0.8.53"
 

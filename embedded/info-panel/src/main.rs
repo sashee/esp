@@ -101,7 +101,7 @@ async fn async_main() -> Result<()> {
     let modem = peripherals.modem;
     let spi2 = peripherals.spi2;
     let pins = peripherals.pins;
-    let mut led = WS2812RMT::new(pins.gpio8, peripherals.rmt.channel0)?;
+    let mut led = WS2812RMT::new(pins.gpio8)?;
     let mut wifi = EspWifi::new(modem, sysloop, Some(nvs.clone()))?;
 
     let config = match read_nvs(&PORTAL_SPEC, nvs.clone())? {

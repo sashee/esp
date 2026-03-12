@@ -1244,7 +1244,6 @@ dependencies = [
  "anyhow",
  "embuild",
  "esp-idf-hal",
- "esp-idf-svc",
  "log",
  "rgb",
 ]

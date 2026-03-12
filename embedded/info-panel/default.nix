@@ -54,10 +54,13 @@ let
     "embedded/common/lib/rgb-led/Cargo.toml"
   ];
 
-  rustToolchain = pkgs.rust-bin.nightly."2026-03-12".default.override {
-    extensions = [ "rust-src" ];
-    targets = [ "riscv32imac-unknown-none-elf" ];
-  };
+  rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (
+    toolchain:
+    toolchain.default.override {
+      extensions = [ "rust-src" ];
+      targets = [ "riscv32imac-unknown-none-elf" ];
+    }
+  );
 
   stdManifest = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.toml";
 
