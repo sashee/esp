@@ -17,6 +17,18 @@ let
 
   lib = pkgs.lib;
   repoRoot = ../..;
+  appPath = ./.;
+  appDir = lib.removePrefix "${toString repoRoot}/" (toString appPath);
+  appManifest = builtins.fromTOML (builtins.readFile (appPath + "/Cargo.toml"));
+  appName = appManifest.package.name;
+  appVersion = appManifest.package.version;
+  appBinName =
+    if appManifest ? bin && appManifest.bin != [ ] then
+      (builtins.head appManifest.bin).name
+    else
+      appName;
+  artifactDirName = "${appName}-artifacts";
+  firmwareRelPath = "firmware/${appBinName}";
 
   filterRepoSubtree = includedPaths:
     pkgs.nix-gitignore.gitignoreFilterRecursiveSource
@@ -43,16 +55,27 @@ let
 
   filteredSrc = filterRepoSubtree [
     "embedded/common"
-    "embedded/info-panel"
+    appDir
   ];
 
-  cargoDepsSrc = filterRepoSubtree [
-    "embedded/info-panel/Cargo.toml"
-    "embedded/info-panel/Cargo.lock"
-    "embedded/info-panel/.cargo/config.toml"
-    "embedded/common/lib/config-portal/Cargo.toml"
-    "embedded/common/lib/rgb-led/Cargo.toml"
-  ];
+  cargoDepsSrc = lib.cleanSourceWith {
+    src = filteredSrc;
+    filter = path: type:
+      let
+        pathStr = toString path;
+        rootStr = toString filteredSrc;
+        rel =
+          if pathStr == rootStr then
+            ""
+          else
+            lib.removePrefix "${rootStr}/" pathStr;
+      in
+      rel == ""
+      || type == "directory"
+      || lib.hasSuffix "/Cargo.toml" rel
+      || lib.hasSuffix "/Cargo.lock" rel
+      || lib.hasSuffix "/.cargo/config.toml" rel;
+  };
 
   rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (
     toolchain:
@@ -161,7 +184,7 @@ let
       version;
 
   espPythonPackages = pkgs.stdenvNoCC.mkDerivation {
-    pname = "info-panel-esp-python-packages";
+    pname = "${appName}-esp-python-packages";
     version = espIdfVersion;
     dontUnpack = true;
     dontConfigure = true;
@@ -195,7 +218,7 @@ let
   };
 
   espPython = pkgs.stdenvNoCC.mkDerivation {
-    pname = "info-panel-esp-python";
+    pname = "${appName}-esp-python";
     version = espIdfVersion;
     dontUnpack = true;
     dontConfigure = true;
@@ -253,8 +276,8 @@ let
   };
 
   cargoDeps = pkgs.stdenvNoCC.mkDerivation {
-    pname = "info-panel-vendor";
-    version = "0.1.0";
+    pname = "${appName}-vendor";
+    version = appVersion;
     src = cargoDepsSrc;
     dontConfigure = true;
     dontFixup = true;
@@ -275,7 +298,7 @@ let
       cargo vendor \
         --locked \
         --versioned-dirs \
-        --manifest-path "$src/embedded/info-panel/Cargo.toml" \
+        --manifest-path "$src/${appDir}/Cargo.toml" \
         --sync "${stdManifest}" \
         "$out" \
         > /dev/null
@@ -307,9 +330,9 @@ let
     libudev-zero
     libusb1
   ];
-  infoPanelFirmware = pkgs.stdenv.mkDerivation {
-    pname = "info-panel-firmware";
-    version = "0.1.0";
+  firmware = pkgs.stdenv.mkDerivation {
+    pname = "${appName}-firmware";
+    version = appVersion;
     src = filteredSrc;
     dontConfigure = true;
     dontFixup = true;
@@ -328,7 +351,7 @@ let
       export HOME="$PWD"
       export CARGO_HOME="$PWD/.cargo-home"
       export CARGO_TARGET_DIR="$PWD/target"
-      export INFO_PANEL_ARTIFACT_DIR="$NIX_BUILD_TOP/info-panel-artifacts"
+      export APP_ARTIFACT_DIR="$NIX_BUILD_TOP/${artifactDirName}"
       export IDF_PATH="${espIdfSrc}"
       export ESP_IDF_TOOLS_INSTALL_DIR=fromenv
       export IDF_PYTHON_CHECK_CONSTRAINTS=no
@@ -337,7 +360,7 @@ let
       export PATH="$IDF_PATH/tools:$PATH"
       mkdir -p "$CARGO_HOME"
 
-      cd embedded/info-panel
+      cd ${appDir}
       cp .cargo/config.toml .cargo/config.toml.orig
       cat >> .cargo/config.toml <<EOF
 
@@ -350,7 +373,7 @@ EOF
 
       cargo build \
         -Z unstable-options \
-        --artifact-dir "$INFO_PANEL_ARTIFACT_DIR" \
+        --artifact-dir "$APP_ARTIFACT_DIR" \
         --release \
         --locked \
         --offline
@@ -362,15 +385,15 @@ EOF
       runHook preInstall
 
       mkdir -p "$out/firmware"
-      install -m755 "$NIX_BUILD_TOP/info-panel-artifacts/info-panel" "$out/firmware/info-panel"
+      install -m755 "$NIX_BUILD_TOP/${artifactDirName}/${appBinName}" "$out/${firmwareRelPath}"
 
       runHook postInstall
     '';
   };
 in
 pkgs.stdenvNoCC.mkDerivation {
-  pname = "info-panel";
-  version = "0.1.0";
+  pname = appName;
+  version = appVersion;
   dontUnpack = true;
   dontConfigure = true;
   dontBuild = true;
@@ -380,7 +403,7 @@ pkgs.stdenvNoCC.mkDerivation {
 
     mkdir -p "$out/bin" "$out/firmware"
 
-    ln -s "${infoPanelFirmware}/firmware/info-panel" "$out/firmware/info-panel"
+    ln -s "${firmware}/${firmwareRelPath}" "$out/${firmwareRelPath}"
 
     cat > "$out/bin/espflash" <<EOF
 #!/bin/sh
@@ -404,14 +427,14 @@ EOF
 #!/bin/sh
 set -eu
 
-exec "$out/bin/espflash" flash "${infoPanelFirmware}/firmware/info-panel" "\$@"
+exec "$out/bin/espflash" flash "${firmware}/${firmwareRelPath}" "\$@"
 EOF
 
     cat > "$out/bin/run" <<EOF
 #!/bin/sh
 set -eu
 
-exec "$out/bin/espflash" flash --monitor "${infoPanelFirmware}/firmware/info-panel" "\$@"
+exec "$out/bin/espflash" flash --monitor "${firmware}/${firmwareRelPath}" "\$@"
 EOF
 
     chmod 755 "$out/bin/espflash" "$out/bin/flash" "$out/bin/run"
