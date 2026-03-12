@@ -146,11 +146,9 @@ async fn async_main() -> Result<()> {
     let managed_run = async {
         connect_device_wifi(&mut wifi, &config, &mut led).await?;
 
-        info!("Setting connected LED state");
         led.set_pixel(brightness_color(config.led_brightness, 0, 0, 255))?;
         info!("Wi-Fi connected");
 
-        info!("Creating SPI driver");
         let spi_driver = SpiDriver::new(
             spi2,
             pins.gpio4,
@@ -158,26 +156,16 @@ async fn async_main() -> Result<()> {
             Option::<AnyIOPin>::None,
             &SpiDriverConfig::new(),
         )?;
-        info!("SPI driver created");
 
         let spi_cfg = SpiConfig::new().baudrate(26.MHz().into());
-        info!("Creating SPI device driver");
         let mut spi = SpiDeviceDriver::new(spi_driver, Some(pins.gpio5), &spi_cfg)?;
-        info!("SPI device driver created");
 
-        info!("Configuring TFT DC pin");
         let mut dc = PinDriver::output(pins.gpio2)?;
-        info!("TFT DC pin configured");
 
-        info!("Configuring TFT reset pin");
         let mut rst = PinDriver::output(pins.gpio1)?;
-        info!("TFT reset pin configured");
 
-        info!("Initializing TFT");
         init_tft(&mut spi, &mut dc, &mut rst).await?;
-        info!("TFT initialized");
 
-        info!("Clearing TFT");
         fill_rect(
             &mut spi,
             &mut dc,
@@ -187,13 +175,10 @@ async fn async_main() -> Result<()> {
             TFT_HEIGHT,
             rgb565(0, 0, 0),
         )?;
-        info!("TFT cleared");
 
         Timer::after(Duration::from_millis(500)).await;
 
-        info!("Fetching first frame");
         fetch_and_draw_rgb565_with_retries(&mut spi, &mut dc, &config.url).await?;
-        info!("First frame rendered");
 
         loop {
             Timer::after(Duration::from_secs(30)).await;
@@ -490,33 +475,21 @@ const fn rgb565(r: u8, g: u8, b: u8) -> u16 {
 }
 
 fn download_rgb565(url: &str) -> Result<Vec<u8>> {
-    info!("download_rgb565: creating HTTP connection");
     let connection = EspHttpConnection::new(&HttpConfiguration {
         timeout: Some(core::time::Duration::from_secs(30)),
         use_global_ca_store: false,
         ..Default::default()
     })?;
-    info!("download_rgb565: HTTP connection created");
-
-    info!("download_rgb565: wrapping HTTP client");
     let mut client = Client::wrap(connection);
-    info!("download_rgb565: HTTP client wrapped");
 
-    info!("download_rgb565: creating GET request for {}", url);
     let request = client.request(Method::Get, url, &[])?;
-    info!("download_rgb565: request created");
-
-    info!("download_rgb565: submitting request");
     let mut response = request.submit()?;
-    info!("download_rgb565: response received");
 
     let status = response.status();
-    info!("download_rgb565: HTTP status {}", status);
     if !(200..=299).contains(&status) {
         bail!("HTTP status {} while downloading {}", status, url);
     }
 
-    info!("download_rgb565: starting response body read");
     let mut data = Vec::new();
     let mut buf = [0u8; 256];
     loop {
@@ -526,7 +499,6 @@ fn download_rgb565(url: &str) -> Result<Vec<u8>> {
         }
         data.extend_from_slice(&buf[..n]);
     }
-    info!("download_rgb565: response body read complete: {} bytes", data.len());
 
     Ok(data)
 }
