@@ -16,6 +16,7 @@ let
   };
 
   lib = pkgs.lib;
+  storeDir = builtins.storeDir;
   repoRoot = ../..;
   appPath = ./.;
   appDir = lib.removePrefix "${toString repoRoot}/" (toString appPath);
@@ -397,6 +398,36 @@ pkgs.stdenvNoCC.mkDerivation {
   dontUnpack = true;
   dontConfigure = true;
   dontBuild = true;
+
+  passthru = {
+    inherit
+      pkgs
+      lib
+      repoRoot
+      appPath
+      appDir
+      appName
+      appVersion
+      appBinName
+    artifactDirName
+      firmwareRelPath
+      rustToolchain
+      espIdfSrc
+      espPython
+      riscv32EspElf
+      storeDir
+      nativeBuildInputs
+    buildInputs
+      ;
+    bashBin = "${pkgs.bashInteractive}/bin/bash";
+    envBin = "${pkgs.coreutils}/bin/env";
+    espflashPkg = pkgs.espflash;
+    libclangPath = "${pkgs.llvmPackages.libclang.lib}/lib";
+    sslCertFile = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    idfToolsPath = "${espIdfSrc}/tools";
+    wrappedEspflash = "${pkgs.espflash}/bin/espflash";
+    bubblewrap = "${pkgs.bubblewrap}/bin/bwrap";
+  };
 
   installPhase = ''
     runHook preInstall
