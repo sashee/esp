@@ -137,10 +137,114 @@ let
   espIdfVersion = "${espIdfVersionMajor}.${espIdfVersionMinor}.${espIdfVersionPatch}";
   espIdfConstraintVersion = "${espIdfVersionMajor}.${espIdfVersionMinor}";
   espIdfCommitTimestamp = espIdfMeta.commitTimestamp;
+  espIdfConstraintsUrl = "https://dl.espressif.com/dl/esp-idf/espidf.constraints.v${espIdfConstraintVersion}.txt";
 
-  espIdfConstraints = pkgs.fetchurl {
-    url = "https://dl.espressif.com/dl/esp-idf/espidf.constraints.v${espIdfConstraintVersion}.txt";
-    sha256 = "sha256-Ze7yyJ/glmhLsP2ltyRlFecCR4qRNH0PvimFyB6PDf0=";
+  espIdfConstraints = pkgs.stdenvNoCC.mkDerivation {
+    pname = "esp-idf-constraints";
+    version = espIdfConstraintVersion;
+    nativeBuildInputs = [ pkgs.curl pkgs.python3 pkgs.cacert ];
+
+    outputHashMode = "flat";
+    outputHashAlgo = "sha256";
+    outputHash = "65eef2c89fe096684bb0fda5b7246515e702478a91347d0fbe2985c81e8f0dfd";
+
+    dontUnpack = true;
+    dontConfigure = true;
+    dontBuild = true;
+    dontFixup = true;
+
+    buildCommand = ''
+      export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+      export ORIGINAL_URL="${espIdfConstraintsUrl}"
+      export COMMIT_TIMESTAMP="${espIdfCommitTimestamp}"
+
+      archive_timestamp=$(python - <<'PY'
+from datetime import datetime, timezone
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+original_url = os.environ["ORIGINAL_URL"]
+commit_timestamp = os.environ["COMMIT_TIMESTAMP"]
+wayback_timestamp = datetime.fromisoformat(commit_timestamp).astimezone(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+queries = [
+    (
+        "last snapshot at or before commit timestamp",
+        {
+            "url": original_url,
+            "to": wayback_timestamp,
+            "limit": "1",
+            "sort": "reverse",
+            "filter": "statuscode:200",
+            "fl": "timestamp",
+        },
+    ),
+    (
+        "first snapshot after commit timestamp",
+        {
+            "url": original_url,
+            "from": wayback_timestamp,
+            "limit": "1",
+            "filter": "statuscode:200",
+            "fl": "timestamp",
+        },
+    ),
+]
+
+for description, params in queries:
+    query = urllib.parse.urlencode(params)
+    request_url = f"https://web.archive.org/cdx/search/cdx?{query}"
+
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(request_url, timeout=60) as response:
+                body = response.read().decode().strip()
+            if body:
+                print(body.split()[0])
+                sys.exit(0)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 3:
+                time.sleep(2 ** attempt)
+                continue
+            raise SystemExit(
+                f"Wayback CDX lookup failed for {description}: HTTP {exc.code}"
+            )
+        except urllib.error.URLError as exc:
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+                continue
+            raise SystemExit(
+                f"Wayback CDX lookup failed for {description}: {exc}"
+            )
+        except TimeoutError:
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+                continue
+            raise SystemExit(
+                f"Wayback CDX lookup timed out for {description}"
+            )
+
+raise SystemExit(
+    f"No archived ESP-IDF constraints file found for {original_url} near {wayback_timestamp}"
+)
+PY
+      )
+
+      curl \
+        --fail \
+        --location \
+        --compressed \
+        --retry 4 \
+        --retry-all-errors \
+        --retry-delay 1 \
+        "https://web.archive.org/web/''${archive_timestamp}if_/${espIdfConstraintsUrl}" \
+        --output "$out"
+    '';
   };
 
   # Switch back to pkgs.python3Packages.pip once the pinned nixpkgs package reaches a
