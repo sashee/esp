@@ -3,14 +3,6 @@ let
   shared = package.passthru;
   pkgs = shared.pkgs;
 
-  sandboxEntrypoint = pkgs.writeShellScript "info-panel-shell-entrypoint" ''
-    set -eu
-
-    mkdir -p "$HOME"
-
-    exec "$@"
-  '';
-
   build = pkgs.writeShellScriptBin "build" ''
     set -eu
 
@@ -119,93 +111,14 @@ pkgs.mkShell {
 
     export ESP_INFO_PANEL_REPO_ROOT="$repo_root"
     export ESP_INFO_PANEL_APP_DIR="$repo_root/${shared.appDir}"
-    export CARGO_HOME="$ESP_INFO_PANEL_REPO_ROOT/.cargo-home"
     export CARGO_TARGET_DIR="$ESP_INFO_PANEL_APP_DIR/target"
     export APP_ARTIFACT_DIR="$ESP_INFO_PANEL_APP_DIR/.artifacts"
 
-    mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR" "$APP_ARTIFACT_DIR"
+    mkdir -p "$CARGO_TARGET_DIR" "$APP_ARTIFACT_DIR"
 
-    if [ "''${ESP_BWRAP_SHELL-}" = 1 ]; then
-      trap - EXIT
-      exitHooks=()
-      failureHooks=()
-      _nix_shell_clean_tmpdir() { :; }
-
-      if [ -t 1 ]; then
-        printf '%s\n' "info-panel nix-shell sandboxed to: $ESP_INFO_PANEL_REPO_ROOT"
-        printf '%s\n' 'commands: build | flash | run | watch'
-      fi
-      return
+    if [ -t 1 ]; then
+      printf '%s\n' "info-panel nix-shell rooted at: $ESP_INFO_PANEL_REPO_ROOT"
+      printf '%s\n' 'commands: build | flash | run | watch'
     fi
-
-    shell_arg0=$(awk 'BEGIN { RS = "\\0" } NR == 1 { print; exit }' "/proc/$$/cmdline")
-    shell_arg1=$(awk 'BEGIN { RS = "\\0" } NR == 2 { print; exit }' "/proc/$$/cmdline")
-    shell_arg2=$(awk 'BEGIN { RS = "\\0" } NR == 3 { print; exit }' "/proc/$$/cmdline")
-
-    shell_argv=("$shell_arg0")
-    if [ "$shell_arg1" = "--rcfile" ]; then
-      shell_argv+=("$shell_arg1" "$shell_arg2")
-    elif [ -n "$shell_arg1" ]; then
-      shell_argv+=("$shell_arg1")
-    fi
-
-    bwrap_args=(
-      --unshare-all
-      --share-net
-      --unshare-user
-      --die-with-parent
-      --disable-userns
-      --ro-bind "${shared.storeDir}" "${shared.storeDir}"
-      --bind "$ESP_INFO_PANEL_REPO_ROOT" "$ESP_INFO_PANEL_REPO_ROOT"
-      --dev-bind /dev /dev
-      --proc /proc
-      --ro-bind /sys /sys
-      --tmpfs /tmp
-      --tmpfs /run
-      --dir /bin
-      --dir /usr
-      --dir /usr/bin
-      --dir /tmp/home
-      --ro-bind /etc /etc
-      --symlink "${shared.bashBin}" /bin/bash
-      --symlink "${shared.bashBin}" /bin/sh
-      --symlink "${shared.envBin}" /usr/bin/env
-      --setenv HOME /tmp/home
-      --setenv SHELL "${shared.bashBin}"
-      --setenv BASH "${shared.bashBin}"
-      --setenv ESP_BWRAP_SHELL 1
-      --setenv ESP_INFO_PANEL_REPO_ROOT "$ESP_INFO_PANEL_REPO_ROOT"
-      --setenv ESP_INFO_PANEL_APP_DIR "$ESP_INFO_PANEL_APP_DIR"
-      --setenv CARGO_HOME "$CARGO_HOME"
-      --setenv CARGO_TARGET_DIR "$CARGO_TARGET_DIR"
-      --setenv APP_ARTIFACT_DIR "$APP_ARTIFACT_DIR"
-      --setenv PATH "$PATH"
-      --setenv IDF_PATH "$IDF_PATH"
-      --setenv ESP_IDF_TOOLS_INSTALL_DIR "$ESP_IDF_TOOLS_INSTALL_DIR"
-      --setenv IDF_PYTHON_CHECK_CONSTRAINTS "$IDF_PYTHON_CHECK_CONSTRAINTS"
-      --setenv IDF_PYTHON_ENV_PATH "$IDF_PYTHON_ENV_PATH"
-      --setenv LIBCLANG_PATH "$LIBCLANG_PATH"
-      --setenv SSL_CERT_FILE "$SSL_CERT_FILE"
-      --setenv IN_NIX_SHELL "$IN_NIX_SHELL"
-      --setenv NIX_BUILD_TOP "''${NIX_BUILD_TOP-}"
-      --chdir "$PWD"
-    )
-
-    resolv_target=$(readlink -f /etc/resolv.conf 2>/dev/null || true)
-    if [ -n "$resolv_target" ] && [ -e "$resolv_target" ] && [ "$resolv_target" != /etc/resolv.conf ]; then
-      bwrap_args+=(--ro-bind "$resolv_target" "$resolv_target")
-    fi
-
-    if [ "$shell_arg1" = "--rcfile" ] && [ -n "$shell_arg2" ] && [ -e "$shell_arg2" ]; then
-      rc_dir=$(dirname "$shell_arg2")
-      bwrap_args+=(--bind "$rc_dir" "$rc_dir")
-    elif [ -n "$shell_arg1" ] && [ -e "$shell_arg1" ]; then
-      rc_dir=$(dirname "$shell_arg1")
-      bwrap_args+=(--bind "$rc_dir" "$rc_dir")
-    fi
-
-    unset NIX_ENFORCE_PURITY
-
-    exec "${shared.bubblewrap}" "''${bwrap_args[@]}" -- "${sandboxEntrypoint}" "''${shell_argv[@]}"
   '';
 }
