@@ -142,7 +142,7 @@ let
   espIdfConstraints = pkgs.stdenvNoCC.mkDerivation {
     pname = "esp-idf-constraints";
     version = espIdfConstraintVersion;
-    nativeBuildInputs = [ pkgs.curl pkgs.python3 pkgs.cacert ];
+    nativeBuildInputs = [ pkgs.curl pkgs.cacert ];
 
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
@@ -158,92 +158,45 @@ let
       export ORIGINAL_URL="${espIdfConstraintsUrl}"
       export COMMIT_TIMESTAMP="${espIdfCommitTimestamp}"
 
-      archive_timestamp=$(python - <<'PY'
-from datetime import datetime, timezone
-import os
-import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
+      wayback_timestamp=$(date -u --date="$COMMIT_TIMESTAMP" +%Y%m%d%H%M%S)
 
-original_url = os.environ["ORIGINAL_URL"]
-commit_timestamp = os.environ["COMMIT_TIMESTAMP"]
-wayback_timestamp = datetime.fromisoformat(commit_timestamp).astimezone(timezone.utc).strftime("%Y%m%d%H%M%S")
-
-queries = [
-    (
-        "last snapshot at or before commit timestamp",
-        {
-            "url": original_url,
-            "to": wayback_timestamp,
-            "limit": "1",
-            "sort": "reverse",
-            "filter": "statuscode:200",
-            "fl": "timestamp",
-        },
-    ),
-    (
-        "first snapshot after commit timestamp",
-        {
-            "url": original_url,
-            "from": wayback_timestamp,
-            "limit": "1",
-            "filter": "statuscode:200",
-            "fl": "timestamp",
-        },
-    ),
-]
-
-for description, params in queries:
-    query = urllib.parse.urlencode(params)
-    request_url = f"https://web.archive.org/cdx/search/cdx?{query}"
-
-    for attempt in range(4):
-        try:
-            with urllib.request.urlopen(request_url, timeout=60) as response:
-                body = response.read().decode().strip()
-            if body:
-                print(body.split()[0])
-                sys.exit(0)
-            break
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429 and attempt < 3:
-                time.sleep(2 ** attempt)
-                continue
-            raise SystemExit(
-                f"Wayback CDX lookup failed for {description}: HTTP {exc.code}"
-            )
-        except urllib.error.URLError as exc:
-            if attempt < 3:
-                time.sleep(2 ** attempt)
-                continue
-            raise SystemExit(
-                f"Wayback CDX lookup failed for {description}: {exc}"
-            )
-        except TimeoutError:
-            if attempt < 3:
-                time.sleep(2 ** attempt)
-                continue
-            raise SystemExit(
-                f"Wayback CDX lookup timed out for {description}"
-            )
-
-raise SystemExit(
-    f"No archived ESP-IDF constraints file found for {original_url} near {wayback_timestamp}"
-)
-PY
+      archive_timestamp=$(
+        curl \
+          --fail \
+          --silent \
+          --show-error \
+          --location \
+          --get "https://web.archive.org/cdx/search/cdx" \
+          --data-urlencode "url=$ORIGINAL_URL" \
+          --data-urlencode "from=$wayback_timestamp" \
+          --data-urlencode "limit=1" \
+          --data-urlencode "filter=statuscode:200" \
+          --data-urlencode "fl=timestamp"
       )
 
-      curl \
+      if [ -z "$archive_timestamp" ]; then
+        printf '%s\n' \
+          "No archived ESP-IDF constraints file found at or after $wayback_timestamp for $ORIGINAL_URL." \
+          "Request a capture at https://web.archive.org/save/$ORIGINAL_URL and retry once it becomes available." \
+          >&2
+        exit 1
+      fi
+
+      archive_url="https://web.archive.org/web/''${archive_timestamp}if_/${espIdfConstraintsUrl}"
+
+      if ! curl \
         --fail \
         --location \
         --compressed \
-        --retry 4 \
-        --retry-all-errors \
-        --retry-delay 1 \
-        "https://web.archive.org/web/''${archive_timestamp}if_/${espIdfConstraintsUrl}" \
+        "$archive_url" \
         --output "$out"
+      then
+        printf '%s\n' \
+          "Failed to fetch archived ESP-IDF constraints file: $archive_url" \
+          "You can request a fresh capture at https://web.archive.org/save/$ORIGINAL_URL" \
+          >&2
+        exit 1
+      fi
     '';
   };
 
