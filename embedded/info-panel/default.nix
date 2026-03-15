@@ -30,6 +30,7 @@ let
       appName;
   artifactDirName = "${appName}-artifacts";
   firmwareRelPath = "firmware/${appBinName}";
+  cargoLockSuffix = builtins.substring 0 12 (builtins.hashString "sha256" (builtins.readFile (appPath + "/Cargo.lock")));
 
   filterRepoSubtree = includedPaths:
     pkgs.nix-gitignore.gitignoreFilterRecursiveSource
@@ -75,7 +76,9 @@ let
       || type == "directory"
       || lib.hasSuffix "/Cargo.toml" rel
       || lib.hasSuffix "/Cargo.lock" rel
-      || lib.hasSuffix "/.cargo/config.toml" rel;
+      || lib.hasSuffix "/build.rs" rel
+      || lib.hasSuffix "/.cargo/config.toml" rel
+      || lib.hasInfix "/src/" rel;
   };
 
   rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (
@@ -333,7 +336,7 @@ let
   };
 
   cargoDeps = pkgs.stdenvNoCC.mkDerivation {
-    pname = "${appName}-vendor";
+    pname = "${appName}-vendor-${cargoLockSuffix}";
     version = appVersion;
     src = cargoDepsSrc;
     dontConfigure = true;
