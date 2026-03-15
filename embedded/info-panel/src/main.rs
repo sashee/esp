@@ -1,8 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use config_portal::esp_idf::{EspClock, EspHttpBackend, EspPlatform, NvsConfigStore};
 use config_portal::{
-    enter_config_mode, read_config, ConfigSpec, ConfigState, ConfigStore, ConfigTiming, FieldSpec,
-    StoredConfig,
+    enter_config_mode, read_config, AccessPointConfig as PortalAccessPointConfig,
+    AccessPointEvent as PortalAccessPointEvent, ConfigSpec, ConfigState, ConfigStore, ConfigTiming,
+    ConfigWifi, FieldSpec, IpConfig as PortalIpConfig, StoredConfig,
 };
 use embassy_time::{Duration, Timer};
 use embedded_svc::{
@@ -72,6 +73,72 @@ type DcPin<'d> = PinDriver<'d, Output>;
 type RstPin<'d> = PinDriver<'d, Output>;
 type Led<'d> = RgbLed<Ws2812RmtBackend<'d>>;
 type DeviceWifi<'d> = WifiController<EspWifiBackend<'d>>;
+
+struct PortalWifi<'a, 'd> {
+    inner: &'a mut DeviceWifi<'d>,
+}
+
+impl<'a, 'd> PortalWifi<'a, 'd> {
+    fn new(inner: &'a mut DeviceWifi<'d>) -> Self {
+        Self { inner }
+    }
+}
+
+impl ConfigWifi for PortalWifi<'_, 'static> {
+    async fn start_access_point(
+        &mut self,
+        config: &PortalAccessPointConfig,
+    ) -> Result<PortalIpConfig> {
+        let mut wifi_config = wifi::AccessPointConfig::new(
+            &config.ssid,
+            wifi::IpConfig::new(
+                &config.ip_config.ip,
+                &config.ip_config.gateway,
+                &config.ip_config.netmask,
+            ),
+        );
+        wifi_config.channel = config.channel;
+        wifi_config.max_connections = config.max_connections;
+
+        let ip_config = self.inner.start_access_point(&wifi_config).await?;
+        Ok(PortalIpConfig::new(
+            ip_config.ip,
+            ip_config.gateway,
+            ip_config.netmask,
+        ))
+    }
+
+    async fn stop_access_point(&mut self) -> Result<()> {
+        self.inner.stop_access_point().await
+    }
+
+    async fn is_access_point_started(&mut self) -> Result<bool> {
+        self.inner.is_started().await
+    }
+
+    async fn poll_access_point_events<F>(&mut self, mut on_event: F) -> Result<()>
+    where
+        F: FnMut(PortalAccessPointEvent),
+    {
+        self.inner
+            .poll_access_point_events(|event| match event {
+                wifi::AccessPointEvent::Started { ip_config } => {
+                    on_event(PortalAccessPointEvent::Started {
+                        ip_config: PortalIpConfig::new(
+                            ip_config.ip,
+                            ip_config.gateway,
+                            ip_config.netmask,
+                        ),
+                    });
+                }
+                wifi::AccessPointEvent::ClientCountChanged { client_count } => {
+                    on_event(PortalAccessPointEvent::ClientCountChanged { client_count });
+                }
+                wifi::AccessPointEvent::Stopped => on_event(PortalAccessPointEvent::Stopped),
+            })
+            .await
+    }
+}
 
 #[derive(Debug, Clone)]
 struct DeviceConfig {
@@ -231,10 +298,11 @@ where
     S: ConfigStore + Clone + Send + Sync + 'static,
 {
     let _ = led.set_pixel(PREBOOT_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
+    let mut portal_wifi = PortalWifi::new(wifi);
     enter_config_mode(
         &CONFIG_SPEC,
         "preboot configuration window",
-        wifi,
+        &mut portal_wifi,
         store,
         EspHttpBackend::new(),
         EspPlatform::new(),
@@ -257,10 +325,11 @@ where
 {
     error!("{message}");
     let _ = led.set_pixel(REQUIRED_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
+    let mut portal_wifi = PortalWifi::new(wifi);
     enter_config_mode(
         &CONFIG_SPEC,
         message,
-        wifi,
+        &mut portal_wifi,
         store,
         EspHttpBackend::new(),
         EspPlatform::new(),

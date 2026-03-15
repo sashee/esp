@@ -1,6 +1,9 @@
 #[cfg(target_os = "espidf")]
 pub mod esp_idf;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::{anyhow, bail, Context, Result};
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +15,6 @@ use std::{
     sync::Arc,
     vec::Vec,
 };
-use wifi::{AccessPointConfig, AccessPointEvent, IpConfig, Wifi as WifiController, WifiBackend};
 
 const SCHEMA_KEY: &str = "_schema";
 
@@ -96,6 +98,53 @@ pub struct ConfigTiming {
     pub connected_timeout: Duration,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IpConfig {
+    pub ip: String,
+    pub gateway: String,
+    pub netmask: String,
+}
+
+impl IpConfig {
+    pub fn new(
+        ip: impl Into<String>,
+        gateway: impl Into<String>,
+        netmask: impl Into<String>,
+    ) -> Self {
+        Self {
+            ip: ip.into(),
+            gateway: gateway.into(),
+            netmask: netmask.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessPointConfig {
+    pub ssid: String,
+    pub channel: u8,
+    pub max_connections: u8,
+    pub ip_config: IpConfig,
+}
+
+impl AccessPointConfig {
+    pub fn new(ssid: impl Into<String>, ip_config: IpConfig) -> Self {
+        Self {
+            ssid: ssid.into(),
+            channel: 1,
+            max_connections: 1,
+            ip_config,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AccessPointEvent {
+    Started { ip_config: IpConfig },
+    ClientCountChanged { client_count: usize },
+    Stopped,
+}
+
 pub trait ConfigStore {
     fn read(&self, keys: &[&str]) -> Result<BTreeMap<String, String>>;
 
@@ -115,6 +164,19 @@ pub trait ConfigClock {
     fn now(&self) -> Instant;
 
     async fn sleep(&self, duration: Duration);
+}
+
+#[allow(async_fn_in_trait)]
+pub trait ConfigWifi {
+    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig>;
+
+    async fn stop_access_point(&mut self) -> Result<()>;
+
+    async fn is_access_point_started(&mut self) -> Result<bool>;
+
+    async fn poll_access_point_events<F>(&mut self, on_event: F) -> Result<()>
+    where
+        F: FnMut(AccessPointEvent);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,10 +230,10 @@ const CONFIG_HTTP_ENDPOINTS: &[HttpEndpoint] = &[
     },
 ];
 
-pub async fn enter_config_mode<B, S, H, P, C>(
+pub async fn enter_config_mode<W, S, H, P, C>(
     spec: &'static ConfigSpec,
     reason: &str,
-    wifi: &mut WifiController<B>,
+    wifi: &mut W,
     store: S,
     http: H,
     platform: P,
@@ -179,7 +241,7 @@ pub async fn enter_config_mode<B, S, H, P, C>(
     timing: ConfigTiming,
 ) -> Result<()>
 where
-    B: WifiBackend,
+    W: ConfigWifi,
     S: ConfigStore + Clone + Send + Sync + 'static,
     H: ConfigHttpBackend,
     P: ConfigPlatform,
@@ -237,7 +299,7 @@ where
             return Ok(());
         }
 
-        if !wifi.is_started().await? {
+        if !wifi.is_access_point_started().await? {
             bail!("softap stopped unexpectedly");
         }
 
@@ -326,9 +388,9 @@ struct ConfigActivity {
     reboot_requested: AtomicBool,
 }
 
-async fn start_access_point<B>(wifi: &mut WifiController<B>, ap_ssid: &str) -> Result<()>
+async fn start_access_point<W>(wifi: &mut W, ap_ssid: &str) -> Result<()>
 where
-    B: WifiBackend,
+    W: ConfigWifi,
 {
     let ip_config = default_ap_ip_config();
     let mut ap = AccessPointConfig::new(ap_ssid, ip_config.clone());
@@ -343,9 +405,9 @@ where
     Ok(())
 }
 
-async fn stop_access_point<B>(wifi: &mut WifiController<B>) -> Result<()>
+async fn stop_access_point<W>(wifi: &mut W) -> Result<()>
 where
-    B: WifiBackend,
+    W: ConfigWifi,
 {
     wifi.stop_access_point().await
 }
