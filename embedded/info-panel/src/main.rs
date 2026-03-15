@@ -26,7 +26,8 @@ use esp_idf_svc::{
     wifi::{AuthMethod, ClientConfiguration, Configuration as WifiConfiguration, EspWifi},
 };
 use log::{error, info};
-use rgb_led::{RGB8, WS2812RMT};
+use rgb_led::{ColorOrder, Rgb, RgbLed};
+use rgb_led::esp_idf::Ws2812RmtBackend;
 use std::string::String;
 
 const TFT_WIDTH: u16 = 128;
@@ -57,10 +58,18 @@ const REQUIRED_PORTAL_TIMING: PortalTiming = PortalTiming {
 };
 
 const RUNTIME_ERROR_REBOOT_DELAY: Duration = Duration::from_secs(10 * 60);
+const PORTAL_LED_BRIGHTNESS: f32 = 0.06;
+const CONNECTING_LED: Rgb = Rgb::new(1.0, 0.78, 0.0);
+const CONNECTED_LED: Rgb = Rgb::new(0.0, 0.0, 1.0);
+const ERROR_LED: Rgb = Rgb::new(1.0, 0.0, 0.0);
+const PREBOOT_PORTAL_LED: Rgb = Rgb::new(0.0, 0.53, 1.0);
+const REQUIRED_PORTAL_LED: Rgb = Rgb::new(0.0, 1.0, 0.0);
+const OFF_LED: Rgb = Rgb::new(0.0, 0.0, 0.0);
 
 type SpiDev<'d> = SpiDeviceDriver<'d, SpiDriver<'d>>;
 type DcPin<'d> = PinDriver<'d, Output>;
 type RstPin<'d> = PinDriver<'d, Output>;
+type Led<'d> = RgbLed<Ws2812RmtBackend<'d>>;
 
 #[derive(Debug, Clone)]
 struct DeviceConfig {
@@ -83,6 +92,10 @@ impl DeviceConfig {
                 .map_err(|_| anyhow!("LED brightness is not a valid u8"))?,
         })
     }
+
+    fn led_brightness(&self) -> f32 {
+        self.led_brightness as f32 / 255.0
+    }
 }
 
 fn main() -> Result<()> {
@@ -101,7 +114,7 @@ async fn async_main() -> Result<()> {
     let modem = peripherals.modem;
     let spi2 = peripherals.spi2;
     let pins = peripherals.pins;
-    let mut led = WS2812RMT::new(pins.gpio8)?;
+    let mut led = RgbLed::new(Ws2812RmtBackend::new(pins.gpio8)?, ColorOrder::RGB);
     let mut wifi = EspWifi::new(modem, sysloop, Some(nvs.clone()))?;
 
     let config = match read_nvs(&PORTAL_SPEC, nvs.clone())? {
@@ -146,7 +159,7 @@ async fn async_main() -> Result<()> {
     let managed_run = async {
         connect_device_wifi(&mut wifi, &config, &mut led).await?;
 
-        led.set_pixel(brightness_color(config.led_brightness, 0, 0, 255))?;
+        led.set_pixel(CONNECTED_LED, config.led_brightness())?;
         info!("Wi-Fi connected");
 
         let spi_driver = SpiDriver::new(
@@ -202,11 +215,11 @@ async fn async_main() -> Result<()> {
 }
 
 async fn maybe_run_preboot_config_portal(
-    led: &mut WS2812RMT<'_>,
+    led: &mut Led<'_>,
     wifi: &mut EspWifi<'static>,
     nvs: EspDefaultNvsPartition,
 ) -> Result<()> {
-    let _ = led.set_pixel(RGB8::new(0, 8, 15));
+    let _ = led.set_pixel(PREBOOT_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
     enter_config_mode(
         &PORTAL_SPEC,
         "preboot configuration window",
@@ -215,30 +228,30 @@ async fn maybe_run_preboot_config_portal(
         PREBOOT_PORTAL_TIMING,
     )
     .await?;
-    let _ = led.set_pixel(RGB8::new(0, 0, 0));
+    let _ = led.set_pixel(OFF_LED, PORTAL_LED_BRIGHTNESS);
     Ok(())
 }
 
 async fn enter_required_config_mode(
-    led: &mut WS2812RMT<'_>,
+    led: &mut Led<'_>,
     wifi: &mut EspWifi<'static>,
     nvs: EspDefaultNvsPartition,
     message: &str,
 ) -> Result<()> {
     error!("{message}");
-    let _ = led.set_pixel(RGB8::new(0, 15, 0));
+    let _ = led.set_pixel(REQUIRED_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
     enter_config_mode(&PORTAL_SPEC, message, wifi, nvs, REQUIRED_PORTAL_TIMING).await?;
     reboot();
 }
 
 async fn handle_runtime_error(
-    led: &mut WS2812RMT<'_>,
+    led: &mut Led<'_>,
     wifi: &mut EspWifi<'static>,
     config: &DeviceConfig,
     message: &str,
 ) -> Result<()> {
     error!("runtime error: {message}");
-    let _ = led.set_pixel(brightness_color(config.led_brightness, 0, 255, 0));
+    let _ = led.set_pixel(ERROR_LED, config.led_brightness());
     let _ = wifi.disconnect();
     let _ = wifi.stop();
     info!(
@@ -256,9 +269,9 @@ fn should_offer_preboot_config(reset_reason: ResetReason) -> bool {
 async fn connect_device_wifi(
     wifi: &mut EspWifi<'static>,
     config: &DeviceConfig,
-    led: &mut WS2812RMT<'_>,
+    led: &mut Led<'_>,
 ) -> Result<()> {
-    led.set_pixel(brightness_color(config.led_brightness, 255, 200, 0))?;
+    led.set_pixel(CONNECTING_LED, config.led_brightness())?;
     info!("Starting Wi-Fi (yellow: connecting)");
 
     let _ = wifi.disconnect();
@@ -507,16 +520,4 @@ fn reboot() -> ! {
     unsafe {
         esp_idf_svc::sys::esp_restart();
     }
-}
-
-fn brightness_color(brightness: u8, r: u8, g: u8, b: u8) -> RGB8 {
-    fn scale(brightness: u8, channel: u8) -> u8 {
-        ((brightness as u16 * channel as u16) / 255) as u8
-    }
-
-    RGB8::new(
-        scale(brightness, r),
-        scale(brightness, g),
-        scale(brightness, b),
-    )
 }

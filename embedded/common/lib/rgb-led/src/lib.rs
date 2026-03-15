@@ -1,80 +1,83 @@
-use anyhow::Result;
-use core::time::Duration;
-use esp_idf_hal::{
-    gpio::OutputPin,
-    rmt::{
-        config::{MemoryAccess, TransmitConfig, TxChannelConfig},
-        encoder::CopyEncoder,
-        PinState, Symbol, TxChannelDriver,
-    },
-    units::Hertz,
-};
+#[cfg(target_os = "espidf")]
+pub mod esp_idf;
 
-pub use rgb::RGB8;
+#[cfg(test)]
+mod tests;
 
-const RMT_LED_RESOLUTION_HZ: Hertz = Hertz(10_000_000);
-const T0H: Duration = Duration::from_nanos(350);
-const T0L: Duration = Duration::from_nanos(800);
-const T1H: Duration = Duration::from_nanos(700);
-const T1L: Duration = Duration::from_nanos(600);
-const TRESET: Duration = Duration::from_micros(281);
-
-pub struct WS2812RMT<'a> {
-    tx_channel: TxChannelDriver<'a>,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rgb {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
 }
 
-impl<'d> WS2812RMT<'d> {
-    // Rust ESP Board gpio2,  ESP32-C3-DevKitC-02 gpio8
-    pub fn new(led: impl OutputPin + 'd) -> Result<Self> {
-        let tx_channel = TxChannelDriver::new(
-            led,
-            &TxChannelConfig {
-                resolution: RMT_LED_RESOLUTION_HZ,
-                memory_access: MemoryAccess::Indirect {
-                    memory_block_symbols: 64,
-                },
-                ..Default::default()
-            },
-        )?;
-
-        Ok(Self { tx_channel })
+impl Rgb {
+    pub const fn new(r: f32, g: f32, b: f32) -> Self {
+        Self { r, g, b }
     }
+}
 
-    pub fn set_pixel(&mut self, rgb: RGB8) -> Result<()> {
-        let zero = Symbol::new_with(
-            RMT_LED_RESOLUTION_HZ,
-            PinState::High,
-            T0H,
-            PinState::Low,
-            T0L,
-        )?;
-        let one = Symbol::new_with(
-            RMT_LED_RESOLUTION_HZ,
-            PinState::High,
-            T1H,
-            PinState::Low,
-            T1L,
-        )?;
-        let reset =
-            Symbol::new_half_split(RMT_LED_RESOLUTION_HZ, PinState::Low, PinState::Low, TRESET)?;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColorOrder {
+    RGB,
+    RBG,
+    GRB,
+    GBR,
+    BRG,
+    BGR,
+}
 
-        let mut signal = Vec::with_capacity(25);
-        signal.push(reset);
-
-        for byte in [rgb.g, rgb.r, rgb.b] {
-            for bit in 0..8 {
-                let symbol = if (byte & (0x80 >> bit)) != 0 {
-                    one
-                } else {
-                    zero
-                };
-                signal.push(symbol);
-            }
+impl ColorOrder {
+    const fn bytes(self, rgb: [u8; 3]) -> [u8; 3] {
+        match self {
+            Self::RGB => rgb,
+            Self::RBG => [rgb[0], rgb[2], rgb[1]],
+            Self::GRB => [rgb[1], rgb[0], rgb[2]],
+            Self::GBR => [rgb[1], rgb[2], rgb[0]],
+            Self::BRG => [rgb[2], rgb[0], rgb[1]],
+            Self::BGR => [rgb[2], rgb[1], rgb[0]],
         }
-
-        self.tx_channel
-            .send_and_wait(CopyEncoder::new()?, &signal, &TransmitConfig::default())?;
-
-        Ok(())
     }
+}
+
+pub trait RgbLedBackend {
+    type Error;
+
+    fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> Result<(), Self::Error>;
+}
+
+pub struct RgbLed<B> {
+    backend: B,
+    color_order: ColorOrder,
+}
+
+impl<B> RgbLed<B>
+where
+    B: RgbLedBackend,
+{
+    pub const fn new(backend: B, color_order: ColorOrder) -> Self {
+        Self {
+            backend,
+            color_order,
+        }
+    }
+
+    pub fn set_pixel(&mut self, rgb: Rgb, brightness: f32) -> Result<(), B::Error> {
+        self.backend
+            .set_pixel_bytes(pixel_bytes(self.color_order, rgb, brightness))
+    }
+}
+
+pub fn pixel_bytes(color_order: ColorOrder, rgb: Rgb, brightness: f32) -> [u8; 3] {
+    color_order.bytes([
+        scale_channel(rgb.r, brightness),
+        scale_channel(rgb.g, brightness),
+        scale_channel(rgb.b, brightness),
+    ])
+}
+
+fn scale_channel(channel: f32, brightness: f32) -> u8 {
+    let channel = channel.clamp(0.0, 1.0);
+    let brightness = brightness.clamp(0.0, 1.0);
+    (channel * brightness * 255.0).round() as u8
 }

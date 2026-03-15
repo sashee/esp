@@ -85,7 +85,6 @@ let
       targets = [ "riscv32imac-unknown-none-elf" ];
     }
   );
-
   stdManifest = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.toml";
 
   espIdfRev = "2c211b236707889e8400c4dc5644dd5c4ee071e0";
