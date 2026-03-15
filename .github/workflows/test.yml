@@ -21,6 +21,9 @@ jobs:
     - name: Build config-portal
       run: nix-build
       working-directory: embedded/common/lib/config-portal/
+    - name: Build tft-display
+      run: nix-build
+      working-directory: embedded/common/lib/tft-display/
     - name: Build wifi
       run: nix-build
       working-directory: embedded/common/lib/wifi/
