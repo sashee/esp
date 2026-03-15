@@ -161,7 +161,7 @@ async fn async_main() -> Result<()> {
     }
 
     let managed_run = async {
-        connect_device_wifi(&mut wifi, &config, &mut led)?;
+        connect_device_wifi(&mut wifi, &config, &mut led).await?;
 
         led.set_pixel(CONNECTED_LED, config.led_brightness())?;
         info!("Wi-Fi connected");
@@ -200,7 +200,7 @@ async fn async_main() -> Result<()> {
         loop {
             Timer::after(Duration::from_secs(30)).await;
 
-            if !wifi.is_connected()? {
+            if !wifi.is_connected().await? {
                 bail!("wifi disconnected");
             }
 
@@ -256,7 +256,7 @@ async fn handle_runtime_error(
 ) -> Result<()> {
     error!("runtime error: {message}");
     let _ = led.set_pixel(ERROR_LED, config.led_brightness());
-    let _ = wifi.reset();
+    let _ = wifi.reset().await;
     info!(
         "waiting {:?} before restart after runtime error",
         RUNTIME_ERROR_REBOOT_DELAY
@@ -269,36 +269,38 @@ fn should_offer_preboot_config(reset_reason: ResetReason) -> bool {
     matches!(reset_reason, ResetReason::PowerOn)
 }
 
-fn connect_device_wifi(
+async fn connect_device_wifi(
     wifi: &mut DeviceWifi<'static>,
     config: &DeviceConfig,
     led: &mut Led<'_>,
 ) -> Result<()> {
     let brightness = config.led_brightness();
-    let connection = wifi.connect(
-        &WifiCredentials::new(&config.ssid, &config.password),
-        |state| match state {
-            ConnectState::Starting => {
-                let _ = led.set_pixel(CONNECTING_LED, brightness);
-                info!("Starting Wi-Fi (yellow: connecting)");
-            }
-            ConnectState::Scanning => info!("Scanning for Wi-Fi networks"),
-            ConnectState::ScanComplete { networks_found } => {
-                info!("Wi-Fi scan complete: {networks_found} networks found");
-            }
-            ConnectState::Configuring { ssid, channel, .. } => {
-                info!(
-                    "Configuring Wi-Fi client for SSID {ssid} on channel {:?}",
-                    channel
-                );
-            }
-            ConnectState::Connecting => info!("Connecting to Wi-Fi access point"),
-            ConnectState::WaitingForIp => info!("Waiting for Wi-Fi DHCP lease"),
-            ConnectState::Connected { ip } => {
-                info!("Wi-Fi netif is up: ip={ip}");
-            }
-        },
-    )?;
+    let connection = wifi
+        .connect(
+            &WifiCredentials::new(&config.ssid, &config.password),
+            |state| match state {
+                ConnectState::Starting => {
+                    let _ = led.set_pixel(CONNECTING_LED, brightness);
+                    info!("Starting Wi-Fi (yellow: connecting)");
+                }
+                ConnectState::Scanning => info!("Scanning for Wi-Fi networks"),
+                ConnectState::ScanComplete { networks_found } => {
+                    info!("Wi-Fi scan complete: {networks_found} networks found");
+                }
+                ConnectState::Configuring { ssid, channel, .. } => {
+                    info!(
+                        "Configuring Wi-Fi client for SSID {ssid} on channel {:?}",
+                        channel
+                    );
+                }
+                ConnectState::Connecting => info!("Connecting to Wi-Fi access point"),
+                ConnectState::WaitingForIp => info!("Waiting for Wi-Fi DHCP lease"),
+                ConnectState::Connected { ip } => {
+                    info!("Wi-Fi netif is up: ip={ip}");
+                }
+            },
+        )
+        .await?;
 
     info!("Wi-Fi connected with IP {}", connection.ip);
     Ok(())

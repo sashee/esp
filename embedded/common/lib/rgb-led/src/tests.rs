@@ -1,20 +1,42 @@
 use crate::{pixel_bytes, ColorOrder, Rgb, RgbLed, RgbLedBackend};
-use core::convert::Infallible;
+
+#[derive(Debug, Eq, PartialEq)]
+struct MockError(&'static str);
+
+impl core::fmt::Display for MockError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.0)
+    }
+}
 
 struct MockBackend {
     last_bytes: Option<[u8; 3]>,
+    fail_with: Option<&'static str>,
 }
 
 impl MockBackend {
     fn new() -> Self {
-        Self { last_bytes: None }
+        Self {
+            last_bytes: None,
+            fail_with: None,
+        }
+    }
+
+    fn failing(message: &'static str) -> Self {
+        Self {
+            last_bytes: None,
+            fail_with: Some(message),
+        }
     }
 }
 
 impl RgbLedBackend for MockBackend {
-    type Error = Infallible;
+    type Error = MockError;
 
     fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> Result<(), Self::Error> {
+        if let Some(message) = self.fail_with {
+            return Err(MockError(message));
+        }
         self.last_bytes = Some(bytes);
         Ok(())
     }
@@ -45,8 +67,51 @@ fn color_order_reorders_scaled_bytes() {
     let rgb = Rgb::new(1.0, 0.5, 0.25);
 
     assert_eq!(pixel_bytes(ColorOrder::RGB, rgb, 0.5), [128, 64, 32]);
+    assert_eq!(pixel_bytes(ColorOrder::RBG, rgb, 0.5), [128, 32, 64]);
     assert_eq!(pixel_bytes(ColorOrder::GRB, rgb, 0.5), [64, 128, 32]);
+    assert_eq!(pixel_bytes(ColorOrder::GBR, rgb, 0.5), [64, 32, 128]);
+    assert_eq!(pixel_bytes(ColorOrder::BRG, rgb, 0.5), [32, 128, 64]);
     assert_eq!(pixel_bytes(ColorOrder::BGR, rgb, 0.5), [32, 64, 128]);
+}
+
+#[test]
+fn rounding_matches_nearest_byte_boundaries() {
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(0.5 / 255.0, 0.0, 0.0), 1.0),
+        [1, 0, 0]
+    );
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(127.4 / 255.0, 0.0, 0.0), 1.0),
+        [127, 0, 0]
+    );
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(127.5 / 255.0, 0.0, 0.0), 1.0),
+        [128, 0, 0]
+    );
+}
+
+#[test]
+fn channel_and_brightness_clamp_independently() {
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(0.8, 0.4, 0.2), 2.0),
+        [204, 102, 51]
+    );
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(-0.5, 0.5, 1.5), 0.5),
+        [0, 64, 128]
+    );
+}
+
+#[test]
+fn white_levels_scale_as_expected() {
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(1.0, 1.0, 1.0), 1.0),
+        [255, 255, 255]
+    );
+    assert_eq!(
+        pixel_bytes(ColorOrder::RGB, Rgb::new(1.0, 1.0, 1.0), 0.5),
+        [128, 128, 128]
+    );
 }
 
 #[test]
@@ -56,4 +121,13 @@ fn rgb_led_passes_calculated_bytes_to_backend() {
     led.set_pixel(Rgb::new(1.0, 0.25, 0.75), 0.5).unwrap();
 
     assert_eq!(led.backend.last_bytes, Some([32, 96, 128]));
+}
+
+#[test]
+fn rgb_led_propagates_backend_errors() {
+    let mut led = RgbLed::new(MockBackend::failing("backend failed"), ColorOrder::RGB);
+
+    let err = led.set_pixel(Rgb::new(1.0, 0.25, 0.75), 0.5).unwrap_err();
+
+    assert_eq!(err.to_string(), "backend failed");
 }

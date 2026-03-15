@@ -5,11 +5,13 @@ use esp_idf_svc::{
     handle::RawHandle,
     nvs::EspDefaultNvsPartition,
     sys,
+    timer::EspTaskTimerService,
     wifi::{
-        AccessPointConfiguration, AuthMethod, BlockingWifi, ClientConfiguration, Configuration,
+        AccessPointConfiguration, AsyncWifi, AuthMethod, ClientConfiguration, Configuration,
         EspWifi,
     },
 };
+use std::time::Duration;
 use std::vec::Vec;
 
 use crate::{
@@ -17,14 +19,23 @@ use crate::{
     FoundNetwork, IpConfig, WifiBackend, WifiCredentials,
 };
 
+fn ignore_wifi_state_error(err: esp_idf_svc::sys::EspError) -> Result<()> {
+    if err.code() == sys::ESP_ERR_WIFI_NOT_STARTED || err.code() == sys::ESP_ERR_WIFI_NOT_CONNECT {
+        Ok(())
+    } else {
+        Err(err.into())
+    }
+}
+
 pub struct EspWifiBackend<'d> {
-    wifi: EspWifi<'d>,
-    sysloop: EspSystemEventLoop,
+    wifi: AsyncWifi<EspWifi<'d>>,
 }
 
 impl<'d> EspWifiBackend<'d> {
-    pub fn new(wifi: EspWifi<'d>, sysloop: EspSystemEventLoop) -> Self {
-        Self { wifi, sysloop }
+    pub fn new(wifi: EspWifi<'d>, sysloop: EspSystemEventLoop) -> Result<Self> {
+        let timer_service = EspTaskTimerService::new()?;
+        let wifi = AsyncWifi::wrap(wifi, sysloop, timer_service)?;
+        Ok(Self { wifi })
     }
 
     pub fn new_with_default_nvs(
@@ -33,39 +44,38 @@ impl<'d> EspWifiBackend<'d> {
         nvs: Option<EspDefaultNvsPartition>,
     ) -> Result<Self> {
         let wifi = EspWifi::new(modem, sysloop.clone(), nvs)?;
-        Ok(Self::new(wifi, sysloop))
-    }
-
-    pub fn into_inner(self) -> EspWifi<'d> {
-        self.wifi
+        Self::new(wifi, sysloop)
     }
 }
 
 impl<'d> WifiBackend for EspWifiBackend<'d> {
-    fn start(&mut self) -> Result<()> {
+    async fn start(&mut self) -> Result<()> {
         self.wifi
             .set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
-        self.wifi.start()?;
+        self.wifi.start().await?;
         Ok(())
     }
 
-    fn stop(&mut self) -> Result<()> {
-        self.wifi.stop()?;
-        Ok(())
+    async fn stop(&mut self) -> Result<()> {
+        match self.wifi.stop().await {
+            Ok(()) => Ok(()),
+            Err(err) => ignore_wifi_state_error(err),
+        }
     }
 
-    fn disconnect(&mut self) -> Result<()> {
-        self.wifi.disconnect()?;
-        Ok(())
+    async fn disconnect(&mut self) -> Result<()> {
+        match self.wifi.disconnect().await {
+            Ok(()) => Ok(()),
+            Err(err) => ignore_wifi_state_error(err),
+        }
     }
 
-    fn is_started(&mut self) -> Result<bool> {
+    async fn is_started(&mut self) -> Result<bool> {
         Ok(self.wifi.is_started().unwrap_or(false))
     }
 
-    fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>> {
-        let mut wifi = BlockingWifi::wrap(&mut self.wifi, self.sysloop.clone())?;
-        let access_points = wifi.scan()?;
+    async fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>> {
+        let access_points = self.wifi.scan().await?;
 
         Ok(access_points
             .into_iter()
@@ -77,7 +87,7 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
             .collect())
     }
 
-    fn configure_client(
+    async fn configure_client(
         &mut self,
         credentials: &WifiCredentials,
         channel: Option<u8>,
@@ -104,17 +114,26 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
         Ok(())
     }
 
-    fn connect(&mut self) -> Result<()> {
-        self.wifi.connect()?;
-        Ok(())
+    async fn connect(&mut self, timeout: Duration) -> Result<ConnectionInfo> {
+        self.wifi.wifi_mut().connect()?;
+        self.wifi
+            .wifi_wait(|this| this.wifi().is_connected().map(|s| !s), Some(timeout))
+            .await?;
+        self.wifi
+            .ip_wait_while(|this| this.wifi().is_up().map(|s| !s), Some(timeout))
+            .await?;
+
+        self.connection_info()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("WiFi connected without IP configuration"))
     }
 
-    fn is_connected(&mut self) -> Result<bool> {
+    async fn is_connected(&mut self) -> Result<bool> {
         Ok(self.wifi.is_connected().unwrap_or(false))
     }
 
-    fn connection_info(&mut self) -> Result<Option<ConnectionInfo>> {
-        let ip_info = match self.wifi.sta_netif().get_ip_info() {
+    async fn connection_info(&mut self) -> Result<Option<ConnectionInfo>> {
+        let ip_info = match self.wifi.wifi().sta_netif().get_ip_info() {
             Ok(ip_info) => ip_info,
             Err(_) => return Ok(None),
         };
@@ -127,7 +146,7 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
         Ok(Some(ConnectionInfo { ip }))
     }
 
-    fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<()> {
+    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<()> {
         let mut access_point = AccessPointConfiguration::default();
         access_point.ssid =
             config.ssid.as_str().try_into().map_err(|_| {
@@ -141,25 +160,25 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
 
         self.wifi
             .set_configuration(&Configuration::AccessPoint(access_point))?;
-        configure_softap_netif(&mut self.wifi, &config.ip_config)?;
-        self.wifi.start()?;
+        configure_softap_netif(self.wifi.wifi_mut(), &config.ip_config)?;
+        self.wifi.start().await?;
         Ok(())
     }
 
-    fn stop_access_point(&mut self) -> Result<()> {
-        self.wifi.stop()?;
+    async fn stop_access_point(&mut self) -> Result<()> {
+        self.wifi.stop().await?;
         Ok(())
     }
 
-    fn access_point_status(&mut self) -> Result<AccessPointStatus> {
+    async fn access_point_status(&mut self) -> Result<AccessPointStatus> {
         Ok(AccessPointStatus {
             is_started: self.wifi.is_started().unwrap_or(false),
             client_count: softap_client_count(),
         })
     }
 
-    fn access_point_ip_config(&mut self) -> Result<IpConfig> {
-        let ip_info = self.wifi.ap_netif().get_ip_info()?;
+    async fn access_point_ip_config(&mut self) -> Result<IpConfig> {
+        let ip_info = self.wifi.wifi().ap_netif().get_ip_info()?;
         Ok(IpConfig::new(
             ip_info.ip.to_string(),
             ip_info.subnet.gateway.to_string(),

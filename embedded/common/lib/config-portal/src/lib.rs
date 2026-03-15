@@ -116,7 +116,7 @@ where
     error!("entering config portal: {reason}");
 
     let ap_ssid = make_ap_ssid(spec.ap_prefix)?;
-    start_access_point(wifi, &ap_ssid)?;
+    start_access_point(wifi, &ap_ssid).await?;
     let activity = Arc::new(PortalActivity::default());
     let server = start_http_server(spec, partition, reason.to_string(), activity.clone())?;
 
@@ -141,7 +141,8 @@ where
                 }
             }
             AccessPointEvent::Stopped => {}
-        })?;
+        })
+        .await?;
 
         if activity.reboot_requested.load(Ordering::Relaxed) {
             reboot_now();
@@ -156,11 +157,11 @@ where
 
         if elapsed >= limit {
             warn!("config portal timed out after {:?}", elapsed);
-            stop_access_point(wifi)?;
+            stop_access_point(wifi).await?;
             return Ok(());
         }
 
-        if !wifi.is_started()? {
+        if !wifi.is_started().await? {
             bail!("softap stopped unexpectedly");
         }
 
@@ -268,7 +269,7 @@ struct PortalActivity {
     reboot_requested: AtomicBool,
 }
 
-fn start_access_point<B>(wifi: &mut WifiController<B>, ap_ssid: &str) -> Result<()>
+async fn start_access_point<B>(wifi: &mut WifiController<B>, ap_ssid: &str) -> Result<()>
 where
     B: WifiBackend,
 {
@@ -277,7 +278,7 @@ where
     ap.channel = 1;
     ap.max_connections = 1;
 
-    let started_ip_config = wifi.start_access_point(&ap)?;
+    let started_ip_config = wifi.start_access_point(&ap).await?;
     info!("config portal SoftAP mode started");
     log_heap_status();
 
@@ -286,11 +287,11 @@ where
     Ok(())
 }
 
-fn stop_access_point<B>(wifi: &mut WifiController<B>) -> Result<()>
+async fn stop_access_point<B>(wifi: &mut WifiController<B>) -> Result<()>
 where
     B: WifiBackend,
 {
-    wifi.stop_access_point()
+    wifi.stop_access_point().await
 }
 
 fn start_http_server<T>(

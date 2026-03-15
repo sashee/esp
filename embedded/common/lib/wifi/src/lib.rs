@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(target_os = "espidf")]
 pub mod esp_idf;
@@ -119,14 +119,12 @@ pub enum AccessPointEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConnectOptions {
     pub timeout: Duration,
-    pub poll_interval: Duration,
 }
 
 impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
-            poll_interval: Duration::from_millis(250),
         }
     }
 }
@@ -150,41 +148,38 @@ pub enum ConnectState {
     },
 }
 
+#[allow(async_fn_in_trait)]
 pub trait WifiBackend {
-    fn start(&mut self) -> Result<()>;
-    fn stop(&mut self) -> Result<()>;
-    fn disconnect(&mut self) -> Result<()>;
-    fn is_started(&mut self) -> Result<bool>;
-    fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>>;
-    fn configure_client(
+    async fn start(&mut self) -> Result<()>;
+    async fn stop(&mut self) -> Result<()>;
+    async fn disconnect(&mut self) -> Result<()>;
+    async fn is_started(&mut self) -> Result<bool>;
+    async fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>>;
+    async fn configure_client(
         &mut self,
         credentials: &WifiCredentials,
         channel: Option<u8>,
         auth: ClientAuth,
     ) -> Result<()>;
-    fn connect(&mut self) -> Result<()>;
-    fn is_connected(&mut self) -> Result<bool>;
-    fn connection_info(&mut self) -> Result<Option<ConnectionInfo>>;
-    fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<()>;
-    fn stop_access_point(&mut self) -> Result<()>;
-    fn access_point_status(&mut self) -> Result<AccessPointStatus>;
-    fn access_point_ip_config(&mut self) -> Result<IpConfig>;
-
-    fn wait(&mut self, duration: Duration) {
-        std::thread::sleep(duration);
-    }
+    async fn connect(&mut self, timeout: Duration) -> Result<ConnectionInfo>;
+    async fn is_connected(&mut self) -> Result<bool>;
+    async fn connection_info(&mut self) -> Result<Option<ConnectionInfo>>;
+    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<()>;
+    async fn stop_access_point(&mut self) -> Result<()>;
+    async fn access_point_status(&mut self) -> Result<AccessPointStatus>;
+    async fn access_point_ip_config(&mut self) -> Result<IpConfig>;
 }
 
 pub struct Wifi<B> {
     backend: B,
-    last_access_point_status: Option<AccessPointStatus>,
+    last_access_point_event_status: Option<AccessPointStatus>,
 }
 
 impl<B> Wifi<B> {
     pub fn new(backend: B) -> Self {
         Self {
             backend,
-            last_access_point_status: None,
+            last_access_point_event_status: None,
         }
     }
 
@@ -205,34 +200,34 @@ impl<B> Wifi<B>
 where
     B: WifiBackend,
 {
-    pub fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>> {
-        self.reset()?;
-        self.backend.start()?;
-        let networks = self.backend.scan_networks();
-        let _ = self.backend.stop();
+    pub async fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>> {
+        self.reset().await?;
+        self.backend.start().await?;
+        let networks = self.backend.scan_networks().await;
+        let _ = self.backend.stop().await;
         networks
     }
 
-    pub fn reset(&mut self) -> Result<()> {
-        let _ = self.backend.disconnect();
-        let _ = self.backend.stop();
-        self.last_access_point_status = None;
+    pub async fn reset(&mut self) -> Result<()> {
+        self.backend.disconnect().await?;
+        self.backend.stop().await?;
+        self.last_access_point_event_status = None;
         Ok(())
     }
 
-    pub fn is_started(&mut self) -> Result<bool> {
-        self.backend.is_started()
+    pub async fn is_started(&mut self) -> Result<bool> {
+        self.backend.is_started().await
     }
 
-    pub fn is_connected(&mut self) -> Result<bool> {
-        self.backend.is_connected()
+    pub async fn is_connected(&mut self) -> Result<bool> {
+        self.backend.is_connected().await
     }
 
-    pub fn connection_info(&mut self) -> Result<Option<ConnectionInfo>> {
-        self.backend.connection_info()
+    pub async fn connection_info(&mut self) -> Result<Option<ConnectionInfo>> {
+        self.backend.connection_info().await
     }
 
-    pub fn connect<F>(
+    pub async fn connect<F>(
         &mut self,
         credentials: &WifiCredentials,
         on_state: F,
@@ -241,9 +236,10 @@ where
         F: FnMut(ConnectState),
     {
         self.connect_with_options(credentials, ConnectOptions::default(), on_state)
+            .await
     }
 
-    pub fn connect_with_options<F>(
+    pub async fn connect_with_options<F>(
         &mut self,
         credentials: &WifiCredentials,
         options: ConnectOptions,
@@ -255,11 +251,11 @@ where
         validate_credentials(credentials)?;
 
         on_state(ConnectState::Starting);
-        self.reset()?;
-        self.backend.start()?;
+        self.reset().await?;
+        self.backend.start().await?;
 
         on_state(ConnectState::Scanning);
-        let networks = self.backend.scan_networks()?;
+        let networks = self.backend.scan_networks().await?;
         on_state(ConnectState::ScanComplete {
             networks_found: networks.len(),
         });
@@ -271,68 +267,55 @@ where
             channel,
             auth,
         });
-        self.backend.configure_client(credentials, channel, auth)?;
+        self.backend
+            .configure_client(credentials, channel, auth)
+            .await?;
 
         on_state(ConnectState::Connecting);
-        self.backend.connect()?;
-
         on_state(ConnectState::WaitingForIp);
-        let deadline = Instant::now() + options.timeout;
+        let connection_info = self.backend.connect(options.timeout).await?;
 
-        loop {
-            if self.backend.is_connected()? {
-                if let Some(connection_info) = self.backend.connection_info()? {
-                    on_state(ConnectState::Connected {
-                        ip: connection_info.ip.clone(),
-                    });
-                    return Ok(connection_info);
-                }
-            }
+        on_state(ConnectState::Connected {
+            ip: connection_info.ip.clone(),
+        });
 
-            if Instant::now() >= deadline {
-                bail!("timed out waiting for WiFi connection")
-            }
-
-            self.backend.wait(options.poll_interval);
-        }
+        Ok(connection_info)
     }
 
-    pub fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig> {
+    pub async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig> {
         validate_access_point_config(config)?;
-        self.reset()?;
-        self.backend.start_access_point(config)?;
-        let status = self.backend.access_point_status()?;
-        self.last_access_point_status = Some(status);
-        self.backend.access_point_ip_config()
+        self.reset().await?;
+        self.backend.start_access_point(config).await?;
+        let _ = self.backend.access_point_status().await?;
+        self.last_access_point_event_status = None;
+        self.backend.access_point_ip_config().await
     }
 
-    pub fn stop_access_point(&mut self) -> Result<()> {
-        self.last_access_point_status = None;
-        self.backend.stop_access_point()
+    pub async fn stop_access_point(&mut self) -> Result<()> {
+        self.last_access_point_event_status = None;
+        self.backend.stop_access_point().await
     }
 
-    pub fn access_point_status(&mut self) -> Result<AccessPointStatus> {
-        let status = self.backend.access_point_status()?;
-        self.last_access_point_status = Some(status);
-        Ok(status)
+    pub async fn access_point_status(&mut self) -> Result<AccessPointStatus> {
+        self.backend.access_point_status().await
     }
 
-    pub fn access_point_ip_config(&mut self) -> Result<IpConfig> {
-        self.backend.access_point_ip_config()
+    pub async fn access_point_ip_config(&mut self) -> Result<IpConfig> {
+        self.backend.access_point_ip_config().await
     }
 
-    pub fn poll_access_point_events<F>(&mut self, mut on_event: F) -> Result<()>
+    pub async fn poll_access_point_events<F>(&mut self, mut on_event: F) -> Result<()>
     where
         F: FnMut(AccessPointEvent),
     {
-        let status = self.backend.access_point_status()?;
-        let previous = self.last_access_point_status.replace(status);
+        let status = self.backend.access_point_status().await?;
+        let previous = self.last_access_point_event_status.replace(status);
 
         match previous {
             None => {
                 if status.is_started {
                     on_event(AccessPointEvent::Started {
-                        ip_config: self.backend.access_point_ip_config()?,
+                        ip_config: self.backend.access_point_ip_config().await?,
                     });
                     on_event(AccessPointEvent::ClientCountChanged {
                         client_count: status.client_count,
@@ -342,7 +325,7 @@ where
             Some(previous) => {
                 if !previous.is_started && status.is_started {
                     on_event(AccessPointEvent::Started {
-                        ip_config: self.backend.access_point_ip_config()?,
+                        ip_config: self.backend.access_point_ip_config().await?,
                     });
                 }
 
