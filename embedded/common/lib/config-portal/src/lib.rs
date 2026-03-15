@@ -76,6 +76,10 @@ pub struct StoredConfig {
 }
 
 impl StoredConfig {
+    pub fn new(values: BTreeMap<String, String>) -> Self {
+        Self { values }
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }

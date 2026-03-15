@@ -28,6 +28,7 @@ embedded-svc = "0.29.0"
 rgb-led = { path = "../common/lib/rgb-led" }
 tft-display = { path = "../common/lib/tft-display" }
 wifi = { path = "../common/lib/wifi" }
+info-panel-lib = { path = "../info-panel-lib" }
 
 [build-dependencies]
 embuild = "0.33.1"

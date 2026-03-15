@@ -28,7 +28,7 @@ use tft_display::TftDisplay;
 use wifi::esp_idf::EspWifiBackend;
 use wifi::Wifi as WifiController;
 
-use info_panel::{
+use info_panel_lib::{
     BootReason, Clock, HttpClient, Platform,
 };
 
@@ -134,7 +134,7 @@ async fn async_main() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
-    let store = NvsConfigStore::new(nvs.clone(), info_panel::CONFIG_SPEC.namespace);
+    let store = NvsConfigStore::new(nvs.clone(), info_panel_lib::CONFIG_SPEC.namespace);
 
     let platform = EspPlatform;
 
@@ -168,10 +168,10 @@ async fn async_main() -> Result<()> {
     let dc = PinDriver::output(pins.gpio2)?;
     let rst = PinDriver::output(pins.gpio1)?;
 
-    let display = TftDisplay::new(SpiTftBackend::new(spi, dc, rst), EspDelay, info_panel::TFT_WIDTH, info_panel::TFT_HEIGHT);
+    let display = TftDisplay::new(SpiTftBackend::new(spi, dc, rst), EspDelay, info_panel_lib::TFT_WIDTH, info_panel_lib::TFT_HEIGHT);
 
     // run() never returns
-    match info_panel::run(
+    match info_panel_lib::run(
         &mut wifi,
         store,
         http_backend,

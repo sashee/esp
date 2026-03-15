@@ -1,0 +1,16 @@
+[package]
+name = "info-panel-lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+embassy-time = { version = "0.5.0", features = ["generic-queue-8"] }
+log = "0.4"
+config-portal = { path = "../common/lib/config-portal" }
+wifi = { path = "../common/lib/wifi" }
+rgb-led = { path = "../common/lib/rgb-led" }
+tft-display = { path = "../common/lib/tft-display" }

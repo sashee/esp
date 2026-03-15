@@ -1,5 +1,3 @@
-#![feature(never_type)]
-
 use anyhow::{anyhow, bail, Result};
 use config_portal::{
     enter_config_mode, AccessPointConfig as PortalAccessPointConfig,
@@ -277,7 +275,7 @@ pub async fn run<W, S, H, P, Ck, L, HC>(
     mut http_client: HC,
     mut display: impl DisplayWrite,
     led: &mut L,
-) -> Result<!>
+) -> Result<()>
 where
     W: WifiBackend,
     S: ConfigStore + Clone + Send + Sync + 'static,
@@ -441,7 +439,7 @@ async fn run_required_config_mode<W, S, H, P, Ck, L>(
     clock: Ck,
     led: &mut L,
     message: &str,
-) -> Result<!>
+) -> Result<()>
 where
     W: WifiBackend,
     S: ConfigStore + Clone + Send + Sync + 'static,

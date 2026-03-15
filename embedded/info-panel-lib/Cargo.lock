@@ -608,7 +608,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2585c80f488be431ad14e199883a05ff31576adaa23014befa0f040fd91490b8"
 dependencies = [
  "atomic-waker",
- "critical-section",
  "embassy-sync",
  "embedded-can",
  "embedded-hal 0.2.7",
@@ -632,8 +631,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "033432e951f49284a4b8874cdb2d7fb940a3b0181460f452ca7414ebe66babca"
 dependencies = [
  "embassy-futures",
- "embassy-time-driver",
- "embassy-time-queue-utils",
  "embedded-hal-async",
  "embedded-svc",
  "embuild",
@@ -907,23 +904,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "info-panel"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "config-portal",
- "embassy-time",
- "embedded-svc",
- "embuild",
- "esp-idf-svc",
- "info-panel-lib",
- "log",
- "rgb-led",
- "tft-display",
- "wifi",
-]
-
-[[package]]
 name = "info-panel-lib"
 version = "0.1.0"
 dependencies = [
@@ -1088,9 +1068,9 @@ dependencies = [
 
 [[package]]
 name = "num_enum"
-version = "0.7.6"
+version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+checksum = "b1207a7e20ad57b847bbddc6776b968420d38292bbfe2089accff5e19e82454c"
 dependencies = [
  "num_enum_derive",
  "rustversion",
@@ -1098,9 +1078,9 @@ dependencies = [
 
 [[package]]
 name = "num_enum_derive"
-version = "0.7.6"
+version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+checksum = "ff32365de1b6743cb203b710788263c44a03de03802daf96092f2da4fe6ba4d7"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

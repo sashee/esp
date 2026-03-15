@@ -57,6 +57,7 @@ let
 
   filteredSrc = filterRepoSubtree [
     "embedded/common"
+    "embedded/info-panel-lib"
     appDir
   ];
 
@@ -347,7 +348,7 @@ let
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-TfGdxBUuX7wS2TxiluXZkaeUsyHY8qRuYBrKrZIWz+4=";
+    outputHash = "sha256-cloJAc0PLWaea0vUi3Er8St3URnPHy1fb2qkdtVAD7U=";
 
     installPhase = ''
       export HOME="$TMPDIR"
