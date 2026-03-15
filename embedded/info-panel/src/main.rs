@@ -6,7 +6,6 @@ use embassy_time::{Duration, Timer};
 use embedded_svc::{
     http::{client::Client, Method},
     io::Read,
-    wifi::Wifi,
 };
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -23,12 +22,12 @@ use esp_idf_svc::{
     },
     http::client::{Configuration as HttpConfiguration, EspHttpConnection},
     nvs::EspDefaultNvsPartition,
-    wifi::{AuthMethod, ClientConfiguration, Configuration as WifiConfiguration, EspWifi},
 };
 use log::{error, info};
-use rgb_led::{ColorOrder, Rgb, RgbLed};
 use rgb_led::esp_idf::Ws2812RmtBackend;
+use rgb_led::{ColorOrder, Rgb, RgbLed};
 use std::string::String;
+use wifi::{esp_idf::EspWifiBackend, ConnectState, Wifi as WifiController, WifiCredentials};
 
 const TFT_WIDTH: u16 = 128;
 const TFT_HEIGHT: u16 = 160;
@@ -70,6 +69,7 @@ type SpiDev<'d> = SpiDeviceDriver<'d, SpiDriver<'d>>;
 type DcPin<'d> = PinDriver<'d, Output>;
 type RstPin<'d> = PinDriver<'d, Output>;
 type Led<'d> = RgbLed<Ws2812RmtBackend<'d>>;
+type DeviceWifi<'d> = WifiController<EspWifiBackend<'d>>;
 
 #[derive(Debug, Clone)]
 struct DeviceConfig {
@@ -115,7 +115,11 @@ async fn async_main() -> Result<()> {
     let spi2 = peripherals.spi2;
     let pins = peripherals.pins;
     let mut led = RgbLed::new(Ws2812RmtBackend::new(pins.gpio8)?, ColorOrder::RGB);
-    let mut wifi = EspWifi::new(modem, sysloop, Some(nvs.clone()))?;
+    let mut wifi = WifiController::new(EspWifiBackend::new_with_default_nvs(
+        modem,
+        sysloop,
+        Some(nvs.clone()),
+    )?);
 
     let config = match read_nvs(&PORTAL_SPEC, nvs.clone())? {
         NvsConfigState::Ready(config) => match DeviceConfig::from_stored(config) {
@@ -157,7 +161,7 @@ async fn async_main() -> Result<()> {
     }
 
     let managed_run = async {
-        connect_device_wifi(&mut wifi, &config, &mut led).await?;
+        connect_device_wifi(&mut wifi, &config, &mut led)?;
 
         led.set_pixel(CONNECTED_LED, config.led_brightness())?;
         info!("Wi-Fi connected");
@@ -196,7 +200,7 @@ async fn async_main() -> Result<()> {
         loop {
             Timer::after(Duration::from_secs(30)).await;
 
-            if !wifi.is_connected().unwrap_or(false) {
+            if !wifi.is_connected()? {
                 bail!("wifi disconnected");
             }
 
@@ -216,7 +220,7 @@ async fn async_main() -> Result<()> {
 
 async fn maybe_run_preboot_config_portal(
     led: &mut Led<'_>,
-    wifi: &mut EspWifi<'static>,
+    wifi: &mut DeviceWifi<'static>,
     nvs: EspDefaultNvsPartition,
 ) -> Result<()> {
     let _ = led.set_pixel(PREBOOT_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
@@ -234,7 +238,7 @@ async fn maybe_run_preboot_config_portal(
 
 async fn enter_required_config_mode(
     led: &mut Led<'_>,
-    wifi: &mut EspWifi<'static>,
+    wifi: &mut DeviceWifi<'static>,
     nvs: EspDefaultNvsPartition,
     message: &str,
 ) -> Result<()> {
@@ -246,14 +250,13 @@ async fn enter_required_config_mode(
 
 async fn handle_runtime_error(
     led: &mut Led<'_>,
-    wifi: &mut EspWifi<'static>,
+    wifi: &mut DeviceWifi<'static>,
     config: &DeviceConfig,
     message: &str,
 ) -> Result<()> {
     error!("runtime error: {message}");
     let _ = led.set_pixel(ERROR_LED, config.led_brightness());
-    let _ = wifi.disconnect();
-    let _ = wifi.stop();
+    let _ = wifi.reset();
     info!(
         "waiting {:?} before restart after runtime error",
         RUNTIME_ERROR_REBOOT_DELAY
@@ -266,54 +269,39 @@ fn should_offer_preboot_config(reset_reason: ResetReason) -> bool {
     matches!(reset_reason, ResetReason::PowerOn)
 }
 
-async fn connect_device_wifi(
-    wifi: &mut EspWifi<'static>,
+fn connect_device_wifi(
+    wifi: &mut DeviceWifi<'static>,
     config: &DeviceConfig,
     led: &mut Led<'_>,
 ) -> Result<()> {
-    led.set_pixel(CONNECTING_LED, config.led_brightness())?;
-    info!("Starting Wi-Fi (yellow: connecting)");
-
-    let _ = wifi.disconnect();
-    let _ = wifi.stop();
-
-    let mut client_cfg = ClientConfiguration::default();
-    client_cfg.ssid = config
-        .ssid
-        .as_str()
-        .try_into()
-        .map_err(|_| anyhow!("SSID is too long"))?;
-    client_cfg.password = config
-        .password
-        .as_str()
-        .try_into()
-        .map_err(|_| anyhow!("password is too long"))?;
-
-    if config.password.is_empty() {
-        client_cfg.auth_method = AuthMethod::None;
-    }
-
-    wifi.set_configuration(&WifiConfiguration::Client(client_cfg))?;
-    wifi.start()?;
-    wifi.connect()?;
-
-    for _ in 0..180 {
-        if wifi.is_connected().unwrap_or(false) {
-            if let Ok(ip_info) = wifi.sta_netif().get_ip_info() {
-                if ip_info.ip.to_string() != "0.0.0.0" {
-                    info!(
-                        "Wi-Fi netif is up: ip={}, mask={}, dns={:?}",
-                        ip_info.ip, ip_info.subnet, ip_info.dns
-                    );
-                    return Ok(());
-                }
+    let brightness = config.led_brightness();
+    let connection = wifi.connect(
+        &WifiCredentials::new(&config.ssid, &config.password),
+        |state| match state {
+            ConnectState::Starting => {
+                let _ = led.set_pixel(CONNECTING_LED, brightness);
+                info!("Starting Wi-Fi (yellow: connecting)");
             }
-        }
+            ConnectState::Scanning => info!("Scanning for Wi-Fi networks"),
+            ConnectState::ScanComplete { networks_found } => {
+                info!("Wi-Fi scan complete: {networks_found} networks found");
+            }
+            ConnectState::Configuring { ssid, channel, .. } => {
+                info!(
+                    "Configuring Wi-Fi client for SSID {ssid} on channel {:?}",
+                    channel
+                );
+            }
+            ConnectState::Connecting => info!("Connecting to Wi-Fi access point"),
+            ConnectState::WaitingForIp => info!("Waiting for Wi-Fi DHCP lease"),
+            ConnectState::Connected { ip } => {
+                info!("Wi-Fi netif is up: ip={ip}");
+            }
+        },
+    )?;
 
-        Timer::after(Duration::from_millis(250)).await;
-    }
-
-    bail!("timed out waiting for Wi-Fi netif/DHCP")
+    info!("Wi-Fi connected with IP {}", connection.ip);
+    Ok(())
 }
 
 async fn fetch_and_draw_rgb565_with_retries<'d>(

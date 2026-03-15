@@ -18,6 +18,9 @@ jobs:
     - name: Build rgb-led
       run: nix-build
       working-directory: embedded/common/lib/rgb-led/
+    - name: Build wifi
+      run: nix-build
+      working-directory: embedded/common/lib/wifi/
     - name: Build info-panel
       run: nix-build
       working-directory: embedded/info-panel/

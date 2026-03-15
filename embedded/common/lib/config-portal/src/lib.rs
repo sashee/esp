@@ -7,11 +7,9 @@ use embedded_svc::{
     io::Read,
 };
 use esp_idf_svc::{
-    handle::RawHandle,
     http::server::{Configuration as HttpConfiguration, EspHttpServer},
     nvs::{EspNvs, EspNvsPartition, NvsPartitionId},
     sys::{self, ESP_ERR_NVS_NOT_FOUND},
-    wifi::{AccessPointConfiguration, AuthMethod, Configuration as WifiConfiguration, EspWifi},
 };
 use log::{error, info, warn};
 use std::{
@@ -20,6 +18,7 @@ use std::{
     sync::Arc,
     vec::Vec,
 };
+use wifi::{AccessPointConfig, AccessPointEvent, IpConfig, Wifi as WifiController, WifiBackend};
 
 const SCHEMA_KEY: &str = "_schema";
 
@@ -103,15 +102,16 @@ pub struct PortalTiming {
     pub connected_timeout: Duration,
 }
 
-pub async fn enter_config_mode<T>(
+pub async fn enter_config_mode<T, B>(
     spec: &'static PortalSpec,
     reason: &str,
-    wifi: &mut EspWifi<'static>,
+    wifi: &mut WifiController<B>,
     partition: EspNvsPartition<T>,
     timing: PortalTiming,
 ) -> Result<()>
 where
     T: NvsPartitionId + Send + Sync + 'static,
+    B: WifiBackend,
 {
     error!("entering config portal: {reason}");
 
@@ -127,10 +127,21 @@ where
     let mut client_connected = false;
 
     loop {
-        if !client_connected && softap_has_clients() {
-            client_connected = true;
-            info!("config portal station connected");
-        }
+        wifi.poll_access_point_events(|event| match event {
+            AccessPointEvent::Started { ip_config } => {
+                info!(
+                    "config portal AP started: ssid={}, ip={}, gateway={}, subnet={}",
+                    ap_ssid, ip_config.ip, ip_config.gateway, ip_config.netmask
+                );
+            }
+            AccessPointEvent::ClientCountChanged { client_count } => {
+                if !client_connected && client_count > 0 {
+                    client_connected = true;
+                    info!("config portal station connected");
+                }
+            }
+            AccessPointEvent::Stopped => {}
+        })?;
 
         if activity.reboot_requested.load(Ordering::Relaxed) {
             reboot_now();
@@ -149,7 +160,7 @@ where
             return Ok(());
         }
 
-        if !wifi.is_started().unwrap_or(false) {
+        if !wifi.is_started()? {
             bail!("softap stopped unexpectedly");
         }
 
@@ -257,38 +268,29 @@ struct PortalActivity {
     reboot_requested: AtomicBool,
 }
 
-fn start_access_point(wifi: &mut EspWifi<'static>, ap_ssid: &str) -> Result<()> {
-    let _ = wifi.disconnect();
-    let _ = wifi.stop();
-
-    let mut ap = AccessPointConfiguration::default();
-    ap.ssid = ap_ssid
-        .try_into()
-        .map_err(|_| anyhow!("AP SSID is too long"))?;
+fn start_access_point<B>(wifi: &mut WifiController<B>, ap_ssid: &str) -> Result<()>
+where
+    B: WifiBackend,
+{
+    let ip_config = default_ap_ip_config();
+    let mut ap = AccessPointConfig::new(ap_ssid, ip_config.clone());
     ap.channel = 1;
-    ap.auth_method = AuthMethod::None;
     ap.max_connections = 1;
 
-    wifi.set_configuration(&WifiConfiguration::AccessPoint(ap))?;
-    configure_softap_netif(wifi)?;
-    wifi.start()?;
+    let started_ip_config = wifi.start_access_point(&ap)?;
     info!("config portal SoftAP mode started");
     log_heap_status();
 
-    if let Ok(ip_info) = wifi.ap_netif().get_ip_info() {
-        info!(
-            "config portal AP started: ssid={}, ip={}, gateway={}, subnet={}",
-            ap_ssid, ip_info.ip, ip_info.subnet.gateway, ip_info.subnet.mask
-        );
-    }
+    log_access_point_started(ap_ssid, &started_ip_config);
 
     Ok(())
 }
 
-fn stop_access_point(wifi: &mut EspWifi<'static>) -> Result<()> {
-    let _ = wifi.disconnect();
-    wifi.stop()?;
-    Ok(())
+fn stop_access_point<B>(wifi: &mut WifiController<B>) -> Result<()>
+where
+    B: WifiBackend,
+{
+    wifi.stop_access_point()
 }
 
 fn start_http_server<T>(
@@ -680,11 +682,6 @@ fn escape_html(value: &str) -> String {
     escaped
 }
 
-fn softap_has_clients() -> bool {
-    let mut list = sys::wifi_sta_list_t::default();
-    unsafe { sys::esp_wifi_ap_get_sta_list(&mut list as *mut _) == 0 && list.num > 0 }
-}
-
 fn log_request_headers(request: &impl Headers) {
     for name in [
         "Host",
@@ -714,27 +711,15 @@ fn log_heap_status() {
     );
 }
 
-fn configure_softap_netif(wifi: &mut EspWifi<'_>) -> Result<()> {
-    let handle = wifi.ap_netif_mut().handle();
-    let mut ip_info = sys::esp_netif_ip_info_t {
-        ip: ipv4_addr(192, 168, 4, 1),
-        gw: ipv4_addr(192, 168, 4, 1),
-        netmask: ipv4_addr(255, 255, 255, 0),
-    };
-
-    unsafe {
-        sys::esp_netif_dhcps_stop(handle);
-    }
-    esp_idf_svc::sys::esp!(unsafe { sys::esp_netif_set_ip_info(handle, &mut ip_info as *mut _) })?;
-    esp_idf_svc::sys::esp!(unsafe { sys::esp_netif_dhcps_start(handle) })?;
-
-    Ok(())
+fn default_ap_ip_config() -> IpConfig {
+    IpConfig::new("192.168.4.1", "192.168.4.1", "255.255.255.0")
 }
 
-fn ipv4_addr(a: u8, b: u8, c: u8, d: u8) -> sys::esp_ip4_addr_t {
-    sys::esp_ip4_addr_t {
-        addr: u32::to_be(u32::from_be_bytes([a, b, c, d])),
-    }
+fn log_access_point_started(ap_ssid: &str, ip_config: &IpConfig) {
+    info!(
+        "config portal AP started: ssid={}, ip={}, gateway={}, subnet={}",
+        ap_ssid, ip_config.ip, ip_config.gateway, ip_config.netmask
+    );
 }
 
 fn reboot_now() -> ! {
