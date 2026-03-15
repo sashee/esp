@@ -1,16 +1,10 @@
+#[cfg(target_os = "espidf")]
+pub mod esp_idf;
+
 use anyhow::{anyhow, bail, Context, Result};
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
-use embassy_time::{Duration, Instant, Timer};
-use embedded_svc::{
-    http::{Headers, Method},
-    io::Read,
-};
-use esp_idf_svc::{
-    http::server::{Configuration as HttpConfiguration, EspHttpServer},
-    nvs::{EspNvs, EspNvsPartition, NvsPartitionId},
-    sys::{self, ESP_ERR_NVS_NOT_FOUND},
-};
+use embassy_time::{Duration, Instant};
 use log::{error, info, warn};
 use std::{
     collections::BTreeMap,
@@ -67,7 +61,7 @@ impl FieldSpec {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PortalSpec {
+pub struct ConfigSpec {
     pub namespace: &'static str,
     pub ap_prefix: &'static str,
     pub title: &'static str,
@@ -90,40 +84,122 @@ impl StoredConfig {
 }
 
 #[derive(Clone, Debug)]
-pub enum NvsConfigState {
+pub enum ConfigState {
     Missing,
     SchemaMismatch(StoredConfig),
     Ready(StoredConfig),
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PortalTiming {
+pub struct ConfigTiming {
     pub idle_timeout: Duration,
     pub connected_timeout: Duration,
 }
 
-pub async fn enter_config_mode<T, B>(
-    spec: &'static PortalSpec,
+pub trait ConfigStore {
+    fn read(&self, keys: &[&str]) -> Result<BTreeMap<String, String>>;
+
+    fn write(&self, values: &BTreeMap<String, String>) -> Result<()>;
+
+    fn remove(&self, keys: &[&str]) -> Result<()>;
+}
+
+pub trait ConfigPlatform {
+    fn mac_address(&self) -> Result<[u8; 6]>;
+
+    fn reboot(&self) -> !;
+}
+
+#[allow(async_fn_in_trait)]
+pub trait ConfigClock {
+    fn now(&self) -> Instant;
+
+    async fn sleep(&self, duration: Duration);
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Other(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpEndpoint {
+    pub method: &'static str,
+    pub path: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub struct HttpRequest {
+    pub method: HttpMethod,
+    pub path: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HttpResponse {
+    pub status_code: u16,
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
+}
+
+pub trait ConfigHttpBackend {
+    type Server;
+
+    fn start<H>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
+    where
+        H: Fn(HttpRequest) -> Result<HttpResponse> + Send + Sync + 'static;
+}
+
+const CONFIG_HTTP_ENDPOINTS: &[HttpEndpoint] = &[
+    HttpEndpoint {
+        method: "GET",
+        path: "/",
+    },
+    HttpEndpoint {
+        method: "POST",
+        path: "/save",
+    },
+    HttpEndpoint {
+        method: "POST",
+        path: "/reset",
+    },
+];
+
+pub async fn enter_config_mode<B, S, H, P, C>(
+    spec: &'static ConfigSpec,
     reason: &str,
     wifi: &mut WifiController<B>,
-    partition: EspNvsPartition<T>,
-    timing: PortalTiming,
+    store: S,
+    http: H,
+    platform: P,
+    clock: C,
+    timing: ConfigTiming,
 ) -> Result<()>
 where
-    T: NvsPartitionId + Send + Sync + 'static,
     B: WifiBackend,
+    S: ConfigStore + Clone + Send + Sync + 'static,
+    H: ConfigHttpBackend,
+    P: ConfigPlatform,
+    C: ConfigClock,
 {
     error!("entering config portal: {reason}");
 
-    let ap_ssid = make_ap_ssid(spec.ap_prefix)?;
+    let ap_ssid = ap_ssid(spec.ap_prefix, platform.mac_address()?);
     start_access_point(wifi, &ap_ssid).await?;
-    let activity = Arc::new(PortalActivity::default());
-    let server = start_http_server(spec, partition, reason.to_string(), activity.clone())?;
+    let activity = Arc::new(ConfigActivity::default());
+    let reason = reason.to_string();
+    let http_activity = activity.clone();
+    let server = http.start(CONFIG_HTTP_ENDPOINTS, move |request| {
+        handle_http_request(spec, &reason, &store, &http_activity, request)
+    })?;
 
     info!("config portal ready on SSID {ap_ssid}");
     let _server = server;
 
-    let started_at = Instant::now();
+    let started_at = clock.now();
     let mut client_connected = false;
 
     loop {
@@ -145,10 +221,10 @@ where
         .await?;
 
         if activity.reboot_requested.load(Ordering::Relaxed) {
-            reboot_now();
+            platform.reboot();
         }
 
-        let elapsed = Instant::now() - started_at;
+        let elapsed = clock.now() - started_at;
         let limit = if client_connected {
             timing.connected_timeout
         } else {
@@ -165,68 +241,52 @@ where
             bail!("softap stopped unexpectedly");
         }
 
-        Timer::after(Duration::from_millis(250)).await;
+        clock.sleep(Duration::from_millis(250)).await;
     }
 }
 
-pub fn read_nvs<T>(
-    spec: &'static PortalSpec,
-    partition: EspNvsPartition<T>,
-) -> Result<NvsConfigState>
+pub fn read_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<ConfigState>
 where
-    T: NvsPartitionId,
+    S: ConfigStore,
 {
-    let nvs = match EspNvs::new(partition, spec.namespace, false) {
-        Ok(nvs) => nvs,
-        Err(err) if err.code() == ESP_ERR_NVS_NOT_FOUND => return Ok(NvsConfigState::Missing),
-        Err(err) => return Err(err.into()),
-    };
-    let expected_schema = schema_signature(spec);
-    let stored_schema = read_string(&nvs, SCHEMA_KEY)?;
-
-    let Some(stored_schema) = stored_schema else {
-        return Ok(NvsConfigState::Missing);
+    let stored = store.read(&spec_keys(spec))?;
+    let Some(stored_schema) = stored.get(SCHEMA_KEY) else {
+        return Ok(ConfigState::Missing);
     };
 
-    if stored_schema != expected_schema {
-        return Ok(NvsConfigState::SchemaMismatch(read_existing_values(
-            &nvs, spec,
-        )?));
+    if stored_schema != &schema_signature(spec) {
+        return Ok(ConfigState::SchemaMismatch(stored_config_from_map(
+            spec, &stored,
+        )));
     }
 
     let mut values = BTreeMap::new();
     for field in spec.fields {
-        let Some(value) = read_string(&nvs, field.key)? else {
-            return Ok(NvsConfigState::Missing);
+        let Some(value) = stored.get(field.key) else {
+            return Ok(ConfigState::Missing);
         };
-        values.insert(field.key.to_string(), value);
+        values.insert(field.key.to_string(), value.clone());
     }
 
-    Ok(NvsConfigState::Ready(StoredConfig { values }))
+    Ok(ConfigState::Ready(StoredConfig { values }))
 }
 
-pub fn clear_nvs<T>(spec: &'static PortalSpec, partition: EspNvsPartition<T>) -> Result<()>
+pub fn clear_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<()>
 where
-    T: NvsPartitionId,
+    S: ConfigStore,
 {
-    let nvs = EspNvs::new(partition, spec.namespace, true)?;
-    for field in spec.fields {
-        let _ = nvs.remove(field.key)?;
-    }
-    let _ = nvs.remove(SCHEMA_KEY)?;
-    Ok(())
+    store.remove(&spec_keys(spec))
 }
 
-pub fn save_to_nvs<T>(
-    spec: &'static PortalSpec,
-    partition: EspNvsPartition<T>,
+pub fn save_config<S>(
+    spec: &'static ConfigSpec,
+    store: &S,
     submitted: &BTreeMap<String, String>,
 ) -> Result<StoredConfig>
 where
-    T: NvsPartitionId,
+    S: ConfigStore,
 {
-    let nvs = EspNvs::new(partition.clone(), spec.namespace, true)?;
-    let previous = read_existing_config(spec, partition)?;
+    let previous = read_existing_config(spec, store)?;
     validate_submitted(spec, submitted, &previous)?;
 
     let mut saved = BTreeMap::new();
@@ -247,25 +307,22 @@ where
                 submitted.get(field.key).cloned().unwrap_or_default()
             }
         };
-
-        nvs.set_str(field.key, &value)?;
         saved.insert(field.key.to_string(), value);
     }
 
-    nvs.set_str(SCHEMA_KEY, &schema_signature(spec))?;
+    let mut persisted = saved.clone();
+    persisted.insert(SCHEMA_KEY.to_string(), schema_signature(spec));
+    store.write(&persisted)?;
 
     Ok(StoredConfig { values: saved })
 }
 
-pub fn make_ap_ssid(prefix: &str) -> Result<String> {
-    let mut mac = [0_u8; 6];
-    esp_idf_svc::sys::esp!(unsafe { sys::esp_efuse_mac_get_default(mac.as_mut_ptr()) })?;
-
-    Ok(format!("{prefix}-{:02X}{:02X}", mac[4], mac[5]))
+pub fn ap_ssid(prefix: &str, mac: [u8; 6]) -> String {
+    format!("{prefix}-{:02X}{:02X}", mac[4], mac[5])
 }
 
 #[derive(Default)]
-struct PortalActivity {
+struct ConfigActivity {
     reboot_requested: AtomicBool,
 }
 
@@ -280,7 +337,6 @@ where
 
     let started_ip_config = wifi.start_access_point(&ap).await?;
     info!("config portal SoftAP mode started");
-    log_heap_status();
 
     log_access_point_started(ap_ssid, &started_ip_config);
 
@@ -294,78 +350,64 @@ where
     wifi.stop_access_point().await
 }
 
-fn start_http_server<T>(
-    spec: &'static PortalSpec,
-    partition: EspNvsPartition<T>,
-    reason: String,
-    activity: Arc<PortalActivity>,
-) -> Result<EspHttpServer<'static>>
+fn handle_http_request<S>(
+    spec: &'static ConfigSpec,
+    reason: &str,
+    store: &S,
+    activity: &ConfigActivity,
+    request: HttpRequest,
+) -> Result<HttpResponse>
 where
-    T: NvsPartitionId + Send + Sync + 'static,
+    S: ConfigStore,
 {
-    let mut server = EspHttpServer::new(&HttpConfiguration::default())?;
+    info!(
+        "config portal request: {} {}",
+        request_method_name(&request.method),
+        request.path
+    );
+    log_request_headers(&request.headers);
 
-    let get_partition = partition.clone();
-    let get_reason = reason.clone();
-    server.fn_handler::<anyhow::Error, _>("/", Method::Get, move |request| {
-        info!("config portal request: GET /");
-        log_request_headers(&request);
-        let state = read_nvs(spec, get_partition.clone())?;
-        let body = render_form(spec, &get_reason, &state, None, None);
-        let mut response = request.into_ok_response()?;
-        use embedded_svc::io::Write as _;
-        response.write_all(body.as_bytes())?;
-        Ok(())
-    })?;
-
-    let save_partition = partition.clone();
-    let save_activity = activity.clone();
-    server.fn_handler::<anyhow::Error, _>("/save", Method::Post, move |mut request| {
-        info!("config portal request: POST /save");
-        log_request_headers(&request);
-        let form = read_form_body(&mut request)?;
-        if let Err(err) = save_to_nvs(spec, save_partition.clone(), &form) {
-            let state = read_nvs(spec, save_partition.clone())?;
-            let body = render_form(spec, &reason, &state, Some(&form), Some(&err.to_string()));
-            let mut response = request.into_ok_response()?;
-            use embedded_svc::io::Write as _;
-            response.write_all(body.as_bytes())?;
-            return Ok(());
+    match (&request.method, request.path.as_str()) {
+        (HttpMethod::Get, "/") => {
+            let state = read_config(spec, store)?;
+            Ok(html_response(render_form(spec, reason, &state, None, None)))
         }
+        (HttpMethod::Post, "/save") => {
+            let form = parse_request_form(&request)?;
+            if let Err(err) = save_config(spec, store, &form) {
+                let state = read_config(spec, store)?;
+                return Ok(html_response(render_form(
+                    spec,
+                    reason,
+                    &state,
+                    Some(&form),
+                    Some(&err.to_string()),
+                )));
+            }
 
-        let body = success_page("Saved configuration. Rebooting...");
-        let mut response = request.into_ok_response()?;
-        use embedded_svc::io::Write as _;
-        response.write_all(body.as_bytes())?;
-        save_activity
-            .reboot_requested
-            .store(true, Ordering::Relaxed);
-        Ok(())
-    })?;
-
-    let reset_partition = partition;
-    let reset_activity = activity;
-    server.fn_handler::<anyhow::Error, _>("/reset", Method::Post, move |request| {
-        info!("config portal request: POST /reset");
-        log_request_headers(&request);
-        clear_nvs(spec, reset_partition.clone())?;
-        let body = success_page("Reset stored configuration. Rebooting...");
-        let mut response = request.into_ok_response()?;
-        use embedded_svc::io::Write as _;
-        response.write_all(body.as_bytes())?;
-        reset_activity
-            .reboot_requested
-            .store(true, Ordering::Relaxed);
-        Ok(())
-    })?;
-
-    Ok(server)
+            activity.reboot_requested.store(true, Ordering::Relaxed);
+            Ok(html_response(success_page(
+                "Saved configuration. Rebooting...",
+            )))
+        }
+        (HttpMethod::Post, "/reset") => {
+            clear_config(spec, store)?;
+            activity.reboot_requested.store(true, Ordering::Relaxed);
+            Ok(html_response(success_page(
+                "Reset stored configuration. Rebooting...",
+            )))
+        }
+        (HttpMethod::Other(_), "/")
+        | (HttpMethod::Other(_), "/save")
+        | (HttpMethod::Other(_), "/reset") => Ok(text_response(405, "Method not allowed")),
+        (_, _) => Ok(text_response(404, "Not found")),
+    }
 }
 
 fn render_form(
-    spec: &PortalSpec,
+    spec: &ConfigSpec,
     reason: &str,
-    state: &NvsConfigState,
+    state: &ConfigState,
     submitted: Option<&BTreeMap<String, String>>,
     error_message: Option<&str>,
 ) -> String {
@@ -380,11 +422,11 @@ fn render_form(
     );
 
     match state {
-        NvsConfigState::Missing => html.push_str("<p class=\"note\">No stored configuration found.</p>"),
-        NvsConfigState::SchemaMismatch(_) => {
+        ConfigState::Missing => html.push_str("<p class=\"note\">No stored configuration found.</p>"),
+        ConfigState::SchemaMismatch(_) => {
             html.push_str("<p class=\"note\">Stored configuration does not match the current field schema. Saving will replace it.</p>")
         }
-        NvsConfigState::Ready(_) => {}
+        ConfigState::Ready(_) => {}
     }
 
     if let Some(error_message) = error_message {
@@ -455,7 +497,7 @@ fn success_page(message: &str) -> String {
     )
 }
 
-fn schema_signature(spec: &PortalSpec) -> String {
+fn schema_signature(spec: &ConfigSpec) -> String {
     let mut schema = String::new();
     schema.push_str(spec.namespace);
     schema.push('|');
@@ -483,45 +525,39 @@ fn schema_signature(spec: &PortalSpec) -> String {
     schema
 }
 
-fn read_string<T>(nvs: &EspNvs<T>, key: &str) -> Result<Option<String>>
-where
-    T: NvsPartitionId,
-{
-    let Some(len) = nvs.str_len(key)? else {
-        return Ok(None);
-    };
-    let mut buf = vec![0_u8; len];
-    Ok(nvs.get_str(key, &mut buf)?.map(ToString::to_string))
+fn spec_keys(spec: &ConfigSpec) -> Vec<&str> {
+    let mut keys = field_keys(spec);
+    keys.push(SCHEMA_KEY);
+    keys
 }
 
-fn read_existing_values<T>(nvs: &EspNvs<T>, spec: &PortalSpec) -> Result<StoredConfig>
-where
-    T: NvsPartitionId,
-{
+fn field_keys(spec: &ConfigSpec) -> Vec<&str> {
+    spec.fields.iter().map(|field| field.key).collect()
+}
+
+fn stored_config_from_map(spec: &ConfigSpec, stored: &BTreeMap<String, String>) -> StoredConfig {
     let mut values = BTreeMap::new();
     for field in spec.fields {
-        if let Some(value) = read_string(nvs, field.key)? {
-            values.insert(field.key.to_string(), value);
+        if let Some(value) = stored.get(field.key) {
+            values.insert(field.key.to_string(), value.clone());
         }
     }
-    Ok(StoredConfig { values })
+
+    StoredConfig { values }
 }
 
-fn read_existing_config<T>(spec: &PortalSpec, partition: EspNvsPartition<T>) -> Result<StoredConfig>
+fn read_existing_config<S>(spec: &ConfigSpec, store: &S) -> Result<StoredConfig>
 where
-    T: NvsPartitionId,
+    S: ConfigStore,
 {
-    let nvs = match EspNvs::new(partition, spec.namespace, false) {
-        Ok(nvs) => nvs,
-        Err(err) if err.code() == ESP_ERR_NVS_NOT_FOUND => return Ok(StoredConfig::default()),
-        Err(err) => return Err(err.into()),
-    };
-
-    read_existing_values(&nvs, spec)
+    Ok(stored_config_from_map(
+        spec,
+        &store.read(&field_keys(spec))?,
+    ))
 }
 
 fn validate_submitted(
-    spec: &PortalSpec,
+    spec: &ConfigSpec,
     submitted: &BTreeMap<String, String>,
     previous: &StoredConfig,
 ) -> Result<()> {
@@ -567,16 +603,16 @@ fn validate_submitted(
     Ok(())
 }
 
-fn stored_field_value<'a>(state: &'a NvsConfigState, key: &str) -> Option<&'a str> {
+fn stored_field_value<'a>(state: &'a ConfigState, key: &str) -> Option<&'a str> {
     match state {
-        NvsConfigState::Ready(config) | NvsConfigState::SchemaMismatch(config) => config.get(key),
-        NvsConfigState::Missing => None,
+        ConfigState::Ready(config) | ConfigState::SchemaMismatch(config) => config.get(key),
+        ConfigState::Missing => None,
     }
 }
 
 fn field_value<'a>(
     field: &FieldSpec,
-    state: &'a NvsConfigState,
+    state: &'a ConfigState,
     submitted: Option<&'a BTreeMap<String, String>>,
 ) -> &'a str {
     if matches!(field.kind, FieldKind::Password) {
@@ -592,25 +628,10 @@ fn field_value<'a>(
     stored_field_value(state, field.key).unwrap_or("")
 }
 
-fn read_form_body<T>(request: &mut T) -> Result<BTreeMap<String, String>>
-where
-    T: Read,
-    <T as embedded_svc::io::ErrorType>::Error: core::fmt::Debug,
-{
-    let mut body = Vec::new();
-    let mut buf = [0_u8; 256];
-
-    loop {
-        let read = request
-            .read(&mut buf)
-            .map_err(|err| anyhow!("failed reading form body: {err:?}"))?;
-        if read == 0 {
-            break;
-        }
-        body.extend_from_slice(&buf[..read]);
-    }
-
-    parse_urlencoded(&String::from_utf8(body).context("request body is not valid UTF-8")?)
+fn parse_request_form(request: &HttpRequest) -> Result<BTreeMap<String, String>> {
+    parse_urlencoded(
+        &String::from_utf8(request.body.clone()).context("request body is not valid UTF-8")?,
+    )
 }
 
 fn parse_urlencoded(input: &str) -> Result<BTreeMap<String, String>> {
@@ -683,7 +704,31 @@ fn escape_html(value: &str) -> String {
     escaped
 }
 
-fn log_request_headers(request: &impl Headers) {
+fn html_response(body: String) -> HttpResponse {
+    HttpResponse {
+        status_code: 200,
+        content_type: "text/html; charset=utf-8",
+        body: body.into_bytes(),
+    }
+}
+
+fn text_response(status_code: u16, body: &str) -> HttpResponse {
+    HttpResponse {
+        status_code,
+        content_type: "text/plain; charset=utf-8",
+        body: body.as_bytes().to_vec(),
+    }
+}
+
+fn request_method_name(method: &HttpMethod) -> &str {
+    match method {
+        HttpMethod::Get => "GET",
+        HttpMethod::Post => "POST",
+        HttpMethod::Other(method) => method.as_str(),
+    }
+}
+
+fn log_request_headers(headers: &BTreeMap<String, String>) {
     for name in [
         "Host",
         "User-Agent",
@@ -694,22 +739,10 @@ fn log_request_headers(request: &impl Headers) {
         "Referer",
         "Cookie",
     ] {
-        if let Some(value) = request.header(name) {
+        if let Some(value) = headers.get(name) {
             info!("config portal header: {}={}", name, value);
         }
     }
-}
-
-fn log_heap_status() {
-    let caps = sys::MALLOC_CAP_DEFAULT as u32;
-    let free = unsafe { sys::heap_caps_get_free_size(caps) };
-    let total = unsafe { sys::heap_caps_get_total_size(caps) };
-    let largest = unsafe { sys::heap_caps_get_largest_free_block(caps) };
-
-    info!(
-        "config portal heap: free={} total={} largest_block={}",
-        free, total, largest
-    );
 }
 
 fn default_ap_ip_config() -> IpConfig {
@@ -721,12 +754,6 @@ fn log_access_point_started(ap_ssid: &str, ip_config: &IpConfig) {
         "config portal AP started: ssid={}, ip={}, gateway={}, subnet={}",
         ap_ssid, ip_config.ip, ip_config.gateway, ip_config.netmask
     );
-}
-
-fn reboot_now() -> ! {
-    unsafe {
-        sys::esp_restart();
-    }
 }
 
 const STYLE: &str = "body{font-family:sans-serif;background:#f4f1ea;color:#1d1d1d;margin:0}main{max-width:28rem;margin:0 auto;padding:1.5rem}h1{margin:0 0 1rem;font-size:1.5rem}p{line-height:1.45}form{display:grid;gap:.75rem;margin:1rem 0}label{display:grid;gap:.35rem}input,button{font:inherit;padding:.75rem;border-radius:.5rem;border:1px solid #b9b2a7}button{background:#1d6b57;color:#fff;border:0}button.danger{background:#8a2f2f}.note{padding:.75rem;border-radius:.5rem;background:#fff7d6}.error{padding:.75rem;border-radius:.5rem;background:#f9d6d6;color:#6c1d1d}.hint{margin:-.4rem 0 0;font-size:.95rem;color:#5b564f}";

@@ -15,7 +15,10 @@ Current field kinds:
 Typical usage:
 
 ```rust
-use config_portal::{enter_error_mode, read_nvs, FieldSpec, NvsConfigState, PortalSpec};
+use config_portal::{
+    enter_config_mode, read_config, ConfigSpec, ConfigState, FieldSpec,
+};
+use config_portal::esp_idf::{EspClock, EspHttpBackend, EspPlatform, NvsConfigStore};
 
 static FIELDS: &[FieldSpec] = &[
     FieldSpec::text("ssid", "Wi-Fi SSID"),
@@ -23,22 +26,34 @@ static FIELDS: &[FieldSpec] = &[
     FieldSpec::text("url", "Info panel URL"),
 ];
 
-static SPEC: PortalSpec = PortalSpec {
+static SPEC: ConfigSpec = ConfigSpec {
     namespace: "config",
     ap_prefix: "InfoPanel",
     title: "Info Panel Setup",
     fields: FIELDS,
 };
 
-match read_nvs(&SPEC, nvs_partition.clone())? {
-    NvsConfigState::Ready(config) => {
+let store = NvsConfigStore::new(nvs_partition.clone(), SPEC.namespace);
+
+match read_config(&SPEC, &store)? {
+    ConfigState::Ready(config) => {
         let ssid = config.get("ssid").unwrap_or("");
         let pw = config.get("pw").unwrap_or("");
         let url = config.get("url").unwrap_or("");
         // run normal mode
     }
-    NvsConfigState::Missing | NvsConfigState::SchemaMismatch => {
-        enter_error_mode(&SPEC, "configuration required", &mut wifi, nvs_partition).await?;
+    ConfigState::Missing | ConfigState::SchemaMismatch(_) => {
+        enter_config_mode(
+            &SPEC,
+            "configuration required",
+            &mut wifi,
+            store,
+            EspHttpBackend::new(),
+            EspPlatform::new(),
+            EspClock::new(),
+            timing,
+        )
+        .await?;
     }
 }
 ```

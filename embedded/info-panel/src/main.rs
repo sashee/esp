@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Result};
+use config_portal::esp_idf::{EspClock, EspHttpBackend, EspPlatform, NvsConfigStore};
 use config_portal::{
-    enter_config_mode, read_nvs, FieldSpec, NvsConfigState, PortalSpec, PortalTiming, StoredConfig,
+    enter_config_mode, read_config, ConfigSpec, ConfigState, ConfigStore, ConfigTiming, FieldSpec,
+    StoredConfig,
 };
 use embassy_time::{Duration, Timer};
 use embedded_svc::{
@@ -39,19 +41,19 @@ static PORTAL_FIELDS: &[FieldSpec] = &[
     FieldSpec::number("led_brightness", "LED brightness", 0, 255),
 ];
 
-static PORTAL_SPEC: PortalSpec = PortalSpec {
+static CONFIG_SPEC: ConfigSpec = ConfigSpec {
     namespace: "config",
     ap_prefix: "InfoPanel",
     title: "Info Panel Setup",
     fields: PORTAL_FIELDS,
 };
 
-const PREBOOT_PORTAL_TIMING: PortalTiming = PortalTiming {
+const PREBOOT_PORTAL_TIMING: ConfigTiming = ConfigTiming {
     idle_timeout: Duration::from_secs(30),
     connected_timeout: Duration::from_secs(10 * 60),
 };
 
-const REQUIRED_PORTAL_TIMING: PortalTiming = PortalTiming {
+const REQUIRED_PORTAL_TIMING: ConfigTiming = ConfigTiming {
     idle_timeout: Duration::from_secs(60),
     connected_timeout: Duration::from_secs(10 * 60),
 };
@@ -108,6 +110,7 @@ async fn async_main() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
+    let store = NvsConfigStore::new(nvs.clone(), CONFIG_SPEC.namespace);
     let reset_reason = ResetReason::get();
     info!("boot reset reason: {:?}", reset_reason);
 
@@ -121,28 +124,28 @@ async fn async_main() -> Result<()> {
         Some(nvs.clone()),
     )?);
 
-    let config = match read_nvs(&PORTAL_SPEC, nvs.clone())? {
-        NvsConfigState::Ready(config) => match DeviceConfig::from_stored(config) {
+    let config = match read_config(&CONFIG_SPEC, &store)? {
+        ConfigState::Ready(config) => match DeviceConfig::from_stored(config) {
             Ok(config) => config,
             Err(err) => {
                 return enter_required_config_mode(
                     &mut led,
                     &mut wifi,
-                    nvs,
+                    store,
                     &format!("stored configuration is invalid: {err:#}"),
                 )
                 .await;
             }
         },
-        NvsConfigState::Missing => {
-            return enter_required_config_mode(&mut led, &mut wifi, nvs, "configuration missing")
+        ConfigState::Missing => {
+            return enter_required_config_mode(&mut led, &mut wifi, store, "configuration missing")
                 .await;
         }
-        NvsConfigState::SchemaMismatch(_) => {
+        ConfigState::SchemaMismatch(_) => {
             return enter_required_config_mode(
                 &mut led,
                 &mut wifi,
-                nvs,
+                store,
                 "stored configuration schema mismatch",
             )
             .await;
@@ -150,7 +153,8 @@ async fn async_main() -> Result<()> {
     };
 
     if should_offer_preboot_config(reset_reason) {
-        if let Err(err) = maybe_run_preboot_config_portal(&mut led, &mut wifi, nvs.clone()).await {
+        if let Err(err) = maybe_run_preboot_config_portal(&mut led, &mut wifi, store.clone()).await
+        {
             error!("preboot config portal failed: {err:#}");
         }
     } else {
@@ -218,17 +222,23 @@ async fn async_main() -> Result<()> {
     Ok(())
 }
 
-async fn maybe_run_preboot_config_portal(
+async fn maybe_run_preboot_config_portal<S>(
     led: &mut Led<'_>,
     wifi: &mut DeviceWifi<'static>,
-    nvs: EspDefaultNvsPartition,
-) -> Result<()> {
+    store: S,
+) -> Result<()>
+where
+    S: ConfigStore + Clone + Send + Sync + 'static,
+{
     let _ = led.set_pixel(PREBOOT_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
     enter_config_mode(
-        &PORTAL_SPEC,
+        &CONFIG_SPEC,
         "preboot configuration window",
         wifi,
-        nvs,
+        store,
+        EspHttpBackend::new(),
+        EspPlatform::new(),
+        EspClock::new(),
         PREBOOT_PORTAL_TIMING,
     )
     .await?;
@@ -236,15 +246,28 @@ async fn maybe_run_preboot_config_portal(
     Ok(())
 }
 
-async fn enter_required_config_mode(
+async fn enter_required_config_mode<S>(
     led: &mut Led<'_>,
     wifi: &mut DeviceWifi<'static>,
-    nvs: EspDefaultNvsPartition,
+    store: S,
     message: &str,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: ConfigStore + Clone + Send + Sync + 'static,
+{
     error!("{message}");
     let _ = led.set_pixel(REQUIRED_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
-    enter_config_mode(&PORTAL_SPEC, message, wifi, nvs, REQUIRED_PORTAL_TIMING).await?;
+    enter_config_mode(
+        &CONFIG_SPEC,
+        message,
+        wifi,
+        store,
+        EspHttpBackend::new(),
+        EspPlatform::new(),
+        EspClock::new(),
+        REQUIRED_PORTAL_TIMING,
+    )
+    .await?;
     reboot();
 }
 

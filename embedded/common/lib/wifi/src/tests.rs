@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::{
-    AccessPointConfig, AccessPointEvent, AccessPointStatus, ClientAuth, ConnectOptions, ConnectState,
-    ConnectionInfo, FoundNetwork, IpConfig, Wifi, WifiBackend, WifiCredentials,
+    AccessPointConfig, AccessPointEvent, AccessPointStatus, ClientAuth, ConnectOptions,
+    ConnectState, ConnectionInfo, FoundNetwork, IpConfig, Wifi, WifiBackend, WifiCredentials,
 };
 
 fn portal_ip_config() -> IpConfig {
@@ -263,7 +263,6 @@ impl WifiBackend for MockBackend {
             .clone()
             .ok_or_else(|| anyhow!("missing AP IP config"))
     }
-
 }
 
 #[test]
@@ -277,12 +276,12 @@ fn connect_uses_matching_channel_and_reports_states() {
     let mut states = Vec::new();
 
     let connection = block_on(wifi.connect_with_options(
-            &credentials,
-            ConnectOptions {
-                timeout: Duration::from_millis(500),
-            },
-            |state| states.push(state),
-        ))
+        &credentials,
+        ConnectOptions {
+            timeout: Duration::from_millis(500),
+        },
+        |state| states.push(state),
+    ))
     .unwrap();
 
     assert_eq!(connection, ConnectionInfo::new("192.168.1.44"));
@@ -364,10 +363,11 @@ fn connect_propagates_start_error() {
     let mut wifi = Wifi::new(backend);
     let mut states = Vec::new();
 
-    let err = block_on(wifi.connect(
-        &WifiCredentials::new("home", "secret"),
-        |state| states.push(state),
-    ))
+    let err = block_on(
+        wifi.connect(&WifiCredentials::new("home", "secret"), |state| {
+            states.push(state)
+        }),
+    )
     .unwrap_err();
 
     assert_eq!(err.to_string(), "start failed");
@@ -415,15 +415,19 @@ fn connect_propagates_scan_error_and_stops_state_progression() {
     let mut wifi = Wifi::new(backend);
     let mut states = Vec::new();
 
-    let err = block_on(wifi.connect(
-        &WifiCredentials::new("home", "secret"),
-        |state| states.push(state),
-    ))
+    let err = block_on(
+        wifi.connect(&WifiCredentials::new("home", "secret"), |state| {
+            states.push(state)
+        }),
+    )
     .unwrap_err();
 
     assert_eq!(err.to_string(), "scan failed");
     assert_eq!(states, vec![ConnectState::Starting, ConnectState::Scanning]);
-    assert_eq!(wifi.backend().actions, vec!["disconnect", "stop", "start", "scan"]);
+    assert_eq!(
+        wifi.backend().actions,
+        vec!["disconnect", "stop", "start", "scan"]
+    );
 }
 
 #[test]
@@ -434,10 +438,11 @@ fn connect_propagates_configure_error() {
     let mut wifi = Wifi::new(backend);
     let mut states = Vec::new();
 
-    let err = block_on(wifi.connect(
-        &WifiCredentials::new("home", "secret"),
-        |state| states.push(state),
-    ))
+    let err = block_on(
+        wifi.connect(&WifiCredentials::new("home", "secret"), |state| {
+            states.push(state)
+        }),
+    )
     .unwrap_err();
 
     assert_eq!(err.to_string(), "configure failed");
