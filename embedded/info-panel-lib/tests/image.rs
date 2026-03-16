@@ -92,6 +92,7 @@ fn test_image_retries_3_times_on_http_failure() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
+    let sleep_durations = clock.sleep_durations.clone();
     let http_client = MockHttpClient::always_failing();
     let calls = http_client.get_calls.clone();
     let display = MockDisplay::new(global_counter);
@@ -113,6 +114,19 @@ fn test_image_retries_3_times_on_http_failure() {
         *calls.lock().unwrap(),
         3,
         "http_client.get() must be called exactly 3 times"
+    );
+
+    // Retry backoff: 1 second sleep after each failed attempt (3 sleeps for 3 attempts)
+    let sleeps = sleep_durations.lock().unwrap();
+    let retry_sleeps: Vec<_> = sleeps
+        .iter()
+        .filter(|d| **d == embassy_time::Duration::from_secs(1))
+        .collect();
+    assert_eq!(
+        retry_sleeps.len(),
+        3,
+        "must sleep 1s after each failed attempt (3 sleeps for 3 attempts). All sleeps: {:?}",
+        *sleeps
     );
 }
 
@@ -243,6 +257,7 @@ fn test_image_error_mode_waits_before_restart() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250, 600_000_001]);
+    let sleep_durations = clock.sleep_durations.clone();
     let http_client = MockHttpClient::always_failing();
     let display = MockDisplay::new(global_counter);
 
@@ -264,6 +279,16 @@ fn test_image_error_mode_waits_before_restart() {
             .iter()
             .any(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01),
         "LED must be set to ERROR_LED (red) before reboot"
+    );
+
+    // Verify error mode sleep duration: 10 minutes = 600 seconds
+    let sleeps = sleep_durations.lock().unwrap();
+    assert!(
+        sleeps
+            .iter()
+            .any(|d| *d == embassy_time::Duration::from_secs(600)),
+        "error mode must sleep for 10 minutes (600s). Got: {:?}",
+        *sleeps
     );
 }
 
@@ -429,6 +454,7 @@ fn test_image_refreshes_after_30_second_interval() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
+    let sleep_durations = clock.sleep_durations.clone();
     // panic_on_nth(2): first call = initial fetch (succeeds), second call = refresh fetch (panics)
     let http_client = MockHttpClient::panic_on_nth(2);
     let calls = http_client.get_calls.clone();
@@ -454,6 +480,16 @@ fn test_image_refreshes_after_30_second_interval() {
         *calls.lock().unwrap(),
         2,
         "http_client.get() must be called twice (initial + refresh)"
+    );
+
+    // Verify 30-second refresh interval sleep
+    let sleeps = sleep_durations.lock().unwrap();
+    assert!(
+        sleeps
+            .iter()
+            .any(|d| *d == embassy_time::Duration::from_secs(30)),
+        "refresh loop must sleep for 30 seconds. Got: {:?}",
+        *sleeps
     );
 }
 

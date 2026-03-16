@@ -171,6 +171,7 @@ fn test_portal_restarts_after_idle_timeout() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = portal_timeout_clock();
+    let sleep_durations = clock.sleep_durations.clone();
     let http_client = MockHttpClient::new();
     let display = MockDisplay::new(global_counter);
 
@@ -192,6 +193,16 @@ fn test_portal_restarts_after_idle_timeout() {
     assert!(
         *reboot_called.lock().unwrap(),
         "platform.reboot() must be called after idle timeout"
+    );
+
+    // Portal polls every 250ms (from config-portal: clock.sleep(Duration::from_millis(250)))
+    let sleeps = sleep_durations.lock().unwrap();
+    assert!(
+        sleeps
+            .iter()
+            .any(|d| *d == embassy_time::Duration::from_millis(250)),
+        "portal must sleep 250ms between polls. Got: {:?}",
+        *sleeps
     );
 }
 

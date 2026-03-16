@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
+use embassy_time::Duration;
 use info_panel_lib::{BootReason, Clock, DisplayWrite, HttpClient, Led, Platform};
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -335,6 +336,7 @@ impl Platform for MockPlatform {
 #[derive(Clone)]
 pub struct MockClock {
     state: Arc<Mutex<MockClockState>>,
+    pub sleep_durations: Arc<Mutex<Vec<Duration>>>,
 }
 
 pub struct MockClockState {
@@ -351,6 +353,7 @@ impl MockClock {
                     .map(embassy_time::Instant::from_ticks)
                     .collect(),
             })),
+            sleep_durations: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -367,7 +370,9 @@ impl Clock for MockClock {
                 .unwrap_or(&embassy_time::Instant::from_ticks(0))
         }
     }
-    async fn sleep(&self, _duration: embassy_time::Duration) {}
+    async fn sleep(&self, duration: Duration) {
+        self.sleep_durations.lock().unwrap().push(duration);
+    }
 }
 
 // ---- MockWifiBackend ----
