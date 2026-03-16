@@ -59,8 +59,6 @@ rustPlatform.buildRustPackage {
     lockFile = ./Cargo.lock;
   };
 
-  cargoTestFlags = [ "--lib" "--test" "tests" ];
-
   passthru = {
     inherit pkgs rustPlatform;
   };

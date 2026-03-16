@@ -217,45 +217,77 @@ impl DisplayWrite for MockDisplay {
 
 pub struct MockHttpClient {
     pub get_calls: Arc<Mutex<usize>>,
+    pub get_urls: Arc<Mutex<Vec<String>>>,
     pub get_fail_nth: Arc<Mutex<Option<usize>>>,
     pub get_always_fail: bool,
+    pub get_panic_on_nth: Arc<Mutex<Option<usize>>>,
 }
 
 impl MockHttpClient {
     pub fn new() -> Self {
         Self {
             get_calls: Arc::new(Mutex::new(0)),
+            get_urls: Arc::new(Mutex::new(Vec::new())),
             get_fail_nth: Arc::new(Mutex::new(None)),
             get_always_fail: false,
+            get_panic_on_nth: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn always_failing() -> Self {
         Self {
             get_calls: Arc::new(Mutex::new(0)),
+            get_urls: Arc::new(Mutex::new(Vec::new())),
             get_fail_nth: Arc::new(Mutex::new(None)),
             get_always_fail: true,
+            get_panic_on_nth: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn fail_nth(n: usize) -> Self {
         Self {
             get_calls: Arc::new(Mutex::new(0)),
+            get_urls: Arc::new(Mutex::new(Vec::new())),
             get_fail_nth: Arc::new(Mutex::new(Some(n))),
             get_always_fail: false,
+            get_panic_on_nth: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn panic_on_nth(n: usize) -> Self {
+        Self {
+            get_calls: Arc::new(Mutex::new(0)),
+            get_urls: Arc::new(Mutex::new(Vec::new())),
+            get_fail_nth: Arc::new(Mutex::new(None)),
+            get_always_fail: false,
+            get_panic_on_nth: Arc::new(Mutex::new(Some(n))),
         }
     }
 }
 
 impl HttpClient for MockHttpClient {
-    async fn get(&mut self, _url: &str) -> anyhow::Result<Vec<u8>> {
-        let mut count = self.get_calls.lock().unwrap();
-        *count += 1;
+    async fn get(&mut self, url: &str) -> anyhow::Result<Vec<u8>> {
+        let current;
+        let should_panic;
+        {
+            let mut count = self.get_calls.lock().unwrap();
+            *count += 1;
+            current = *count;
+            self.get_urls.lock().unwrap().push(url.to_string());
+            should_panic = self
+                .get_panic_on_nth
+                .lock()
+                .unwrap()
+                .map_or(false, |n| current == n);
+        }
+        if should_panic {
+            panic!("mock: http_client.get() call #{} reached", current);
+        }
         if self.get_always_fail {
             return Err(anyhow::anyhow!("mock HTTP error"));
         }
         if let Some(fail_nth) = *self.get_fail_nth.lock().unwrap() {
-            if *count == fail_nth {
+            if current == fail_nth {
                 return Err(anyhow::anyhow!("mock HTTP error"));
             }
         }
@@ -349,16 +381,24 @@ pub struct MockWifiBackend {
 
 pub struct MockWifiBackendState {
     pub started: bool,
+    pub is_connected: bool,
     pub client_count: usize,
     pub scan_networks_result: Vec<wifi::FoundNetwork>,
+    pub configured_ssid: Option<String>,
+    pub configured_password: Option<String>,
+    pub start_access_point_ssid: Option<String>,
 }
 
 impl Default for MockWifiBackendState {
     fn default() -> Self {
         Self {
             started: false,
+            is_connected: true,
             client_count: 0,
             scan_networks_result: Vec::new(),
+            configured_ssid: None,
+            configured_password: None,
+            start_access_point_ssid: None,
         }
     }
 }
@@ -392,6 +432,10 @@ impl MockWifiBackend {
             })),
         }
     }
+
+    pub fn set_is_connected(&mut self, connected: bool) {
+        self.state.lock().unwrap().is_connected = connected;
+    }
 }
 
 impl wifi::WifiBackend for MockWifiBackend {
@@ -412,10 +456,13 @@ impl wifi::WifiBackend for MockWifiBackend {
     }
     async fn configure_client(
         &mut self,
-        _credentials: &wifi::WifiCredentials,
+        credentials: &wifi::WifiCredentials,
         _channel: Option<u8>,
         _auth: wifi::ClientAuth,
     ) -> anyhow::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state.configured_ssid = Some(credentials.ssid.clone());
+        state.configured_password = Some(credentials.password.clone());
         Ok(())
     }
     async fn connect(
@@ -427,16 +474,18 @@ impl wifi::WifiBackend for MockWifiBackend {
         Ok(wifi::ConnectionInfo::new("0.0.0.0"))
     }
     async fn is_connected(&mut self) -> anyhow::Result<bool> {
-        Ok(true)
+        Ok(self.state.lock().unwrap().is_connected)
     }
     async fn connection_info(&mut self) -> anyhow::Result<Option<wifi::ConnectionInfo>> {
         Ok(Some(wifi::ConnectionInfo::new("0.0.0.0")))
     }
     async fn start_access_point(
         &mut self,
-        _config: &wifi::AccessPointConfig,
+        config: &wifi::AccessPointConfig,
     ) -> anyhow::Result<()> {
-        self.state.lock().unwrap().started = true;
+        let mut state = self.state.lock().unwrap();
+        state.started = true;
+        state.start_access_point_ssid = Some(config.ssid.clone());
         Ok(())
     }
     async fn stop_access_point(&mut self) -> anyhow::Result<()> {
