@@ -1,5 +1,5 @@
 use info_panel_lib::{
-    fill_frame_with_color, rgb565, BootReason, Clock, ConfigClockAdapter, ConfigPlatformAdapter,
+    fill_frame_with_color, rgb565, BootReason, Clock,
     DeviceConfig, DisplayWrite, HttpClient, Led, Platform, TFT_HEIGHT, TFT_WIDTH,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -361,7 +361,7 @@ fn run_enters_ap_mode_when_nvs_empty() {
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250, 60_000_000]);
     let http_client = MockHttpClient;
-    let mut display = MockDisplay;
+    let display = MockDisplay;
 
     let led_ref = &mut led;
 

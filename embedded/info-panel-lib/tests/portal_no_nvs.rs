@@ -10,10 +10,6 @@ fn portal_timeout_clock() -> MockClock {
     MockClock::from_ticks(&[0, 250, 60_000_001])
 }
 
-fn preboot_timeout_clock() -> MockClock {
-    MockClock::from_ticks(&[0, 250, 30_000_001])
-}
-
 #[test]
 fn test_portal_starts_ap_when_nvs_empty() {
     let global_counter = Arc::new(AtomicU32::new(1));

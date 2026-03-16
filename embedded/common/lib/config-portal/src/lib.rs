@@ -557,8 +557,8 @@ async fn render_form(
                     None
                 };
 
-                if let Some((m, M)) = number_range {
-                    let _ = write!(html, "<label><span>{}</span><p class=\"hint\">Allowed: {} - {}</p><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>", escape_html(field.label), m, M, input_type, escape_html(field.key), escape_html(value), extra_attrs, required_attr);
+                if let Some((min, max)) = number_range {
+                    let _ = write!(html, "<label><span>{}</span><p class=\"hint\">Allowed: {} - {}</p><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>", escape_html(field.label), min, max, input_type, escape_html(field.key), escape_html(value), extra_attrs, required_attr);
                 } else {
                     let _ = write!(
                         html,

@@ -13,7 +13,7 @@ use rgb_led::Rgb;
 use std::sync::Mutex;
 use wifi::{
     AccessPointConfig as WifiAccessPointConfig, AccessPointEvent as WifiAccessPointEvent,
-    FoundNetwork, IpConfig as WifiIpConfig, Wifi, WifiBackend, WifiCredentials, ConnectState,
+    IpConfig as WifiIpConfig, Wifi, WifiBackend, WifiCredentials, ConnectState,
 };
 
 pub use config_portal::{ConfigTiming, FieldSpec};

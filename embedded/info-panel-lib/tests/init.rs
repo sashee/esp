@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use info_panel_lib::{BootReason, Led, Platform};
+use info_panel_lib::BootReason;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
