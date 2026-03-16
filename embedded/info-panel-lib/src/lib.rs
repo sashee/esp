@@ -6,6 +6,7 @@ use config_portal::{
     ConfigSpec, ConfigState, ConfigStore, ConfigWifi, IpConfig as PortalIpConfig, SelectOption,
     SelectOptions, StoredConfig,
 };
+use core::convert::Infallible;
 use embassy_time::Duration;
 use log::{error, info};
 use rgb_led::Rgb;
@@ -312,7 +313,47 @@ where
     }
 }
 
+async fn enter_error_mode<L, P, Ck>(led: &mut L, clock: &Ck, platform: &P) -> !
+where
+    L: Led,
+    P: Platform,
+    Ck: Clock,
+{
+    let _ = led.set_pixel(ERROR_LED, PORTAL_LED_BRIGHTNESS);
+    error!("entering error mode");
+    Clock::sleep(clock, RUNTIME_ERROR_REBOOT_DELAY).await;
+    Platform::reboot(platform);
+}
+
 pub async fn run<W, S, H, P, Ck, L, HC>(
+    wifi: &mut Wifi<W>,
+    store: S,
+    http_backend: H,
+    platform: P,
+    clock: Ck,
+    http_client: HC,
+    display: impl DisplayWrite,
+    led: &mut L,
+) -> !
+where
+    W: WifiBackend,
+    S: ConfigStore + Clone + Send + Sync + 'static,
+    H: ConfigHttpBackend,
+    P: Platform + Clone,
+    Ck: Clock + Clone,
+    L: Led,
+    HC: HttpClient + Send,
+{
+    match run_inner(wifi, store, http_backend, platform.clone(), clock.clone(), http_client, display, led).await {
+        Ok(never) => match never {},
+        Err(err) => {
+            error!("fatal: {err:#}");
+            enter_error_mode(led, &clock, &platform).await;
+        }
+    }
+}
+
+async fn run_inner<W, S, H, P, Ck, L, HC>(
     wifi: &mut Wifi<W>,
     store: S,
     http_backend: H,
@@ -321,7 +362,7 @@ pub async fn run<W, S, H, P, Ck, L, HC>(
     mut http_client: HC,
     mut display: impl DisplayWrite,
     led: &mut L,
-) -> Result<()>
+) -> Result<Infallible>
 where
     W: WifiBackend,
     S: ConfigStore + Clone + Send + Sync + 'static,
@@ -340,7 +381,8 @@ where
         ConfigState::Ready(config) => match DeviceConfig::from_stored(config) {
             Ok(config) => config,
             Err(err) => {
-                return run_required_config_mode(
+                error!("stored configuration is invalid: {err:#}");
+                run_required_config_mode(
                     platform.clone(),
                     wifi,
                     store,
@@ -353,7 +395,7 @@ where
             }
         },
         ConfigState::Missing => {
-            return run_required_config_mode(
+            run_required_config_mode(
                 platform.clone(),
                 wifi,
                 store,
@@ -474,7 +516,7 @@ async fn run_required_config_mode<W, S, H, P, Ck, L>(
     clock: Ck,
     led: &mut L,
     message: &str,
-) -> Result<()>
+) -> !
 where
     W: WifiBackend,
     S: ConfigStore + Clone + Send + Sync + 'static,
@@ -485,11 +527,11 @@ where
 {
     error!("{message}");
     let _ = led.set_pixel(REQUIRED_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
-    scan_and_store_networks(wifi).await?;
+    let _ = scan_and_store_networks(wifi).await;
     let mut portal_wifi = PortalWifi::new(wifi);
     let config_platform = ConfigPlatformAdapter::new(platform.clone());
     let config_clock = ConfigClockAdapter::new(clock.clone());
-    enter_config_mode(
+    let _ = enter_config_mode(
         &*CONFIG_SPEC,
         message,
         &mut portal_wifi,
@@ -499,7 +541,7 @@ where
         config_clock,
         REQUIRED_PORTAL_TIMING,
     )
-    .await?;
+    .await;
     Platform::reboot(&platform);
 }
 

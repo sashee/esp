@@ -6,18 +6,19 @@
 
 Verifies that during startup, the display is initialized BEFORE any WiFi connection. The test will:
 1. Provide a mock store with valid config (ssid, pw, url, led_brightness)
-2. Track the order of display.init() vs wifi.connect() calls
+2. Use a shared global atomic counter to track call ordering
 3. Mock wifi.connect() to succeed
-4. Mock http_client.get() to return valid frame data
-5. Run the info_panel_lib::run() function
+4. Mock http_client.get() to fail (triggers error mode after retries)
+5. Run the info_panel_lib::run() function (which returns `!`, use catch_unwind for panic from reboot)
 6. Assert that display.init() was called BEFORE wifi.connect() is called
 
-### test_init_returns_error_when_display_init_fails
+### test_init_enters_error_mode_when_display_init_fails
 
-Verifies that if display.init() fails, the error propagates correctly. The test will:
+Verifies that if display.init() fails, the device enters error mode (red LED, wait, restart). The test will:
 1. Provide a mock display that returns an error on init()
 2. Run the info_panel_lib::run() function
-3. Assert that the returned Result contains the display init error
+3. Assert that LED was set to ERROR_LED (red) before reboot
+4. Assert that platform.reboot() was called
 
 ### test_init_connects_wifi_when_nvs_has_complete_config
 
@@ -156,16 +157,7 @@ Verifies that the third retry succeeding completes the flow. The test will:
 4. Run the info_panel_lib::run() function
 5. Assert that display.write_frame() was called
 
-### test_image_uses_last_error_when_all_retries_fail
-
-Verifies that when all retries fail, the last error is used. The test will:
-1. Provide a mock store with valid config
-2. Mock wifi.connect() to succeed
-3. Mock http_client.get() to fail with different errors each time
-4. Run the info_panel_lib::run() function
-5. Assert that the final error matches the last error from http_client.get()
-
-### test_image_enters_error_mode_after_all_retries_fail
+### test_image_enters_error_mode_when_all_retries_fail
 
 Verifies that after all 3 retries fail, the device enters error mode with red LED and reboot. The test will:
 1. Provide a mock store with valid config
@@ -225,12 +217,12 @@ Verifies that the image refreshes every 30 seconds. The test will:
 
 ### test_image_aborts_refresh_on_wifi_disconnect
 
-Verifies that if WiFi disconnects during the 30-second wait, an error is returned. The test will:
+Verifies that if WiFi disconnects during the 30-second wait, the device enters error mode. The test will:
 1. Provide a mock store with valid config
 2. Mock wifi.connect() to succeed initially
 3. Mock wifi.is_connected() to return false on second check
-4. Run the info_panel_lib::run() function
-5. Assert that the function returns an error with "wifi disconnected"
+4. Run the info_panel_lib::run() function (expecting panic from reboot)
+5. Assert that LED was set to ERROR_LED (red) before reboot
 
 ### test_image_continues_refresh_loop_after_write_frame_error
 

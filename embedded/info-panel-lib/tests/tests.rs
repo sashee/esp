@@ -368,7 +368,7 @@ fn run_enters_ap_mode_when_nvs_empty() {
     eprintln!("before catch_unwind");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eprintln!("inside closure, before block_on");
-        let r = block_on(info_panel_lib::run(
+        block_on(info_panel_lib::run(
             &mut wifi,
             store,
             http_backend,
@@ -378,8 +378,6 @@ fn run_enters_ap_mode_when_nvs_empty() {
             display,
             led_ref,
         ));
-        eprintln!("after block_on: {:?}", r.is_ok());
-        r
     }));
     eprintln!("after catch_unwind: {:?}", result.is_err());
 
@@ -426,7 +424,7 @@ fn debug_minimal_run() {
 
     eprintln!("before run block_on");
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let r = block_on(info_panel_lib::run(
+        block_on(info_panel_lib::run(
             &mut wifi,
             store,
             http_backend,
@@ -436,7 +434,6 @@ fn debug_minimal_run() {
             display,
             led_ref,
         ));
-        eprintln!("run result: {:?}", r.is_ok());
     }));
     eprintln!("after catch_unwind");
     eprintln!("led colors: {:?}", led.colors);

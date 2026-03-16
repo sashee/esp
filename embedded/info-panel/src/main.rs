@@ -171,7 +171,7 @@ async fn async_main() -> Result<()> {
     let display = TftDisplay::new(SpiTftBackend::new(spi, dc, rst), EspDelay, info_panel_lib::TFT_WIDTH, info_panel_lib::TFT_HEIGHT);
 
     // run() never returns
-    match info_panel_lib::run(
+    info_panel_lib::run(
         &mut wifi,
         store,
         http_backend,
@@ -180,8 +180,6 @@ async fn async_main() -> Result<()> {
         http_client,
         display,
         &mut led,
-    ).await {
-        Ok(_) => unreachable!(),
-        Err(_) => unreachable!(),
-    }
+    )
+    .await;
 }

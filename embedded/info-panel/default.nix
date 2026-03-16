@@ -348,7 +348,7 @@ let
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-cloJAc0PLWaea0vUi3Er8St3URnPHy1fb2qkdtVAD7U=";
+    outputHash = "sha256-TA4y1aShnTmcIX+Bytvi3luR/FF0mIkP3sEq5RPHBZg=";
 
     installPhase = ''
       export HOME="$TMPDIR"
