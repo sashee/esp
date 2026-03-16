@@ -235,16 +235,14 @@ struct MockHttpBackend;
 impl config_portal::ConfigHttpBackend for MockHttpBackend {
     type Server = MockServer;
 
-    fn start<H>(
+    fn start<H, Fut>(
         self,
         _endpoints: &'static [config_portal::HttpEndpoint],
         _handler: H,
     ) -> anyhow::Result<Self::Server>
     where
-        H: Fn(config_portal::HttpRequest) -> anyhow::Result<config_portal::HttpResponse>
-            + Send
-            + Sync
-            + 'static,
+        H: Fn(config_portal::HttpRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<config_portal::HttpResponse>> + Send,
     {
         Ok(MockServer)
     }

@@ -310,9 +310,10 @@ struct MockHttpBackendState {
 impl ConfigHttpBackend for MockHttpBackend {
     type Server = MockServer;
 
-    fn start<H>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
+    fn start<H, Fut>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
     where
-        H: Fn(HttpRequest) -> Result<HttpResponse> + Send + Sync + 'static,
+        H: Fn(HttpRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HttpResponse>> + Send,
     {
         let mut state = self.state.lock().unwrap();
         if let Some(message) = state.start_error.clone() {
@@ -324,7 +325,7 @@ impl ConfigHttpBackend for MockHttpBackend {
 
         let mut responses = Vec::new();
         for request in requests {
-            responses.push(handler(request)?);
+            responses.push(block_on(handler(request))?);
         }
 
         self.state.lock().unwrap().startup_responses = responses;
@@ -562,13 +563,13 @@ fn get_root_returns_form_with_stored_values() {
     ]));
     let activity = ConfigActivity::default();
 
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
         &activity,
         request(HttpMethod::Get, "/", ""),
-    )
+    ))
     .unwrap();
     let body = body_text(&response);
     assert_eq!(response.status_code, 200);
@@ -580,13 +581,13 @@ fn get_root_returns_form_with_stored_values() {
 fn get_root_shows_missing_config_note() {
     let store = MockStore::default();
     let body = body_text(
-        &handle_http_request(
+        &block_on(handle_http_request(
             &TEST_SPEC,
             "configure",
             &store,
             &ConfigActivity::default(),
             request(HttpMethod::Get, "/", ""),
-        )
+        ))
         .unwrap(),
     );
     assert!(body.contains("No stored configuration found"));
@@ -596,13 +597,13 @@ fn get_root_shows_missing_config_note() {
 fn get_root_shows_schema_mismatch_note() {
     let store = MockStore::with_values(map(&[(SCHEMA_KEY, "wrong")]));
     let body = body_text(
-        &handle_http_request(
+        &block_on(handle_http_request(
             &TEST_SPEC,
             "configure",
             &store,
             &ConfigActivity::default(),
             request(HttpMethod::Get, "/", ""),
-        )
+        ))
         .unwrap(),
     );
     assert!(body.contains("does not match the current field schema"));
@@ -615,14 +616,14 @@ fn rendered_form_never_prefills_password_field() {
         ("pw", "secret"),
         ("brightness", "4"),
     ]));
-    let body = render_form(&TEST_SPEC, "configure", &state, None, None);
+    let body = block_on(render_form(&TEST_SPEC, "configure", &state, None, None));
     assert!(!body.contains("value=\"secret\""));
 }
 
 #[test]
 fn rendered_form_shows_keep_password_hint_when_password_exists() {
     let state = ConfigState::Ready(stored(&[("pw", "secret")]));
-    let body = render_form(&TEST_SPEC, "configure", &state, None, None);
+    let body = block_on(render_form(&TEST_SPEC, "configure", &state, None, None));
     assert!(body.contains("Leave blank to keep stored password"));
     assert!(body.contains("A password is already stored"));
 }
@@ -631,7 +632,7 @@ fn rendered_form_shows_keep_password_hint_when_password_exists() {
 fn post_save_returns_success_and_marks_reboot_requested() {
     let store = MockStore::default();
     let activity = ConfigActivity::default();
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
@@ -641,7 +642,7 @@ fn post_save_returns_success_and_marks_reboot_requested() {
             "/save",
             "ssid=home&pw=secret&brightness=4",
         ),
-    )
+    ))
     .unwrap();
 
     assert!(body_text(&response).contains("Saved configuration. Rebooting"));
@@ -652,7 +653,7 @@ fn post_save_returns_success_and_marks_reboot_requested() {
 fn post_save_invalid_form_rerenders_with_error_without_reboot() {
     let store = MockStore::default();
     let activity = ConfigActivity::default();
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
@@ -662,7 +663,7 @@ fn post_save_invalid_form_rerenders_with_error_without_reboot() {
             "/save",
             "ssid=home&pw=secret&brightness=99",
         ),
-    )
+    ))
     .unwrap();
     let body = body_text(&response);
 
@@ -679,13 +680,13 @@ fn post_reset_clears_store_and_marks_reboot_requested() {
         ("brightness", "4"),
     ]));
     let activity = ConfigActivity::default();
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
         &activity,
         request(HttpMethod::Post, "/reset", ""),
-    )
+    ))
     .unwrap();
 
     assert!(body_text(&response).contains("Reset stored configuration. Rebooting"));
@@ -695,26 +696,26 @@ fn post_reset_clears_store_and_marks_reboot_requested() {
 
 #[test]
 fn unsupported_method_on_known_path_returns_405() {
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &MockStore::default(),
         &ConfigActivity::default(),
         request(HttpMethod::Other("PUT".into()), "/", ""),
-    )
+    ))
     .unwrap();
     assert_eq!(response.status_code, 405);
 }
 
 #[test]
 fn unknown_path_returns_404() {
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &MockStore::default(),
         &ConfigActivity::default(),
         request(HttpMethod::Get, "/missing", ""),
-    )
+    ))
     .unwrap();
     assert_eq!(response.status_code, 404);
 }
@@ -1112,13 +1113,13 @@ fn enter_config_mode_propagates_http_backend_start_failure() {
 fn get_request_propagates_store_read_failure() {
     let store = MockStore::default();
     store.state.lock().unwrap().read_error = Some("read failed".into());
-    let err = handle_http_request(
+    let err = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
         &ConfigActivity::default(),
         request(HttpMethod::Get, "/", ""),
-    )
+    ))
     .unwrap_err();
     assert!(err.to_string().contains("read failed"));
 }
@@ -1127,13 +1128,13 @@ fn get_request_propagates_store_read_failure() {
 fn post_reset_propagates_store_clear_failure() {
     let store = MockStore::default();
     store.state.lock().unwrap().remove_error = Some("clear failed".into());
-    let err = handle_http_request(
+    let err = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
         &ConfigActivity::default(),
         request(HttpMethod::Post, "/reset", ""),
-    )
+    ))
     .unwrap_err();
     assert!(err.to_string().contains("clear failed"));
 }
@@ -1142,7 +1143,7 @@ fn post_reset_propagates_store_clear_failure() {
 fn post_save_re_renders_when_store_write_fails() {
     let store = MockStore::default();
     store.state.lock().unwrap().write_error = Some("write failed".into());
-    let response = handle_http_request(
+    let response = block_on(handle_http_request(
         &TEST_SPEC,
         "configure",
         &store,
@@ -1152,7 +1153,7 @@ fn post_save_re_renders_when_store_write_fails() {
             "/save",
             "ssid=home&pw=secret&brightness=4",
         ),
-    )
+    ))
     .unwrap();
 
     assert!(body_text(&response).contains("write failed"));

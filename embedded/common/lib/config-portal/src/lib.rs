@@ -5,7 +5,9 @@ pub mod esp_idf;
 mod tests;
 
 use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
 use core::fmt::Write as _;
+use core::future::Future;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_time::{Duration, Instant};
 use log::{error, info, warn};
@@ -18,14 +20,24 @@ use std::{
 
 const SCHEMA_KEY: &str = "_schema";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
+pub struct SelectOption<'a> {
+    pub value: &'a str,
+    pub label: &'a str,
+}
+
+#[async_trait]
+pub trait SelectOptions: Send + Sync {
+    async fn options(&self) -> Vec<SelectOption<'_>>;
+}
+
 pub enum FieldKind {
     Text,
     Password,
     Number { min: i64, max: i64 },
+    Select { options: Box<dyn SelectOptions> },
 }
 
-#[derive(Clone, Copy, Debug)]
 pub struct FieldSpec {
     pub key: &'static str,
     pub label: &'static str,
@@ -60,9 +72,18 @@ impl FieldSpec {
             required: true,
         }
     }
+
+    pub fn select(key: &'static str, label: &'static str, options: impl SelectOptions + 'static) -> Self {
+        Self {
+            key,
+            label,
+            kind: FieldKind::Select { options: Box::new(options) },
+            required: true,
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct ConfigSpec {
     pub namespace: &'static str,
     pub ap_prefix: &'static str,
@@ -214,9 +235,10 @@ pub struct HttpResponse {
 pub trait ConfigHttpBackend {
     type Server;
 
-    fn start<H>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
+    fn start<H, Fut>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
     where
-        H: Fn(HttpRequest) -> Result<HttpResponse> + Send + Sync + 'static;
+        H: Fn(HttpRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HttpResponse>> + Send;
 }
 
 const CONFIG_HTTP_ENDPOINTS: &[HttpEndpoint] = &[
@@ -259,7 +281,12 @@ where
     let reason = reason.to_string();
     let http_activity = activity.clone();
     let server = http.start(CONFIG_HTTP_ENDPOINTS, move |request| {
-        handle_http_request(spec, &reason, &store, &http_activity, request)
+        let reason = reason.to_string();
+        let store = store.clone();
+        let http_activity = http_activity.clone();
+        async move {
+            handle_http_request(spec, &reason, &store, &http_activity, request).await
+        }
     })?;
 
     info!("config portal ready on SSID {ap_ssid}");
@@ -372,6 +399,14 @@ where
             FieldKind::Text | FieldKind::Number { .. } => {
                 submitted.get(field.key).cloned().unwrap_or_default()
             }
+            FieldKind::Select { .. } => {
+                let selected = submitted.get(field.key).cloned().unwrap_or_default();
+                if selected == "__other__" {
+                    submitted.get(&format!("{}_other", field.key)).cloned().unwrap_or_default()
+                } else {
+                    selected
+                }
+            }
         };
         saved.insert(field.key.to_string(), value);
     }
@@ -416,7 +451,7 @@ where
     wifi.stop_access_point().await
 }
 
-fn handle_http_request<S>(
+async fn handle_http_request<S>(
     spec: &'static ConfigSpec,
     reason: &str,
     store: &S,
@@ -436,7 +471,7 @@ where
     match (&request.method, request.path.as_str()) {
         (HttpMethod::Get, "/") => {
             let state = read_config(spec, store)?;
-            Ok(html_response(render_form(spec, reason, &state, None, None)))
+            Ok(html_response(render_form(spec, reason, &state, None, None).await))
         }
         (HttpMethod::Post, "/save") => {
             let form = parse_request_form(&request)?;
@@ -448,7 +483,7 @@ where
                     &state,
                     Some(&form),
                     Some(&err.to_string()),
-                )));
+                ).await));
             }
 
             activity.reboot_requested.store(true, Ordering::Relaxed);
@@ -470,7 +505,7 @@ where
     }
 }
 
-fn render_form(
+async fn render_form(
     spec: &ConfigSpec,
     reason: &str,
     state: &ConfigState,
@@ -507,45 +542,114 @@ fn render_form(
     for field in spec.fields {
         let value = field_value(field, state, submitted);
         let has_stored_value = stored_field_value(state, field.key).is_some();
-        let input_type = match field.kind {
-            FieldKind::Text => "text",
-            FieldKind::Password => "password",
-            FieldKind::Number { .. } => "number",
-        };
-        let required = if matches!(field.kind, FieldKind::Password) {
-            field.required && !has_stored_value
-        } else {
-            field.required
-        };
-        let placeholder = if matches!(field.kind, FieldKind::Password) && has_stored_value {
-            "Leave blank to keep stored password"
-        } else {
-            ""
-        };
-        let required_attr = if required { " required" } else { "" };
-        let mut extra_attrs = String::new();
-        if !placeholder.is_empty() {
-            let _ = write!(extra_attrs, " placeholder=\"{}\"", escape_html(placeholder));
-        }
-        if let FieldKind::Number { min, max } = field.kind {
-            let _ = write!(extra_attrs, " min=\"{}\" max=\"{}\" step=\"1\"", min, max);
-        }
+        
+        match &field.kind {
+            FieldKind::Text | FieldKind::Password | FieldKind::Number { .. } => {
+                let input_type = match field.kind {
+                    FieldKind::Text => "text",
+                    FieldKind::Password => "password",
+                    FieldKind::Number { .. } => "number",
+                    FieldKind::Select { .. } => unreachable!(),
+                };
+                let required = if matches!(field.kind, FieldKind::Password) {
+                    field.required && !has_stored_value
+                } else {
+                    field.required
+                };
+                let placeholder = if matches!(field.kind, FieldKind::Password) && has_stored_value {
+                    "Leave blank to keep stored password"
+                } else {
+                    ""
+                };
+                let required_attr = if required { " required" } else { "" };
+                let mut extra_attrs = String::new();
+                if !placeholder.is_empty() {
+                    let _ = write!(extra_attrs, " placeholder=\"{}\"", escape_html(placeholder));
+                }
+                if let FieldKind::Number { min, max } = field.kind {
+                    let _ = write!(extra_attrs, " min=\"{}\" max=\"{}\" step=\"1\"", min, max);
+                }
 
-        let _ = write!(
-            html,
-            "<label><span>{}</span><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>",
-            escape_html(field.label),
-            input_type,
-            escape_html(field.key),
-            escape_html(value),
-            required_attr,
-            extra_attrs,
-        );
-
-        if matches!(field.kind, FieldKind::Password) && has_stored_value {
-            html.push_str(
-                "<p class=\"hint\">A password is already stored; leave blank to keep it.</p>",
-            );
+                let _ = write!(
+                    html,
+                    "<label><span>{}</span><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>",
+                    escape_html(field.label),
+                    input_type,
+                    escape_html(field.key),
+                    escape_html(value),
+                    extra_attrs,
+                    required_attr
+                );
+                
+                if matches!(field.kind, FieldKind::Password) && has_stored_value {
+                    html.push_str(
+                        "<p class=\"hint\">A password is already stored; leave blank to keep it.</p>",
+                    );
+                }
+            }
+            FieldKind::Select { options } => {
+                let required_attr = if field.required { " required" } else { "" };
+                let options = options.options().await;
+                
+                let stored_value = stored_field_value(state, field.key);
+                
+                let submitted_value = submitted.and_then(|s| s.get(field.key).cloned());
+                let submitted_other = submitted.and_then(|s| s.get(&format!("{}_other", field.key)).cloned());
+                
+                let selected_value = if let Some(ref sv) = submitted_value {
+                    if sv == "__other__" {
+                        submitted_other.as_deref().unwrap_or("")
+                    } else {
+                        sv.as_str()
+                    }
+                } else {
+                    stored_value.unwrap_or("")
+                };
+                
+                let value_is_in_options = options.iter().any(|o| o.value == selected_value);
+                
+                let _ = write!(
+                    html,
+                    "<label><span>{}</span><select name=\"{}\"{} onchange=\"this.nextElementSibling.classList.toggle('hidden', this.value !== '__other__')\">",
+                    escape_html(field.key),
+                    escape_html(field.key),
+                    required_attr
+                );
+                
+                for option in &options {
+                    let selected = selected_value == option.value;
+                    let _ = write!(
+                        html,
+                        "<option value=\"{}\"{}>{}</option>",
+                        escape_html(option.value),
+                        if selected { " selected" } else { "" },
+                        escape_html(option.label)
+                    );
+                }
+                
+                let other_selected = submitted_value.as_deref() == Some("__other__") || 
+                    (submitted_value.is_none() && stored_value.is_some() && !value_is_in_options);
+                let _ = write!(
+                    html,
+                    "<option value=\"__other__\"{}>Other...</option></select>",
+                    if other_selected { " selected" } else { "" }
+                );
+                
+                let other_text_value = if other_selected {
+                    submitted_other.as_deref().unwrap_or(if !value_is_in_options { stored_value.unwrap_or("") } else { "" })
+                } else {
+                    ""
+                };
+                let hidden_attr = if other_selected { String::new() } else { r#" class="hidden""#.to_string() };
+                let _ = write!(
+                    html,
+                    "<input type=\"text\" name=\"{}_other\" value=\"{}\"{} placeholder=\"Enter custom value\">",
+                    escape_html(field.key),
+                    escape_html(other_text_value),
+                    hidden_attr
+                );
+                let _ = write!(html, "</label>");
+            }
         }
     }
     html.push_str("<button type=\"submit\">Save and reboot</button></form>");
@@ -579,6 +683,7 @@ fn schema_signature(spec: &ConfigSpec) -> String {
             FieldKind::Number { min, max } => {
                 let _ = write!(schema, "number({},{})", min, max);
             }
+            FieldKind::Select { .. } => schema.push_str("select"),
         }
         schema.push(':');
         schema.push_str(if field.required {
@@ -607,6 +712,13 @@ fn stored_config_from_map(spec: &ConfigSpec, stored: &BTreeMap<String, String>) 
         if let Some(value) = stored.get(field.key) {
             values.insert(field.key.to_string(), value.clone());
         }
+        if matches!(field.kind, FieldKind::Select { .. }) {
+            if let Some(other_value) = stored.get(&format!("{}_other", field.key)) {
+                if !other_value.is_empty() {
+                    values.insert(field.key.to_string(), other_value.clone());
+                }
+            }
+        }
     }
 
     StoredConfig { values }
@@ -622,7 +734,7 @@ where
     ))
 }
 
-fn validate_submitted(
+fn validate_submitted<'a>(
     spec: &ConfigSpec,
     submitted: &BTreeMap<String, String>,
     previous: &StoredConfig,
@@ -664,6 +776,18 @@ fn validate_submitted(
                 );
             }
         }
+
+        if matches!(field.kind, FieldKind::Select { .. }) {
+            if value.is_empty() {
+                continue;
+            }
+            if value == "__other__" {
+                let other_value = submitted.get(&format!("{}_other", field.key)).map(String::as_str).unwrap_or("");
+                if other_value.is_empty() {
+                    bail!("{} is required", field.label);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -687,7 +811,14 @@ fn field_value<'a>(
 
     if let Some(submitted) = submitted {
         if let Some(value) = submitted.get(field.key) {
-            return value;
+            if !value.is_empty() && value != "__other__" {
+                return value;
+            }
+            if let Some(other_value) = submitted.get(&format!("{}_other", field.key)) {
+                if !other_value.is_empty() {
+                    return other_value;
+                }
+            }
         }
     }
 

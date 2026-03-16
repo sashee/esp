@@ -5,11 +5,12 @@ use embedded_svc::{
     io::{Read, Write},
 };
 use esp_idf_svc::{
+    hal::task::block_on,
     http::server::{Configuration as HttpConfiguration, EspHttpServer},
     nvs::{EspNvs, EspNvsPartition, NvsPartitionId},
     sys::{self, ESP_ERR_NVS_NOT_FOUND},
 };
-use std::{collections::BTreeMap, string::ToString, sync::Arc, vec, vec::Vec};
+use std::{collections::BTreeMap, future::Future, string::ToString, sync::Arc, vec, vec::Vec};
 
 use crate::{
     ConfigClock, ConfigHttpBackend, ConfigPlatform, ConfigStore, HttpEndpoint, HttpMethod,
@@ -85,9 +86,10 @@ impl ConfigClock for EspClock {
 impl ConfigHttpBackend for EspHttpBackend {
     type Server = EspHttpServer<'static>;
 
-    fn start<H>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
+    fn start<H, Fut>(self, endpoints: &'static [HttpEndpoint], handler: H) -> Result<Self::Server>
     where
-        H: Fn(HttpRequest) -> Result<HttpResponse> + Send + Sync + 'static,
+        H: Fn(HttpRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HttpResponse>> + Send,
     {
         let mut server = EspHttpServer::new(&HttpConfiguration::default())?;
         let handler = Arc::new(handler);
@@ -100,7 +102,7 @@ impl ConfigHttpBackend for EspHttpBackend {
                 endpoint.path,
                 esp_method(endpoint.method)?,
                 move |mut request| {
-                    let response = handler(build_request(endpoint, &mut request)?)?;
+                    let response = block_on(handler(build_request(endpoint, &mut request)?))?;
                     let mut raw_response = request.into_response(
                         response.status_code,
                         None,
