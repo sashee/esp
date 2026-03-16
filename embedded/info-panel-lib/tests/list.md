@@ -9,7 +9,7 @@
 
 * after connecting to the wifi it makes an http request to the endpoint defined in the nvs
 * if the http request returns an error it retries 3 times
-* if all of the retries fail, chip enters error mode: red led for 60 seconds and then restart
+* if all of the retries fail, chip enters error mode: red led for 10 minutes and then restart
 * if the request is successful then it shows the image on the tft
 * refresh happens every 30 seconds
 
@@ -22,7 +22,7 @@
 ### No NVS case
 
 * if the nvs is empty, it starts a wifi AP
-* when the AP is running the LED is yellow
+* when the AP is running the LED is green
 * if there is no connection for 60 seconds, it restarts
 * if there is a connection then it restarts after 10 minutes
 
@@ -41,5 +41,5 @@
 
 ## Onboard LED
 
-* if there is no led_brightness config in the nvs the AP and the error LED brightness is 0.5
+* if there is no led_brightness config in the nvs the AP and the error LED brightness is 0.06
 * if there is led_brigthness in the nvs then all LEDs use that brightness value
