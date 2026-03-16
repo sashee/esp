@@ -54,14 +54,6 @@ Verifies that when config is partially corrupted (e.g., missing url), the requir
 3. Assert that wifi.start_access_point() was called
 4. Assert that error message indicates "configuration missing"
 
-### test_init_goes_to_required_portal_when_nvs_empty
-
-Verifies that when NVS is completely empty, the required config portal is started. The test will:
-1. Provide a mock store that returns an empty BTreeMap
-2. Run the info_panel_lib::run() function
-3. Assert that wifi.start_access_point() was called
-4. Assert that LED was set to REQUIRED_PORTAL_LED (green)
-
 ### test_init_sets_orange_led_during_wifi_connection
 
 Verifies that the LED is orange during WiFi connection. The test will:
@@ -70,14 +62,13 @@ Verifies that the LED is orange during WiFi connection. The test will:
 3. Run the info_panel_lib::run() function
 4. Assert that at some point during connection, LED was set to CONNECTING_LED (1.0, 0.78, 0.0) with brightness from config.led_brightness()
 
-### test_init_continues_when_led_set_fails_during_connect
+### test_init_enters_error_mode_when_led_set_fails_during_connect
 
-Verifies that LED errors during connection don't stop the flow. The test will:
+Verifies that LED errors during connection cause the device to enter error mode. The test will:
 1. Provide a mock LED that returns an error on set_pixel
 2. Mock wifi.connect() to succeed
-3. Mock http_client.get() to return valid frame data
-4. Run the info_panel_lib::run() function
-5. Assert that the function completes successfully despite LED errors
+3. Run the info_panel_lib::run() function (expecting panic from reboot)
+4. Assert that platform.reboot() was called (LED error propagates to error mode)
 
 ### test_init_sets_blue_led_when_wifi_connected
 
@@ -111,12 +102,13 @@ Verifies behavior when the configured URL is an empty string. The test will:
 
 ### test_image_fails_when_url_invalid
 
-Verifies that an invalid URL causes HTTP failure. The test will:
+Verifies that an invalid URL triggers retries and eventually error mode. The test will:
 1. Provide a mock store with valid config
 2. Mock wifi.connect() to succeed
-3. Mock http_client.get() to return an error (e.g., "invalid url")
-4. Run the info_panel_lib::run() function
-5. Assert that the error propagates to the retry logic
+3. Mock http_client.get() to always return an error
+4. Run the info_panel_lib::run() function (expecting panic from reboot)
+5. Assert that http_client.get() was called 3 times
+6. Assert that LED was set to ERROR_LED (red) before reboot
 
 ### test_image_retries_3_times_on_http_failure
 
@@ -164,7 +156,7 @@ Verifies that after all 3 retries fail, the device enters error mode with red LE
 2. Mock wifi.connect() to succeed
 3. Mock http_client.get() to always fail
 4. Run the info_panel_lib::run() function (expecting panic from reboot)
-5. Assert that LED was set to ERROR_LED (red: 1.0, 0.0, 0.0) before reboot
+5. Assert that LED was set to ERROR_LED (red: 1.0, 0.0, 0.0) with brightness PORTAL_LED_BRIGHTNESS (0.06) before reboot
 6. Assert that platform.reboot() was called
 
 ### test_image_error_mode_waits_before_restart
@@ -186,15 +178,16 @@ Verifies that when HTTP fetch succeeds, the frame is written to the TFT display.
 4. Run the info_panel_lib::run() function
 5. Assert that display.write_frame() was called with the returned bytes
 
-### test_image_handles_write_frame_failure
+### test_image_enters_error_mode_on_write_frame_failure
 
-Verifies that write_frame failures in the main loop are handled gracefully. The test will:
+Verifies that write_frame failures trigger error mode. The test will:
 1. Provide a mock store with valid config
 2. Mock wifi.connect() to succeed
 3. Mock http_client.get() to return valid frame data
-4. Mock display.write_frame() to fail on first call, succeed on subsequent
-5. Run the info_panel_lib::run() function
-6. Assert that the loop continues after write_frame error
+4. Mock display.write_frame() to fail
+5. Run the info_panel_lib::run() function (expecting panic from reboot)
+6. Assert that LED was set to ERROR_LED (red) before reboot
+7. Assert that platform.reboot() was called
 
 ### test_image_handles_invalid_frame_size
 
@@ -224,15 +217,15 @@ Verifies that if WiFi disconnects during the 30-second wait, the device enters e
 4. Run the info_panel_lib::run() function (expecting panic from reboot)
 5. Assert that LED was set to ERROR_LED (red) before reboot
 
-### test_image_continues_refresh_loop_after_write_frame_error
+### test_image_enters_error_mode_on_write_frame_failure_in_refresh
 
-Verifies that write_frame errors in the refresh loop don't stop the refresh cycle. The test will:
+Verifies that write_frame failures during refresh trigger error mode. The test will:
 1. Provide a mock store with valid config
 2. Mock wifi.connect() to succeed
 3. Mock http_client.get() to always return valid data
-4. Mock display.write_frame() to fail
-5. Run the info_panel_lib::run() function
-6. Assert that http_client.get() is called multiple times (loop continues)
+4. Mock display.write_frame() to fail on refresh (second call onward)
+5. Run the info_panel_lib::run() function (expecting panic from reboot)
+6. Assert that LED was set to ERROR_LED (red) before reboot
 
 ---
 
@@ -246,13 +239,13 @@ Verifies that when NVS is empty, an access point is started. The test will:
 3. Assert that wifi.start_access_point() was called
 4. Assert that the AP SSID starts with "InfoPanel-"
 
-### test_portal_handles_ap_start_failure
+### test_portal_ap_start_failure_still_reboots
 
-Verifies that AP start failures are handled. The test will:
+Verifies that AP start failures don't prevent the portal from rebooting. The test will:
 1. Provide a mock store that returns empty config
 2. Mock wifi.start_access_point() to return an error
-3. Run the info_panel_lib::run() function
-4. Assert that the error propagates (no panic)
+3. Run the info_panel_lib::run() function (expecting panic from reboot)
+4. Assert that platform.reboot() was called (portal always reboots)
 
 ### test_portal_sets_green_led_when_required_portal_runs
 
@@ -260,13 +253,6 @@ Verifies that the LED is green when the required config portal runs. The test wi
 1. Provide a mock store that returns empty config
 2. Run the info_panel_lib::run() function
 3. Assert that LED was set to REQUIRED_PORTAL_LED (green: 0.0, 1.0, 0.0)
-
-### test_portal_led_turned_off_after_portal_exits
-
-Verifies that the LED is turned off after the required portal exits. The test will:
-1. Provide a mock store that returns empty config
-2. Run the info_panel_lib::run() function (expecting it to complete after portal)
-3. Assert that LED was set to OFF_LED (0.0, 0.0, 0.0) after portal exits
 
 ### test_portal_restarts_after_idle_timeout
 
@@ -286,12 +272,12 @@ Verifies that the required portal uses 60-second idle timeout. The test will:
 
 ### test_portal_continues_after_client_connection_timeout
 
-Verifies that after a client connects, the portal waits for connected_timeout (10 minutes) before exiting. The test will:
+Verifies that after a client connects, the portal waits for connected_timeout (10 minutes) before restarting. The test will:
 1. Provide a mock store that returns empty config
 2. Simulate a client connection event
 3. Mock the clock to advance past connected_timeout (10 minutes)
-4. Run the info_panel_lib::run() function
-5. Assert that portal exits after timeout and function completes
+4. Run the info_panel_lib::run() function (expecting panic from reboot)
+5. Assert that platform.reboot() was called after the connected_timeout
 
 ---
 
@@ -333,13 +319,13 @@ Verifies that the preboot portal uses 30-second idle timeout. The test will:
 
 ### test_portal_preboot_waits_for_connection
 
-Verifies that preboot portal waits for 10 minutes after client connection. The test will:
+Verifies that preboot portal waits for 10 minutes after client connection before continuing boot. The test will:
 1. Provide a mock platform with BootReason::PowerOn
 2. Provide a mock store with valid config
 3. Simulate client connection to the preboot AP
 4. Mock the clock to advance past connected_timeout (10 minutes)
 5. Run the info_panel_lib::run() function
-6. Assert that portal exits and continues to normal boot flow after timeout
+6. Assert that portal exits and wifi.connect() is called (normal boot continues)
 
 ---
 
@@ -427,9 +413,9 @@ Verifies that LED is at full brightness when led_brightness is 255. The test wil
 | Category | Tests |
 |----------|-------|
 | Init | 9 |
-| Image | 13 |
+| Image | 15 |
 | Config portal - No NVS | 6 |
 | Config portal - Power on | 5 |
-| Config portal - Usage | 3 |
+| Config portal - Usage | 4 |
 | Onboard LED | 5 |
-| **Total** | **41 tests** |
+| **Total** | **44 tests** |

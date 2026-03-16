@@ -551,12 +551,15 @@ where
     L: Led,
 {
     let brightness = config.led_brightness();
+    let led_error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
     let connection = wifi
         .connect(
             &WifiCredentials::new(config.ssid(), config.password()),
             |state| match state {
                 ConnectState::Starting => {
-                    let _ = led.set_pixel(CONNECTING_LED, brightness);
+                    if let Err(err) = led.set_pixel(CONNECTING_LED, brightness) {
+                        *led_error.lock().unwrap() = Some(err);
+                    }
                     info!("Starting Wi-Fi (yellow: connecting)");
                 }
                 ConnectState::Scanning => info!("Scanning for Wi-Fi networks"),
@@ -577,6 +580,10 @@ where
             },
         )
         .await?;
+
+    if let Some(err) = led_error.lock().unwrap().take() {
+        return Err(err);
+    }
 
     info!("Wi-Fi connected with IP {}", connection.ip);
     Ok(())
