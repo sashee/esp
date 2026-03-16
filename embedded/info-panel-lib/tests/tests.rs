@@ -26,22 +26,11 @@ fn block_on<F: Future>(future: F) -> F::Output {
     let waker = unsafe { Waker::from_raw(raw_waker()) };
     let mut future = Box::pin(future);
     let mut context = Context::from_waker(&waker);
-    let mut poll_count = 0u64;
 
     loop {
-        poll_count += 1;
-        if poll_count <= 20 || poll_count % 1000 == 0 {
-            eprintln!("block_on poll #{poll_count}");
-        }
         match Future::poll(Pin::as_mut(&mut future), &mut context) {
-            Poll::Ready(output) => {
-                eprintln!("block_on done after {poll_count} polls");
-                return output;
-            }
-            Poll::Pending => {
-                eprintln!("block_on pending at poll #{poll_count}");
-                std::thread::yield_now();
-            }
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::yield_now(),
         }
     }
 }
@@ -365,9 +354,7 @@ fn run_enters_ap_mode_when_nvs_empty() {
 
     let led_ref = &mut led;
 
-    eprintln!("before catch_unwind");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        eprintln!("inside closure, before block_on");
         block_on(info_panel_lib::run(
             &mut wifi,
             store,
@@ -379,7 +366,7 @@ fn run_enters_ap_mode_when_nvs_empty() {
             led_ref,
         ));
     }));
-    eprintln!("after catch_unwind: {:?}", result.is_err());
+    let _ = result;
 
     // LED should have been set to green (REQUIRED_PORTAL_LED = 0.0, 1.0, 0.0)
     assert_eq!(led.colors.last(), Some(&(0.0, 1.0, 0.0)));
@@ -388,68 +375,4 @@ fn run_enters_ap_mode_when_nvs_empty() {
     let state = wifi.backend().state.lock().unwrap();
     assert_eq!(state.start_configs.len(), 1);
     assert_eq!(state.start_configs[0].ssid, "InfoPanel-AABB");
-}
-
-#[test]
-fn debug_block_on() {
-    eprintln!("TEST START");
-    let result = block_on(async {
-        eprintln!("ASYNC START");
-        42
-    });
-    eprintln!("TEST END: {result}");
-    assert_eq!(result, 42);
-}
-
-#[test]
-fn debug_display_init() {
-    let mut display = MockDisplay;
-    eprintln!("before display init block_on");
-    let r = block_on(display.init());
-    eprintln!("after display init: {:?}", r.is_ok());
-}
-
-#[test]
-fn debug_minimal_run() {
-    let mut led = MockLed::new();
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
-    let store = MockStore;
-    let http_backend = MockHttpBackend;
-    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
-    let clock = MockClock::from_ticks(&[0, 250, 60_000_000]);
-    let http_client = MockHttpClient;
-    let display = MockDisplay;
-
-    let led_ref = &mut led;
-
-    eprintln!("before run block_on");
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
-            store,
-            http_backend,
-            platform,
-            clock,
-            http_client,
-            display,
-            led_ref,
-        ));
-    }));
-    eprintln!("after catch_unwind");
-    eprintln!("led colors: {:?}", led.colors);
-}
-
-async fn test_generic_display<D: DisplayWrite>(display: &mut D) -> anyhow::Result<()> {
-    eprintln!("before init");
-    display.init().await?;
-    eprintln!("after init");
-    Ok(())
-}
-
-#[test]
-fn debug_generic_display() {
-    let mut display = MockDisplay;
-    eprintln!("before block_on");
-    let r = block_on(test_generic_display(&mut display));
-    eprintln!("after block_on: {:?}", r.is_ok());
 }

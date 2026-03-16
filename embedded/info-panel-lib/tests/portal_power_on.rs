@@ -170,3 +170,89 @@ fn test_portal_preboot_waits_for_connection() {
         "platform.reboot() must be called after preboot portal exits"
     );
 }
+
+#[test]
+fn test_portal_preboot_portal_uses_30_second_timeout() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi_backend = MockWifiBackend::default();
+    wifi_backend.set_is_connected(false);
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
+    // Preboot portal: idle_timeout = 30s. Use exactly 30s boundary + some margin
+    let clock = MockClock::from_ticks(&[0, 250, 30_000_001]);
+    let sleep_durations = clock.sleep_durations.clone();
+    let http_client = MockHttpClient::new();
+    let display = MockDisplay::new(global_counter);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // Portal polls every 250ms (from config-portal)
+    let sleeps = sleep_durations.lock().unwrap();
+    assert!(
+        sleeps
+            .iter()
+            .any(|d| *d == embassy_time::Duration::from_millis(250)),
+        "preboot portal must sleep 250ms between polls. Got: {:?}",
+        *sleeps
+    );
+}
+
+#[test]
+fn test_portal_preboot_led_error_enters_error_mode() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::failing(); // LED always fails
+    let mut wifi_backend = MockWifiBackend::default();
+    wifi_backend.set_is_connected(false);
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
+    let clock = MockClock::from_ticks(&[0, 250, 30_000_001]);
+    let http_client = MockHttpClient::new();
+    let display = MockDisplay::new(global_counter);
+
+    let reboot_called = platform.reboot_called.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // LED errors in preboot portal are ignored (let _ = led.set_pixel(...))
+    // but after preboot portal, wifi connect fails because LED fails → error mode
+    assert!(
+        *reboot_called.lock().unwrap(),
+        "platform.reboot() must be called after LED failure leads to error mode"
+    );
+
+    // Error mode LED (red) should have been set at some point
+    let last = led.last_call();
+    assert!(
+        last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+            .unwrap_or(false),
+        "LED must be set to ERROR_LED (red) in error mode. Last: {:?}",
+        last
+    );
+}

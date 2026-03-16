@@ -95,6 +95,13 @@ fn test_init_enters_error_mode_when_display_init_fails() {
         "LED must be set to ERROR_LED (red) after display init failure"
     );
 
+    // Verify error mode LED brightness is 0.06
+    assert_eq!(
+        led.last_call().map(|c| c.brightness),
+        Some(0.06),
+        "ERROR_LED brightness must be 0.06"
+    );
+
     // Verify reboot was called
     assert!(
         *reboot_called.lock().unwrap(),
@@ -338,6 +345,13 @@ fn test_init_enters_error_mode_when_led_set_fails_during_connect() {
         last
     );
 
+    // Verify error mode LED brightness is 0.06
+    assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
     // Verify reboot was called
     assert!(
         *reboot_called.lock().unwrap(),
@@ -383,5 +397,153 @@ fn test_init_sets_blue_led_when_wifi_connected() {
         "LED must be set to CONNECTED_LED (blue, brightness={:.3}). Got: {:?}",
         expected_brightness,
         led.calls()
+    );
+}
+
+#[test]
+fn test_init_sets_orange_led_during_wifi_connection() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let wifi_backend = MockWifiBackend::with_counter(global_counter.clone());
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let http_client = MockHttpClient::always_failing();
+    let display = MockDisplay::new(global_counter);
+    let connect_order = wifi.backend().connect_order.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // CONNECTING_LED (orange: 1.0, 0.78, 0.0) must be set with config brightness (128/255)
+    let expected_brightness = 128.0 / 255.0;
+    assert!(
+        led.calls().iter().any(|c| {
+            (c.r - 1.0).abs() < 0.01
+                && (c.g - 0.78).abs() < 0.01
+                && (c.b - 0.0).abs() < 0.01
+                && (c.brightness - expected_brightness).abs() < 0.01
+        }),
+        "LED must be set to CONNECTING_LED (orange) with brightness {:.3} during connection. Got: {:?}",
+        expected_brightness,
+        led.calls()
+    );
+
+    // Verify wifi.connect() was actually called
+    assert!(
+        connect_order.lock().unwrap().is_some(),
+        "wifi.connect() must have been called"
+    );
+}
+
+#[test]
+fn test_init_enters_error_mode_when_wifi_connect_fails() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi_backend = MockWifiBackend::with_counter(global_counter.clone());
+    wifi_backend.set_fail_connect(true);
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let http_client = MockHttpClient::new();
+    let display = MockDisplay::new(global_counter);
+
+    let reboot_called = platform.reboot_called.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // Error mode LED (red) with brightness 0.06
+    let last = led.last_call();
+    assert!(
+        last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+            .unwrap_or(false),
+        "LED must be set to ERROR_LED (red) after wifi connect failure. Last: {:?}",
+        last
+    );
+
+    assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
+    assert!(
+        *reboot_called.lock().unwrap(),
+        "platform.reboot() must be called after wifi connect failure"
+    );
+}
+
+#[test]
+fn test_init_enters_error_mode_when_wifi_configure_fails() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi_backend = MockWifiBackend::with_counter(global_counter.clone());
+    wifi_backend.set_fail_configure_client(true);
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let http_client = MockHttpClient::new();
+    let display = MockDisplay::new(global_counter);
+
+    let reboot_called = platform.reboot_called.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // Error mode LED (red) with brightness 0.06
+    let last = led.last_call();
+    assert!(
+        last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+            .unwrap_or(false),
+        "LED must be set to ERROR_LED (red) after wifi configure failure. Last: {:?}",
+        last
+    );
+
+    assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
+    assert!(
+        *reboot_called.lock().unwrap(),
+        "platform.reboot() must be called after wifi configure failure"
     );
 }

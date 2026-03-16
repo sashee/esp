@@ -141,10 +141,11 @@ fn test_image_succeeds_on_first_retry() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
-    // fail_nth(1) = fail first call, succeed second. Then is_connected=false exits refresh loop.
-    let http_client = MockHttpClient::fail_nth(1);
+    // fail_up_to(1) = fail first call, succeed second. Then is_connected=false exits refresh loop.
+    let http_client = MockHttpClient::fail_up_to(1);
     let calls = http_client.get_calls.clone();
     let display = MockDisplay::new(global_counter);
+    let write_frame_calls = display.write_frame_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -164,6 +165,12 @@ fn test_image_succeeds_on_first_retry() {
         2,
         "http_client.get() must be called exactly 2 times (1 fail + 1 success)"
     );
+
+    assert!(
+        *write_frame_calls.lock().unwrap() >= 2,
+        "display.write_frame() must be called at least twice (black fill + fetched frame). Got: {}",
+        *write_frame_calls.lock().unwrap()
+    );
 }
 
 #[test]
@@ -177,9 +184,11 @@ fn test_image_succeeds_on_second_retry() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
-    let http_client = MockHttpClient::fail_nth(1);
+    // fail_up_to(2) = fail first and second calls, succeed on third. Then is_connected=false exits.
+    let http_client = MockHttpClient::fail_up_to(2);
     let calls = http_client.get_calls.clone();
     let display = MockDisplay::new(global_counter);
+    let write_frame_calls = display.write_frame_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -196,8 +205,14 @@ fn test_image_succeeds_on_second_retry() {
 
     assert_eq!(
         *calls.lock().unwrap(),
-        2,
-        "http_client.get() must be called exactly 2 times"
+        3,
+        "http_client.get() must be called exactly 3 times (2 fails + 1 success)"
+    );
+
+    assert!(
+        *write_frame_calls.lock().unwrap() >= 2,
+        "display.write_frame() must be called at least twice (black fill + fetched frame). Got: {}",
+        *write_frame_calls.lock().unwrap()
     );
 }
 
@@ -299,18 +314,19 @@ fn test_image_succeeds_on_third_retry() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let mut led = MockLed::new();
     let mut wifi_backend = MockWifiBackend::with_counter(global_counter.clone());
-    wifi_backend.set_is_connected(true);
+    wifi_backend.set_is_connected(false);
     let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
-    // panic_on_nth(2): first fetch succeeds (initial), panic on refresh fetch
-    let http_client = MockHttpClient::panic_on_nth(2);
+    // fail_up_to(2) = fail attempts 1 and 2, succeed on attempt 3. is_connected=false exits.
+    let http_client = MockHttpClient::fail_up_to(2);
     let calls = http_client.get_calls.clone();
     let display = MockDisplay::new(global_counter);
+    let write_frame_calls = display.write_frame_calls.clone();
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
             &mut wifi,
             store,
@@ -323,9 +339,17 @@ fn test_image_succeeds_on_third_retry() {
         ))
     }));
 
-    // Mock panics on the 2nd HTTP call (refresh), proving initial fetch succeeded
-    assert!(result.is_err(), "mock must panic on refresh HTTP call");
-    assert_eq!(*calls.lock().unwrap(), 2, "must reach refresh fetch");
+    assert_eq!(
+        *calls.lock().unwrap(),
+        3,
+        "http_client.get() must be called exactly 3 times (2 fails + 1 success on 3rd attempt)"
+    );
+
+    assert!(
+        *write_frame_calls.lock().unwrap() >= 2,
+        "display.write_frame() must be called at least twice (black fill + fetched frame). Got: {}",
+        *write_frame_calls.lock().unwrap()
+    );
 }
 
 #[test]
@@ -401,6 +425,12 @@ fn test_image_enters_error_mode_on_write_frame_failure() {
     );
 
     assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
+    assert!(
         *reboot_called.lock().unwrap(),
         "platform.reboot() must be called after write_frame failure"
     );
@@ -417,7 +447,8 @@ fn test_image_handles_invalid_frame_size() {
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
-    let http_client = MockHttpClient::new();
+    // Return only 100 bytes instead of expected 128*160*2 = 40960
+    let http_client = MockHttpClient::with_custom_response(vec![0u8; 100]);
     let display = MockDisplay::new(global_counter);
     let write_frame_calls = display.write_frame_calls.clone();
 
@@ -434,10 +465,11 @@ fn test_image_handles_invalid_frame_size() {
         ))
     }));
 
-    // MockHttpClient returns default 40960 bytes - library passes it through without validation
+    // Library passes wrong-sized data through to write_frame without validation
     assert!(
         *write_frame_calls.lock().unwrap() >= 2,
-        "display.write_frame() must be called with the fetched data"
+        "display.write_frame() must be called with the invalid-size data. Got: {}",
+        *write_frame_calls.lock().unwrap()
     );
 }
 
@@ -532,6 +564,21 @@ fn test_image_aborts_refresh_on_wifi_disconnect() {
         "http_client.get() must be called only once (refresh aborted)"
     );
 
+    // Error mode LED (red) with brightness 0.06
+    let last = led.last_call();
+    assert!(
+        last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+            .unwrap_or(false),
+        "LED must be set to ERROR_LED (red). Last: {:?}",
+        last
+    );
+
+    assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
     // Error mode entered because wifi disconnected
     assert!(
         *reboot_called.lock().unwrap(),
@@ -584,5 +631,76 @@ fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
          http_calls={}, reboot={}",
         http_calls,
         reboot
+    );
+}
+
+#[test]
+fn test_image_fails_when_url_invalid() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi = wifi::Wifi::new(MockWifiBackend::with_counter(global_counter.clone()));
+
+    let mut values = BTreeMap::new();
+    values.insert("ssid".to_string(), "test_ssid".to_string());
+    values.insert("pw".to_string(), "test_pw".to_string());
+    values.insert("url".to_string(), "not_a_valid_url".to_string());
+    values.insert("led_brightness".to_string(), "128".to_string());
+    let store = config_store_with_values(values);
+
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let http_client = MockHttpClient::always_failing();
+    let urls = http_client.get_urls.clone();
+    let display = MockDisplay::new(global_counter);
+
+    let reboot_called = platform.reboot_called.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // HTTP request was attempted with the invalid URL
+    let fetched_urls = urls.lock().unwrap();
+    assert!(
+        fetched_urls.iter().any(|u| u == "not_a_valid_url"),
+        "http_client.get() must be called with the invalid URL. Got: {:?}",
+        *fetched_urls
+    );
+
+    // 3 retries were attempted
+    assert_eq!(
+        fetched_urls.len(),
+        3,
+        "http_client.get() must be called exactly 3 times (all retries fail)"
+    );
+
+    // Error mode LED: red with brightness 0.06
+    let last = led.last_call();
+    assert!(
+        last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+            .unwrap_or(false),
+        "LED must be set to ERROR_LED (red). Last: {:?}",
+        last
+    );
+
+    assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
+    assert!(
+        *reboot_called.lock().unwrap(),
+        "platform.reboot() must be called after entering error mode"
     );
 }
