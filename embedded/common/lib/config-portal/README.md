@@ -42,7 +42,7 @@ match read_config(&SPEC, &store)? {
         let url = config.get("url").unwrap_or("");
         // run normal mode
     }
-    ConfigState::Missing | ConfigState::SchemaMismatch(_) => {
+    ConfigState::Missing => {
         enter_config_mode(
             &SPEC,
             "configuration required",
@@ -64,4 +64,3 @@ Behavior notes:
 - password fields are never pre-filled in `GET /`
 - empty password submission keeps the previous stored password
 - SoftAP netif is configured for `192.168.4.1`
-- schema mismatch does not erase NVS until a successful save or explicit reset

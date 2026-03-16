@@ -364,18 +364,6 @@ where
             )
             .await;
         }
-        ConfigState::SchemaMismatch(_) => {
-            return run_required_config_mode(
-                platform.clone(),
-                wifi,
-                store,
-                http_backend,
-                clock.clone(),
-                led,
-                "stored configuration schema mismatch",
-            )
-            .await;
-        }
     };
 
     if run_preboot_portal {

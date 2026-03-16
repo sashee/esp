@@ -94,13 +94,6 @@ fn stored(entries: &[(&str, &str)]) -> StoredConfig {
     }
 }
 
-fn schema_value() -> String {
-    schema_signature(&TEST_SPEC)
-}
-
-fn select_schema_value() -> String {
-    schema_signature(&SELECT_SPEC)
-}
 
 #[derive(Clone, Default)]
 struct MockStore {
@@ -392,26 +385,8 @@ fn read_config_returns_missing_without_schema() {
 }
 
 #[test]
-fn read_config_returns_schema_mismatch() {
-    let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, "wrong"),
-        ("ssid", "home"),
-        ("brightness", "4"),
-    ]));
-
-    match read_config(&TEST_SPEC, &store).unwrap() {
-        ConfigState::SchemaMismatch(config) => {
-            assert_eq!(config.get("ssid"), Some("home"));
-            assert_eq!(config.get("brightness"), Some("4"));
-        }
-        state => panic!("unexpected state: {state:?}"),
-    }
-}
-
-#[test]
 fn read_config_returns_ready_when_complete() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &schema_value()),
         ("ssid", "home"),
         ("pw", "secret"),
         ("brightness", "4"),
@@ -430,7 +405,6 @@ fn read_config_returns_ready_when_complete() {
 #[test]
 fn read_config_returns_missing_when_required_field_missing() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &schema_value()),
         ("ssid", "home"),
         ("pw", "secret"),
     ]));
@@ -442,9 +416,8 @@ fn read_config_returns_missing_when_required_field_missing() {
 }
 
 #[test]
-fn clear_config_removes_fields_and_schema() {
+fn clear_config_removes_fields() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &schema_value()),
         ("ssid", "home"),
         ("pw", "secret"),
         ("brightness", "4"),
@@ -455,12 +428,12 @@ fn clear_config_removes_fields_and_schema() {
     assert_eq!(store.values(), BTreeMap::new());
     assert_eq!(
         store.state.lock().unwrap().removes[0],
-        vec!["ssid", "pw", "brightness", SCHEMA_KEY]
+        vec!["ssid", "pw", "brightness"]
     );
 }
 
 #[test]
-fn save_config_writes_values_and_schema() {
+fn save_config_writes_values() {
     let store = MockStore::default();
     let saved = save_config(
         &TEST_SPEC,
@@ -471,7 +444,6 @@ fn save_config_writes_values_and_schema() {
 
     assert_eq!(saved.get("ssid"), Some("home"));
     let written = &store.state.lock().unwrap().writes[0];
-    assert_eq!(written.get(SCHEMA_KEY), Some(&schema_value()));
     assert_eq!(written.get("pw"), Some(&"secret".to_string()));
 }
 
@@ -590,7 +562,6 @@ fn ap_ssid_uses_last_two_mac_bytes() {
 #[test]
 fn get_root_returns_form_with_stored_values() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &schema_value()),
         ("ssid", "home"),
         ("pw", "secret"),
         ("brightness", "4"),
@@ -625,22 +596,6 @@ fn get_root_shows_missing_config_note() {
         .unwrap(),
     );
     assert!(body.contains("No stored configuration found"));
-}
-
-#[test]
-fn get_root_shows_schema_mismatch_note() {
-    let store = MockStore::with_values(map(&[(SCHEMA_KEY, "wrong")]));
-    let body = body_text(
-        &block_on(handle_http_request(
-            &TEST_SPEC,
-            "configure",
-            &store,
-            &ConfigActivity::default(),
-            request(HttpMethod::Get, "/", ""),
-        ))
-        .unwrap(),
-    );
-    assert!(body.contains("does not match the current field schema"));
 }
 
 #[test]
@@ -708,7 +663,6 @@ fn post_save_invalid_form_rerenders_with_error_without_reboot() {
 #[test]
 fn post_reset_clears_store_and_marks_reboot_requested() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &schema_value()),
         ("ssid", "home"),
         ("pw", "secret"),
         ("brightness", "4"),
@@ -814,13 +768,6 @@ fn field_value_never_returns_stored_password() {
 fn stored_field_value_handles_all_config_states() {
     assert_eq!(
         stored_field_value(&ConfigState::Ready(stored(&[("ssid", "home")])), "ssid"),
-        Some("home")
-    );
-    assert_eq!(
-        stored_field_value(
-            &ConfigState::SchemaMismatch(stored(&[("ssid", "home")])),
-            "ssid"
-        ),
         Some("home")
     );
     assert_eq!(stored_field_value(&ConfigState::Missing, "ssid"), None);
@@ -1335,7 +1282,6 @@ fn select_saves_custom_text() {
 #[test]
 fn select_loads_saved_value() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &select_schema_value()),
         ("ssid", "network1"),
     ]));
     let activity = ConfigActivity::default();
@@ -1406,7 +1352,6 @@ fn select_escapes_html_in_labels() {
 #[test]
 fn post_reset_clears_select_field() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &select_schema_value()),
         ("ssid", "network1"),
     ]));
     let activity = ConfigActivity::default();
@@ -1427,7 +1372,6 @@ fn post_reset_clears_select_field() {
 #[test]
 fn read_config_returns_ready_with_select_value() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &select_schema_value()),
         ("ssid", "network2"),
     ]));
 
@@ -1442,7 +1386,6 @@ fn read_config_returns_ready_with_select_value() {
 #[test]
 fn read_config_returns_ready_with_select_custom_value() {
     let store = MockStore::with_values(map(&[
-        (SCHEMA_KEY, &select_schema_value()),
         ("ssid", "MyCustomNetwork"),
     ]));
 

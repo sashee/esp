@@ -33,17 +33,12 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn config_schema() -> String {
-    "config|Info Panel Setup|ssid:select:required|pw:password:required|url:text:required|led_brightness:number(0,255):required".to_string()
-}
-
 fn valid_config_store() -> MockStore {
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
     values.insert("pw".to_string(), "test_pw".to_string());
     values.insert("url".to_string(), "http://example.com".to_string());
     values.insert("led_brightness".to_string(), "128".to_string());
-    values.insert("_schema".to_string(), config_schema());
     MockStore { values }
 }
 

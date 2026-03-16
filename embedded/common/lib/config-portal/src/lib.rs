@@ -18,7 +18,6 @@ use std::{
     vec::Vec,
 };
 
-const SCHEMA_KEY: &str = "_schema";
 
 #[derive(Clone, Debug)]
 pub struct SelectOption<'a> {
@@ -113,7 +112,6 @@ impl StoredConfig {
 #[derive(Clone, Debug)]
 pub enum ConfigState {
     Missing,
-    SchemaMismatch(StoredConfig),
     Ready(StoredConfig),
 }
 
@@ -342,16 +340,7 @@ pub fn read_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<ConfigStat
 where
     S: ConfigStore,
 {
-    let stored = store.read(&spec_keys(spec))?;
-    let Some(stored_schema) = stored.get(SCHEMA_KEY) else {
-        return Ok(ConfigState::Missing);
-    };
-
-    if stored_schema != &schema_signature(spec) {
-        return Ok(ConfigState::SchemaMismatch(stored_config_from_map(
-            spec, &stored,
-        )));
-    }
+    let stored = store.read(&field_keys(spec))?;
 
     let mut values = BTreeMap::new();
     for field in spec.fields {
@@ -368,7 +357,7 @@ pub fn clear_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<()>
 where
     S: ConfigStore,
 {
-    store.remove(&spec_keys(spec))
+    store.remove(&field_keys(spec))
 }
 
 pub fn save_config<S>(
@@ -411,9 +400,7 @@ where
         saved.insert(field.key.to_string(), value);
     }
 
-    let mut persisted = saved.clone();
-    persisted.insert(SCHEMA_KEY.to_string(), schema_signature(spec));
-    store.write(&persisted)?;
+    store.write(&saved)?;
 
     Ok(StoredConfig { values: saved })
 }
@@ -524,9 +511,6 @@ async fn render_form(
 
     match state {
         ConfigState::Missing => html.push_str("<p class=\"note\">No stored configuration found.</p>"),
-        ConfigState::SchemaMismatch(_) => {
-            html.push_str("<p class=\"note\">Stored configuration does not match the current field schema. Saving will replace it.</p>")
-        }
         ConfigState::Ready(_) => {}
     }
 
@@ -676,41 +660,6 @@ fn success_page(message: &str) -> String {
     )
 }
 
-fn schema_signature(spec: &ConfigSpec) -> String {
-    let mut schema = String::new();
-    schema.push_str(spec.namespace);
-    schema.push('|');
-    schema.push_str(spec.title);
-
-    for field in spec.fields {
-        schema.push('|');
-        schema.push_str(field.key);
-        schema.push(':');
-        match field.kind {
-            FieldKind::Text => schema.push_str("text"),
-            FieldKind::Password => schema.push_str("password"),
-            FieldKind::Number { min, max } => {
-                let _ = write!(schema, "number({},{})", min, max);
-            }
-            FieldKind::Select { .. } => schema.push_str("select"),
-        }
-        schema.push(':');
-        schema.push_str(if field.required {
-            "required"
-        } else {
-            "optional"
-        });
-    }
-
-    schema
-}
-
-fn spec_keys(spec: &ConfigSpec) -> Vec<&str> {
-    let mut keys = field_keys(spec);
-    keys.push(SCHEMA_KEY);
-    keys
-}
-
 fn field_keys(spec: &ConfigSpec) -> Vec<&str> {
     spec.fields.iter().map(|field| field.key).collect()
 }
@@ -804,7 +753,7 @@ fn validate_submitted<'a>(
 
 fn stored_field_value<'a>(state: &'a ConfigState, key: &str) -> Option<&'a str> {
     match state {
-        ConfigState::Ready(config) | ConfigState::SchemaMismatch(config) => config.get(key),
+        ConfigState::Ready(config) => config.get(key),
         ConfigState::Missing => None,
     }
 }
