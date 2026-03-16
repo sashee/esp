@@ -566,20 +566,27 @@ async fn render_form(
                 if !placeholder.is_empty() {
                     let _ = write!(extra_attrs, " placeholder=\"{}\"", escape_html(placeholder));
                 }
-                if let FieldKind::Number { min, max } = field.kind {
+                let number_range = if let FieldKind::Number { min, max } = field.kind {
                     let _ = write!(extra_attrs, " min=\"{}\" max=\"{}\" step=\"1\"", min, max);
-                }
+                    Some((min, max))
+                } else {
+                    None
+                };
 
-                let _ = write!(
-                    html,
-                    "<label><span>{}</span><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>",
-                    escape_html(field.label),
-                    input_type,
-                    escape_html(field.key),
-                    escape_html(value),
-                    extra_attrs,
-                    required_attr
-                );
+                if let Some((m, M)) = number_range {
+                    let _ = write!(html, "<label><span>{}</span><p class=\"hint\">Allowed: {} - {}</p><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>", escape_html(field.label), m, M, input_type, escape_html(field.key), escape_html(value), extra_attrs, required_attr);
+                } else {
+                    let _ = write!(
+                        html,
+                        "<label><span>{}</span><input type=\"{}\" name=\"{}\" value=\"{}\" autocomplete=\"off\"{}{}></label>",
+                        escape_html(field.label),
+                        input_type,
+                        escape_html(field.key),
+                        escape_html(value),
+                        extra_attrs,
+                        required_attr
+                    );
+                }
                 
                 if matches!(field.kind, FieldKind::Password) && has_stored_value {
                     html.push_str(
@@ -610,7 +617,7 @@ async fn render_form(
                 
                 let _ = write!(
                     html,
-                    "<label><span>{}</span><select name=\"{}\"{} onchange=\"this.nextElementSibling.classList.toggle('hidden', this.value !== '__other__')\">",
+                    "<label><span>{}</span><select name=\"{}\"{} onchange=\"var i=this.nextElementSibling;i.classList.toggle('hidden',this.value!=='__other__');i.required=this.value==='__other__'\">",
                     escape_html(field.key),
                     escape_html(field.key),
                     required_attr
@@ -628,7 +635,7 @@ async fn render_form(
                 }
                 
                 let other_selected = submitted_value.as_deref() == Some("__other__") || 
-                    (submitted_value.is_none() && stored_value.is_some() && !value_is_in_options);
+                    (stored_value.is_some() && !value_is_in_options);
                 let _ = write!(
                     html,
                     "<option value=\"__other__\"{}>Other...</option></select>",
@@ -641,19 +648,21 @@ async fn render_form(
                     ""
                 };
                 let hidden_attr = if other_selected { String::new() } else { r#" class="hidden""#.to_string() };
+                let other_required = if other_selected { " required" } else { "" };
                 let _ = write!(
                     html,
-                    "<input type=\"text\" name=\"{}_other\" value=\"{}\"{} placeholder=\"Enter custom value\">",
+                    "<input type=\"text\" name=\"{}_other\" value=\"{}\"{} placeholder=\"Enter custom value\"{}>",
                     escape_html(field.key),
                     escape_html(other_text_value),
-                    hidden_attr
+                    hidden_attr,
+                    other_required
                 );
                 let _ = write!(html, "</label>");
             }
         }
     }
     html.push_str("<button type=\"submit\">Save and reboot</button></form>");
-    html.push_str("<form method=\"post\" action=\"/reset\"><button class=\"danger\" type=\"submit\">Reset stored config</button></form>");
+    html.push_str("<form method=\"post\" action=\"/reset\"><button class=\"danger\" type=\"submit\" onclick=\"return confirm('Are you sure? This will erase all stored configuration.')\">Reset stored config</button></form>");
     html.push_str("</main></body></html>");
 
     html
@@ -953,4 +962,4 @@ fn log_access_point_started(ap_ssid: &str, ip_config: &IpConfig) {
     );
 }
 
-const STYLE: &str = "body{font-family:sans-serif;background:#f4f1ea;color:#1d1d1d;margin:0}main{max-width:28rem;margin:0 auto;padding:1.5rem}h1{margin:0 0 1rem;font-size:1.5rem}p{line-height:1.45}form{display:grid;gap:.75rem;margin:1rem 0}label{display:grid;gap:.35rem}input,button{font:inherit;padding:.75rem;border-radius:.5rem;border:1px solid #b9b2a7}button{background:#1d6b57;color:#fff;border:0}button.danger{background:#8a2f2f}.note{padding:.75rem;border-radius:.5rem;background:#fff7d6}.error{padding:.75rem;border-radius:.5rem;background:#f9d6d6;color:#6c1d1d}.hint{margin:-.4rem 0 0;font-size:.95rem;color:#5b564f}";
+const STYLE: &str = "body{font-family:sans-serif;background:#f4f1ea;color:#1d1d1d;margin:0}main{max-width:28rem;margin:0 auto;padding:1.5rem}h1{margin:0 0 1rem;font-size:1.5rem}p{line-height:1.45}form{display:grid;gap:.75rem;margin:1rem 0}label{display:grid;gap:.35rem}input,select,button{font:inherit;padding:.75rem;border-radius:.5rem;border:1px solid #b9b2a7}input:invalid,select:invalid{border:2px solid #8a2f2f}button{background:#1d6b57;color:#fff;border:0}button.danger{background:#8a2f2f}.note{padding:.75rem;border-radius:.5rem;background:#fff7d6}.error{padding:.75rem;border-radius:.5rem;background:#f9d6d6;color:#6c1d1d}.hint{margin:-.4rem 0 0;font-size:.95rem;color:#5b564f}.hidden{display:none}";
