@@ -15,7 +15,7 @@
 
 ## Error handling
 
-* when there is an error then the LED is red and after 1 minute the chip is restarted
+* when there is an error then the LED is red and after 10 minutes the chip is restarted
 
 ## Config portal
 
