@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use core::{
     future::Future,
     pin::Pin,
@@ -8,7 +9,7 @@ use core::{
 use std::{
     collections::{BTreeMap, VecDeque},
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 static TEST_FIELDS: &[FieldSpec] = &[
@@ -23,6 +24,35 @@ static TEST_SPEC: ConfigSpec = ConfigSpec {
     title: "Info Panel Setup",
     fields: TEST_FIELDS,
 };
+
+struct TestSelectOptions {
+    options: Vec<(&'static str, &'static str)>,
+}
+
+#[async_trait]
+impl SelectOptions for TestSelectOptions {
+    async fn options(&self) -> Vec<SelectOption<'_>> {
+        self.options
+            .iter()
+            .map(|(value, label)| SelectOption { value, label })
+            .collect()
+    }
+}
+
+static SELECT_SPEC: LazyLock<ConfigSpec> = LazyLock::new(|| {
+    ConfigSpec {
+        namespace: "config",
+        ap_prefix: "InfoPanel",
+        title: "Wi-Fi Setup",
+        fields: Box::leak(vec![FieldSpec::select("ssid", "Wi-Fi Network", TestSelectOptions {
+            options: vec![
+                ("network1", "Network One"),
+                ("network2", "Network Two"),
+                ("network3", "Network Three"),
+            ],
+        })].into_boxed_slice()),
+    }
+});
 
 fn block_on<F: Future>(future: F) -> F::Output {
     fn raw_waker() -> RawWaker {
@@ -66,6 +96,10 @@ fn stored(entries: &[(&str, &str)]) -> StoredConfig {
 
 fn schema_value() -> String {
     schema_signature(&TEST_SPEC)
+}
+
+fn select_schema_value() -> String {
+    schema_signature(&SELECT_SPEC)
 }
 
 #[derive(Clone, Default)]
@@ -1182,4 +1216,189 @@ fn enter_config_mode_propagates_mac_address_failure() {
 
     assert!(err.to_string().contains("mac failed"));
     assert!(wifi.state.lock().unwrap().start_configs.is_empty());
+}
+
+#[test]
+fn renders_select_with_options() {
+    let state = ConfigState::Missing;
+    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    assert!(body.contains("<select name=\"ssid\""));
+    assert!(body.contains("<option value=\"network1\">Network One</option>"));
+    assert!(body.contains("<option value=\"network2\">Network Two</option>"));
+    assert!(body.contains("<option value=\"network3\">Network Three</option>"));
+}
+
+#[test]
+fn renders_select_with_other_option() {
+    let state = ConfigState::Missing;
+    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    assert!(body.contains("<option value=\"__other__\">Other...</option>"));
+}
+
+#[test]
+fn renders_other_text_input_hidden_by_default() {
+    let state = ConfigState::Missing;
+    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    assert!(body.contains("<input type=\"text\" name=\"ssid_other\""));
+    assert!(body.contains("class=\"hidden\""));
+}
+
+#[test]
+fn select_preselects_stored_value_when_in_options() {
+    let state = ConfigState::Ready(stored(&[("ssid", "network2")]));
+    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    assert!(body.contains("<option value=\"network2\" selected>Network Two</option>"));
+}
+
+#[test]
+fn select_shows_other_with_value_when_not_in_options() {
+    let state = ConfigState::Ready(stored(&[("ssid", "MyHiddenNetwork")]));
+    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    assert!(body.contains("<option value=\"__other__\" selected>Other...</option>"));
+    assert!(body.contains("<input type=\"text\" name=\"ssid_other\" value=\"MyHiddenNetwork\""));
+}
+
+#[test]
+fn select_prefers_submitted_value_over_stored() {
+    let state = ConfigState::Ready(stored(&[("ssid", "network1")]));
+    let submitted = map(&[("ssid", "network3"), ("ssid_other", "")]);
+    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, Some(&submitted), None));
+    assert!(body.contains("<option value=\"network3\" selected>Network Three</option>"));
+}
+
+#[test]
+fn select_stores_other_text_value() {
+    let store = MockStore::default();
+    save_config(
+        &SELECT_SPEC,
+        &store,
+        &map(&[("ssid", "__other__"), ("ssid_other", "MyCustomNetwork")]),
+    )
+    .unwrap();
+    let values = store.values();
+    assert_eq!(values.get("ssid"), Some(&"MyCustomNetwork".to_string()));
+}
+
+#[test]
+fn select_validates_required() {
+    let store = MockStore::default();
+    let err = save_config(&SELECT_SPEC, &store, &map(&[("ssid", "")])).unwrap_err();
+    assert!(err.to_string().contains("Wi-Fi Network is required"));
+}
+
+#[test]
+fn select_allows_any_value_in_other() {
+    let store = MockStore::default();
+    save_config(
+        &SELECT_SPEC,
+        &store,
+        &map(&[("ssid", "__other__"), ("ssid_other", "AnyNetwork123!@#")]),
+    )
+    .unwrap();
+    let values = store.values();
+    assert_eq!(values.get("ssid"), Some(&"AnyNetwork123!@#".to_string()));
+}
+
+#[test]
+fn select_requires_text_when_other_selected() {
+    let store = MockStore::default();
+    let err = save_config(
+        &SELECT_SPEC,
+        &store,
+        &map(&[("ssid", "__other__"), ("ssid_other", "")]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Wi-Fi Network is required"));
+}
+
+#[test]
+fn select_saves_selected_option() {
+    let store = MockStore::default();
+    save_config(&SELECT_SPEC, &store, &map(&[("ssid", "network2")])).unwrap();
+    let values = store.values();
+    assert_eq!(values.get("ssid"), Some(&"network2".to_string()));
+}
+
+#[test]
+fn select_saves_custom_text() {
+    let store = MockStore::default();
+    save_config(
+        &SELECT_SPEC,
+        &store,
+        &map(&[("ssid", "__other__"), ("ssid_other", "CustomSSID")]),
+    )
+    .unwrap();
+    let values = store.values();
+    assert_eq!(values.get("ssid"), Some(&"CustomSSID".to_string()));
+}
+
+#[test]
+fn select_loads_saved_value() {
+    let store = MockStore::with_values(map(&[
+        (SCHEMA_KEY, &select_schema_value()),
+        ("ssid", "network1"),
+    ]));
+    let activity = ConfigActivity::default();
+    let response = block_on(handle_http_request(
+        &SELECT_SPEC,
+        "configure",
+        &store,
+        &activity,
+        request(HttpMethod::Get, "/", ""),
+    ))
+    .unwrap();
+    let body = body_text(&response);
+    assert!(body.contains("<option value=\"network1\" selected>Network One</option>"));
+}
+
+struct EmptySelectOptions;
+
+#[async_trait]
+impl SelectOptions for EmptySelectOptions {
+    async fn options(&self) -> Vec<SelectOption<'_>> {
+        vec![]
+    }
+}
+
+fn make_empty_select_spec() -> ConfigSpec {
+    let fields: Vec<FieldSpec> = vec![FieldSpec::select("network", "Network", EmptySelectOptions)];
+    ConfigSpec {
+        namespace: "config",
+        ap_prefix: "InfoPanel",
+        title: "Wi-Fi Setup",
+        fields: Box::leak(fields.into_boxed_slice()),
+    }
+}
+
+#[test]
+fn select_handles_empty_options_list() {
+    let state = ConfigState::Missing;
+    let body = block_on(render_form(&make_empty_select_spec(), "configure", &state, None, None));
+    assert!(body.contains("<select name=\"network\""));
+    assert!(body.contains("<option value=\"__other__\">Other...</option>"));
+}
+
+#[test]
+fn select_escapes_html_in_labels() {
+    struct HtmlLabelOptions;
+    #[async_trait]
+    impl SelectOptions for HtmlLabelOptions {
+        async fn options(&self) -> Vec<SelectOption<'_>> {
+            vec![
+                SelectOption { value: "foo", label: "Foo<script>evil()</script>" },
+                SelectOption { value: "bar", label: "Bar\"quoted\"" },
+            ]
+        }
+    }
+    let fields: Vec<FieldSpec> = vec![FieldSpec::select("test", "Test", HtmlLabelOptions)];
+    let spec = ConfigSpec {
+        namespace: "config",
+        ap_prefix: "Test",
+        title: "Test",
+        fields: Box::leak(fields.into_boxed_slice()),
+    };
+    let state = ConfigState::Missing;
+    let body = block_on(render_form(&spec, "configure", &state, None, None));
+    assert!(body.contains("&lt;script&gt;evil()&lt;/script&gt;"));
+    assert!(body.contains("&quot;quoted&quot;"));
 }
