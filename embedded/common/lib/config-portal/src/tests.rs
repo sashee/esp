@@ -1402,3 +1402,54 @@ fn select_escapes_html_in_labels() {
     assert!(body.contains("&lt;script&gt;evil()&lt;/script&gt;"));
     assert!(body.contains("&quot;quoted&quot;"));
 }
+
+#[test]
+fn post_reset_clears_select_field() {
+    let store = MockStore::with_values(map(&[
+        (SCHEMA_KEY, &select_schema_value()),
+        ("ssid", "network1"),
+    ]));
+    let activity = ConfigActivity::default();
+    let response = block_on(handle_http_request(
+        &SELECT_SPEC,
+        "configure",
+        &store,
+        &activity,
+        request(HttpMethod::Post, "/reset", ""),
+    ))
+    .unwrap();
+
+    assert!(body_text(&response).contains("Reset stored configuration. Rebooting"));
+    assert!(activity.reboot_requested.load(Ordering::Relaxed));
+    assert!(store.values().is_empty());
+}
+
+#[test]
+fn read_config_returns_ready_with_select_value() {
+    let store = MockStore::with_values(map(&[
+        (SCHEMA_KEY, &select_schema_value()),
+        ("ssid", "network2"),
+    ]));
+
+    match read_config(&SELECT_SPEC, &store).unwrap() {
+        ConfigState::Ready(config) => {
+            assert_eq!(config.get("ssid"), Some("network2"));
+        }
+        state => panic!("unexpected state: {state:?}"),
+    }
+}
+
+#[test]
+fn read_config_returns_ready_with_select_custom_value() {
+    let store = MockStore::with_values(map(&[
+        (SCHEMA_KEY, &select_schema_value()),
+        ("ssid", "MyCustomNetwork"),
+    ]));
+
+    match read_config(&SELECT_SPEC, &store).unwrap() {
+        ConfigState::Ready(config) => {
+            assert_eq!(config.get("ssid"), Some("MyCustomNetwork"));
+        }
+        state => panic!("unexpected state: {state:?}"),
+    }
+}
