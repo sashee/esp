@@ -37,6 +37,7 @@
 * the page has an html form
 * when the reset button is pressed the nvs is cleared and the chip is restarted
 * when the fields are filled and the save button is pressed the nvs is set and the chip is restarted
+* the ssid is populated from a wifi scan
 
 ## Onboard LED
 
