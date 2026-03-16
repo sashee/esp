@@ -224,7 +224,6 @@ dependencies = [
  "anyhow",
  "embassy-time",
  "embedded-svc",
- "embuild",
  "esp-idf-svc",
  "log",
 ]
