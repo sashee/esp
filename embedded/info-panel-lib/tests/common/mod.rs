@@ -415,6 +415,8 @@ pub struct MockWifiBackendState {
     pub start_access_point_ssid: Option<String>,
     pub fail_configure_client: bool,
     pub fail_connect: bool,
+    pub fail_scan_networks: bool,
+    pub access_point_ip: Option<String>,
 }
 
 impl Default for MockWifiBackendState {
@@ -429,6 +431,8 @@ impl Default for MockWifiBackendState {
             start_access_point_ssid: None,
             fail_configure_client: false,
             fail_connect: false,
+            fail_scan_networks: false,
+            access_point_ip: None,
         }
     }
 }
@@ -480,6 +484,10 @@ impl MockWifiBackend {
     pub fn set_fail_connect(&mut self, fail: bool) {
         self.state.lock().unwrap().fail_connect = fail;
     }
+
+    pub fn set_fail_scan_networks(&mut self, fail: bool) {
+        self.state.lock().unwrap().fail_scan_networks = fail;
+    }
 }
 
 impl wifi::WifiBackend for MockWifiBackend {
@@ -496,6 +504,9 @@ impl wifi::WifiBackend for MockWifiBackend {
         Ok(self.state.lock().unwrap().started)
     }
     async fn scan_networks(&mut self) -> anyhow::Result<Vec<wifi::FoundNetwork>> {
+        if self.state.lock().unwrap().fail_scan_networks {
+            return Err(anyhow::anyhow!("mock scan_networks error"));
+        }
         *self.scan_order.lock().unwrap() =
             Some(self.global_counter.fetch_add(1, Ordering::SeqCst));
         Ok(self.state.lock().unwrap().scan_networks_result.clone())
@@ -554,6 +565,7 @@ impl wifi::WifiBackend for MockWifiBackend {
         })
     }
     async fn access_point_ip_config(&mut self) -> anyhow::Result<wifi::IpConfig> {
+        self.state.lock().unwrap().access_point_ip = Some("192.168.4.1".to_string());
         Ok(wifi::IpConfig::new(
             "192.168.4.1",
             "192.168.4.1",

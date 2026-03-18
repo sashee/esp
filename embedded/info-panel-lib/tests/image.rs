@@ -437,6 +437,62 @@ fn test_image_enters_error_mode_on_write_frame_failure() {
 }
 
 #[test]
+fn test_image_enters_error_mode_on_initial_write_frame_failure() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi = wifi::Wifi::new(MockWifiBackend::with_counter(global_counter.clone()));
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let http_client = MockHttpClient::new();
+    let get_calls = http_client.get_calls.clone();
+    // Fail on write_frame call #1 (initial black fill)
+    let display = MockDisplay::with_write_frame_fail_nth(global_counter, 1);
+
+    let reboot_called = platform.reboot_called.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    let last = led.last_call();
+    assert!(
+        last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+            .unwrap_or(false),
+        "LED must be set to ERROR_LED (red) after initial write_frame failure. Last: {:?}",
+        last
+    );
+
+    assert!(
+        last.map(|c| (c.brightness - 0.06).abs() < 0.001).unwrap_or(false),
+        "ERROR_LED brightness must be 0.06. Got: {:?}",
+        last
+    );
+
+    assert!(
+        *reboot_called.lock().unwrap(),
+        "platform.reboot() must be called after initial write_frame failure"
+    );
+
+    // Image fetch should never have been reached since initial fill failed
+    assert_eq!(
+        *get_calls.lock().unwrap(),
+        0,
+        "http_client.get() must NOT be called when initial write_frame fails"
+    );
+}
+
+#[test]
 fn test_image_handles_invalid_frame_size() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let mut led = MockLed::new();
@@ -587,6 +643,59 @@ fn test_image_aborts_refresh_on_wifi_disconnect() {
 }
 
 #[test]
+fn test_image_multiple_refresh_cycles() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi_backend = MockWifiBackend::with_counter(global_counter.clone());
+    wifi_backend.set_is_connected(true);
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let sleep_durations = clock.sleep_durations.clone();
+    // panic_on_nth(3): first 2 calls succeed (initial + 1 refresh), 3rd panics (2nd refresh)
+    let http_client = MockHttpClient::panic_on_nth(3);
+    let calls = http_client.get_calls.clone();
+    let display = MockDisplay::new(global_counter);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // The mock panics on the 3rd HTTP call (second refresh), proving two refresh cycles ran
+    assert!(result.is_err(), "mock must panic on second refresh HTTP call");
+
+    assert_eq!(
+        *calls.lock().unwrap(),
+        3,
+        "http_client.get() must be called 3 times (initial + 2 refreshes)"
+    );
+
+    // Verify 30-second refresh interval sleep happened at least twice
+    let sleeps = sleep_durations.lock().unwrap();
+    let refresh_sleeps: Vec<_> = sleeps
+        .iter()
+        .filter(|d| **d == embassy_time::Duration::from_secs(30))
+        .collect();
+    assert!(
+        refresh_sleeps.len() >= 2,
+        "refresh loop must sleep for 30 seconds at least twice. Got {} refresh sleeps, all sleeps: {:?}",
+        refresh_sleeps.len(),
+        *sleeps
+    );
+}
+
+#[test]
 fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let mut led = MockLed::new();
@@ -621,10 +730,11 @@ fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
 
     // Either the write_frame failure triggers error mode (and we see reboot)
     // or if write_frame succeeded somehow, the refresh HTTP call panics.
-    // Either way, the test validates that refresh loop was entered.
     let http_calls = *calls.lock().unwrap();
     let reboot = *reboot_called.lock().unwrap();
 
+    // write_frame failed on 2nd call (fetched frame after black fill),
+    // so error mode should have been entered via reboot
     assert!(
         reboot || result.is_err(),
         "must either reboot (write_frame failed) or panic (refresh HTTP called). \
@@ -632,6 +742,17 @@ fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
         http_calls,
         reboot
     );
+
+    // If reboot happened, verify it was due to error mode (red LED)
+    if reboot {
+        let last = led.last_call();
+        assert!(
+            last.map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
+                .unwrap_or(false),
+            "LED must be set to ERROR_LED (red) after write_frame failure in refresh. Last: {:?}",
+            last
+        );
+    }
 }
 
 #[test]

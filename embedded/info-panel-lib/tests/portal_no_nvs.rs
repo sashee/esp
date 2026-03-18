@@ -54,11 +54,9 @@ fn test_portal_starts_ap_when_nvs_empty() {
 }
 
 #[test]
-fn test_portal_ap_start_failure_still_reboots() {
+fn test_portal_always_reboots_after_portal_exits() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let mut led = MockLed::new();
-    // start_access_point will fail... but the portal uses `let _ = enter_config_mode()`
-    // so errors are ignored. The portal always reboots.
     let wifi_backend = MockWifiBackend::default();
     let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
@@ -85,7 +83,7 @@ fn test_portal_ap_start_failure_still_reboots() {
 
     assert!(
         *reboot_called.lock().unwrap(),
-        "platform.reboot() must always be called even if AP start has issues"
+        "platform.reboot() must always be called after portal exits"
     );
 }
 
@@ -235,5 +233,49 @@ fn test_portal_continues_after_client_connection_timeout() {
     assert!(
         *reboot_called.lock().unwrap(),
         "platform.reboot() must be called after connected timeout"
+    );
+}
+
+#[test]
+fn test_portal_scan_failure_does_not_prevent_portal() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi_backend = MockWifiBackend::default();
+    wifi_backend.set_fail_scan_networks(true);
+    let start_ssid = wifi_backend.state.clone();
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = empty_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = portal_timeout_clock();
+    let http_client = MockHttpClient::new();
+    let display = MockDisplay::new(global_counter);
+
+    let reboot_called = platform.reboot_called.clone();
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // Portal should still start the AP despite scan failure
+    let state = start_ssid.lock().unwrap();
+    assert!(
+        state.start_access_point_ssid.is_some(),
+        "wifi.start_access_point must be called even when scan_networks fails"
+    );
+
+    // Portal should still complete and reboot
+    assert!(
+        *reboot_called.lock().unwrap(),
+        "platform.reboot() must be called even when scan_networks fails"
     );
 }

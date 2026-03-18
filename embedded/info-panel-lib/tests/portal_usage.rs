@@ -10,7 +10,7 @@ fn test_portal_ap_ip_is_192_168_4_1() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let mut led = MockLed::new();
     let wifi_backend = MockWifiBackend::default();
-    let start_ssid = wifi_backend.state.clone();
+    let wifi_state = wifi_backend.state.clone();
     let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
@@ -32,19 +32,19 @@ fn test_portal_ap_ip_is_192_168_4_1() {
         ))
     }));
 
-    // The portal runs and uses access_point_ip_config which returns 192.168.4.1
-    let state = start_ssid.lock().unwrap();
+    // Verify the AP was started
+    let state = wifi_state.lock().unwrap();
     assert!(
         state.start_access_point_ssid.is_some(),
         "portal must have started AP"
     );
 
     // Verify the IP config returned by the mock is 192.168.4.1
-    // (the mock always returns this value, confirming the portal uses it)
-    assert!(
-        state.start_access_point_ssid.as_deref().unwrap().starts_with("InfoPanel-"),
-        "AP SSID must start with 'InfoPanel-'. Got: {:?}",
-        state.start_access_point_ssid
+    assert_eq!(
+        state.access_point_ip.as_deref(),
+        Some("192.168.4.1"),
+        "AP IP must be 192.168.4.1. Got: {:?}",
+        state.access_point_ip
     );
 }
 

@@ -154,13 +154,13 @@ Verifies that if the initial fetch fails and the first retry succeeds, no more r
 
 ### test_image_succeeds_on_second_retry
 
-Verifies that if the first two fetch attempts fail and the third succeeds, the flow completes. The test will:
+Verifies that if the first fetch fails and the second succeeds, the flow completes. The test will:
 1. Provide a mock store with valid config
 2. Mock wifi.connect() to succeed
-3. Mock http_client.get() to fail on first two calls, succeed on third (fail_up_to(2))
+3. Mock http_client.get() to fail on first call, succeed on second (fail_up_to(1))
 4. Set is_connected=false so refresh loop exits after success
 5. Run the info_panel_lib::run() function
-6. Assert that http_client.get() was called exactly 3 times (2 fails + 1 success)
+6. Assert that http_client.get() was called exactly 2 times (1 fail + 1 success)
 7. Assert that display.write_frame() was called for the fetched frame
 
 ### test_image_succeeds_on_third_retry
@@ -171,7 +171,7 @@ Verifies that after two failures and success on the third attempt, the flow comp
 3. Mock http_client.get() to fail on first two calls, succeed on third (fail_up_to(2))
 4. Set is_connected=false so refresh loop exits after success
 5. Run the info_panel_lib::run() function
-6. Assert that http_client.get() was called exactly 3 times
+6. Assert that http_client.get() was called exactly 3 times (2 fails + 1 success)
 7. Assert that display.write_frame() was called for the fetched frame
 
 ### test_image_enters_error_mode_when_all_retries_fail
@@ -216,6 +216,17 @@ Verifies that write_frame failures trigger error mode. The test will:
 6. Assert that LED was set to ERROR_LED (red) with brightness 0.06 before reboot
 7. Assert that platform.reboot() was called
 
+### test_image_enters_error_mode_on_initial_write_frame_failure
+
+Verifies that if the initial black fill write_frame fails, the device enters error mode. The test will:
+1. Provide a mock store with valid config
+2. Mock wifi.connect() to succeed
+3. Mock display.write_frame() to fail on 1st call (initial black fill)
+4. Run the info_panel_lib::run() function (expecting panic from reboot)
+5. Assert that LED was set to ERROR_LED (red) with brightness 0.06 before reboot
+6. Assert that platform.reboot() was called
+7. Assert that http_client.get() was NOT called (image fetch never reached)
+
 ### test_image_handles_invalid_frame_size
 
 Verifies that frames of unexpected size are still passed to write_frame without validation. The test will:
@@ -249,6 +260,18 @@ Verifies that if WiFi disconnects during the refresh loop, the device enters err
 6. Assert that LED was set to ERROR_LED (red) with brightness 0.06 before reboot
 7. Assert that platform.reboot() was called
 
+### test_image_multiple_refresh_cycles
+
+Verifies that multiple refresh cycles work correctly when wifi stays connected. The test will:
+1. Provide a mock store with valid config
+2. Mock wifi.connect() to succeed
+3. Mock http_client.get() to return valid data
+4. Set is_connected=true so refresh loop runs
+5. Use panic_on_nth(3) to trigger when second refresh fetch is attempted
+6. Run the info_panel_lib::run() function
+7. Assert that http_client.get() was called 3 times (initial + 2 refreshes)
+8. Assert that Clock::sleep was called with 30 seconds at least twice
+
 ### test_image_enters_error_mode_on_write_frame_failure_in_refresh
 
 Verifies that write_frame failures during refresh trigger error mode. The test will:
@@ -273,9 +296,9 @@ Verifies that when NVS is empty, an access point is started. The test will:
 3. Assert that wifi.start_access_point() was called
 4. Assert that the AP SSID starts with "InfoPanel-"
 
-### test_portal_ap_start_failure_still_reboots
+### test_portal_always_reboots_after_portal_exits
 
-Verifies that AP start failures don't prevent the portal from rebooting. The test will:
+Verifies that the portal always reboots after it exits, regardless of whether clients connected or not. The test will:
 1. Provide a mock store that returns empty config
 2. Run the info_panel_lib::run() function
 3. Assert that platform.reboot() was called (portal always reboots)
@@ -372,17 +395,30 @@ Verifies that LED errors during preboot portal lead to error mode after wifi con
 5. Assert that platform.reboot() was called
 6. Assert that LED was set to ERROR_LED (red) at some point
 
+### test_portal_preboot_then_normal_boot_succeeds
+
+Verifies the happy path where preboot portal runs and then normal boot proceeds successfully. The test will:
+1. Provide a mock platform with BootReason::PowerOn
+2. Provide a mock store with valid config
+3. Use a wifi backend that properly stops AP (so wifi operations after portal can succeed)
+4. Mock wifi.connect() to succeed
+5. Mock http_client.get() to return valid data
+6. Run the info_panel_lib::run() function
+7. Assert that wifi.start_access_point() was called for preboot portal
+8. Assert that LED was set to PREBOOT_PORTAL_LED (blue)
+9. Assert that wifi.connect() was called after portal exits
+10. Assert that LED was set to CONNECTED_LED (blue)
+
 ---
 
 ## Config portal - Usage
 
 ### test_portal_ap_ip_is_192_168_4_1
 
-Verifies that the AP uses the correct IP address. The test will:
+Verifies that the AP uses the correct IP address 192.168.4.1. The test will:
 1. Provide a mock store that returns empty config
 2. Run the info_panel_lib::run() function
-3. Assert that wifi.start_access_point() was called
-4. Assert that the AP SSID starts with "InfoPanel-"
+3. Assert that wifi.access_point_ip_config() returned IP 192.168.4.1
 
 ### test_portal_scans_networks_before_portal
 
@@ -399,6 +435,15 @@ Verifies handling when no WiFi networks are found. The test will:
 2. Mock wifi.scan_networks() to return an empty vector
 3. Run the info_panel_lib::run() function
 4. Assert that the portal still completes and reboots
+
+### test_portal_scan_failure_does_not_prevent_portal
+
+Verifies that when wifi.scan_networks() returns an error, the portal still starts and completes. The test will:
+1. Provide a mock store that returns empty config
+2. Mock wifi.scan_networks() to return an error
+3. Run the info_panel_lib::run() function
+4. Assert that wifi.start_access_point() was still called (portal started despite scan failure)
+5. Assert that platform.reboot() was called (portal completed)
 
 ### test_portal_scans_with_duplicate_ssid
 
@@ -467,12 +512,12 @@ Verifies that LED is at full brightness when led_brightness is 255. The test wil
 | Category | Tests |
 |----------|-------|
 | Init | 11 |
-| Image | 15 |
+| Image | 17 |
 | Config portal - No NVS | 6 |
-| Config portal - Power on | 6 |
-| Config portal - Usage | 5 |
+| Config portal - Power on | 7 |
+| Config portal - Usage | 6 |
 | Onboard LED | 5 |
-| **Total** | **48 tests** |
+| **Total** | **52 tests** |
 
 Additional unit tests in tests.rs (not covered by this plan):
 - test_rgb565_red/green/blue/black/white (5)

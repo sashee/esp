@@ -256,3 +256,68 @@ fn test_portal_preboot_led_error_enters_error_mode() {
         last
     );
 }
+
+#[test]
+fn test_portal_preboot_then_normal_boot_succeeds() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let mut led = MockLed::new();
+    let mut wifi_backend = MockWifiBackend::with_counter(global_counter.clone());
+    wifi_backend.set_is_connected(false);
+    let start_ssid = wifi_backend.state.clone();
+    let mut wifi = wifi::Wifi::new(wifi_backend);
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
+    // Need ticks for: preboot portal (30s idle → exits), then wifi connect, then fetch, then refresh disconnect
+    let clock = MockClock::from_ticks(&[0, 250, 30_000_001, 60_000_001]);
+    let http_client = MockHttpClient::always_failing();
+    let display = MockDisplay::new(global_counter);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(
+            &mut wifi,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            &mut led,
+        ))
+    }));
+
+    // Preboot portal should have been started
+    let state = start_ssid.lock().unwrap();
+    assert!(
+        state.start_access_point_ssid.is_some(),
+        "preboot portal must have started AP on PowerOn"
+    );
+    drop(state);
+
+    // Preboot LED (blue 0.0, 0.53, 1.0) should have been set
+    assert!(
+        led.calls()
+            .iter()
+            .any(|c| (c.r - 0.0).abs() < 0.01 && (c.g - 0.53).abs() < 0.01 && (c.b - 1.0).abs() < 0.01),
+        "LED must be set to PREBOOT_PORTAL_LED (blue) during preboot. Got: {:?}",
+        led.calls()
+    );
+
+    // After preboot portal, wifi connect should have been attempted (orange LED)
+    assert!(
+        led.calls()
+            .iter()
+            .any(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.78).abs() < 0.01 && (c.b - 0.0).abs() < 0.01),
+        "LED must be set to CONNECTING_LED (orange) after preboot portal. Got: {:?}",
+        led.calls()
+    );
+
+    // Connected LED (blue) should have been set after successful wifi connect
+    assert!(
+        led.calls()
+            .iter()
+            .any(|c| (c.r - 0.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 1.0).abs() < 0.01),
+        "LED must be set to CONNECTED_LED (blue) after wifi connect. Got: {:?}",
+        led.calls()
+    );
+}
