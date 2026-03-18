@@ -20,23 +20,25 @@ use std::{
 
 
 #[derive(Clone, Debug)]
-pub struct SelectOption<'a> {
-    pub value: &'a str,
-    pub label: &'a str,
+pub struct SelectOption {
+    pub value: String,
+    pub label: String,
 }
 
 #[async_trait]
 pub trait SelectOptions: Send + Sync {
-    async fn options(&self) -> Vec<SelectOption<'_>>;
+    async fn options(&self) -> Vec<SelectOption>;
 }
 
+#[derive(Clone)]
 pub enum FieldKind {
     Text,
     Password,
     Number { min: i64, max: i64 },
-    Select { options: Box<dyn SelectOptions> },
+    Select { options: Arc<dyn SelectOptions> },
 }
 
+#[derive(Clone)]
 pub struct FieldSpec {
     pub key: &'static str,
     pub label: &'static str,
@@ -76,18 +78,18 @@ impl FieldSpec {
         Self {
             key,
             label,
-            kind: FieldKind::Select { options: Box::new(options) },
+            kind: FieldKind::Select { options: Arc::new(options) },
             required: true,
         }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ConfigSpec {
     pub namespace: &'static str,
     pub ap_prefix: &'static str,
     pub title: &'static str,
-    pub fields: &'static [FieldSpec],
+    pub fields: Vec<FieldSpec>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -255,7 +257,7 @@ const CONFIG_HTTP_ENDPOINTS: &[HttpEndpoint] = &[
 ];
 
 pub async fn enter_config_mode<W, S, H, P, C>(
-    spec: &'static ConfigSpec,
+    spec: ConfigSpec,
     reason: &str,
     wifi: &mut W,
     store: S,
@@ -282,8 +284,9 @@ where
         let reason = reason.to_string();
         let store = store.clone();
         let http_activity = http_activity.clone();
+        let spec = spec.clone();
         async move {
-            handle_http_request(spec, &reason, &store, &http_activity, request).await
+            handle_http_request(&spec, &reason, &store, &http_activity, request).await
         }
     })?;
 
@@ -336,14 +339,14 @@ where
     }
 }
 
-pub fn read_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<ConfigState>
+pub fn read_config<S>(spec: &ConfigSpec, store: &S) -> Result<ConfigState>
 where
     S: ConfigStore,
 {
     let stored = store.read(&field_keys(spec))?;
 
     let mut values = BTreeMap::new();
-    for field in spec.fields {
+    for field in &spec.fields {
         let Some(value) = stored.get(field.key) else {
             return Ok(ConfigState::Missing);
         };
@@ -353,7 +356,7 @@ where
     Ok(ConfigState::Ready(StoredConfig { values }))
 }
 
-pub fn clear_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<()>
+pub fn clear_config<S>(spec: &ConfigSpec, store: &S) -> Result<()>
 where
     S: ConfigStore,
 {
@@ -361,7 +364,7 @@ where
 }
 
 pub fn save_config<S>(
-    spec: &'static ConfigSpec,
+    spec: &ConfigSpec,
     store: &S,
     submitted: &BTreeMap<String, String>,
 ) -> Result<StoredConfig>
@@ -372,7 +375,7 @@ where
     validate_submitted(spec, submitted, &previous)?;
 
     let mut saved = BTreeMap::new();
-    for field in spec.fields {
+    for field in &spec.fields {
         let value = match field.kind {
             FieldKind::Password => submitted
                 .get(field.key)
@@ -439,7 +442,7 @@ where
 }
 
 async fn handle_http_request<S>(
-    spec: &'static ConfigSpec,
+    spec: &ConfigSpec,
     reason: &str,
     store: &S,
     activity: &ConfigActivity,
@@ -523,7 +526,7 @@ async fn render_form(
     }
 
     html.push_str("<form method=\"post\" action=\"/save\">");
-    for field in spec.fields {
+    for field in &spec.fields {
         let value = field_value(field, state, submitted);
         let has_stored_value = stored_field_value(state, field.key).is_some();
         
@@ -608,13 +611,13 @@ async fn render_form(
                 );
                 
                 for option in &options {
-                    let selected = selected_value == option.value;
+                    let selected = selected_value == option.value.as_str();
                     let _ = write!(
                         html,
                         "<option value=\"{}\"{}>{}</option>",
-                        escape_html(option.value),
+                        escape_html(&option.value),
                         if selected { " selected" } else { "" },
-                        escape_html(option.label)
+                        escape_html(&option.label)
                     );
                 }
                 
@@ -666,7 +669,7 @@ fn field_keys(spec: &ConfigSpec) -> Vec<&str> {
 
 fn stored_config_from_map(spec: &ConfigSpec, stored: &BTreeMap<String, String>) -> StoredConfig {
     let mut values = BTreeMap::new();
-    for field in spec.fields {
+    for field in &spec.fields {
         if let Some(value) = stored.get(field.key) {
             values.insert(field.key.to_string(), value.clone());
         }
@@ -697,7 +700,7 @@ fn validate_submitted<'a>(
     submitted: &BTreeMap<String, String>,
     previous: &StoredConfig,
 ) -> Result<()> {
-    for field in spec.fields {
+    for field in &spec.fields {
         let value = submitted.get(field.key).map(String::as_str).unwrap_or("");
         let has_previous = previous.get(field.key).is_some();
 

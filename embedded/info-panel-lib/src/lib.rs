@@ -4,19 +4,19 @@ use config_portal::{
     enter_config_mode, AccessPointConfig as PortalAccessPointConfig,
     AccessPointEvent as PortalAccessPointEvent, ConfigClock, ConfigHttpBackend, ConfigPlatform,
     ConfigSpec, ConfigState, ConfigStore, ConfigWifi, IpConfig as PortalIpConfig, SelectOption,
-    SelectOptions, StoredConfig,
+    SelectOptions, StoredConfig, FieldSpec,
 };
 use core::convert::Infallible;
 use embassy_time::Duration;
 use log::{error, info};
 use rgb_led::Rgb;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use wifi::{
     AccessPointConfig as WifiAccessPointConfig, AccessPointEvent as WifiAccessPointEvent,
     IpConfig as WifiIpConfig, Wifi, WifiBackend, WifiCredentials, ConnectState,
 };
 
-pub use config_portal::{ConfigTiming, FieldSpec};
+pub use config_portal::ConfigTiming;
 
 pub const TFT_WIDTH: u16 = 128;
 pub const TFT_HEIGHT: u16 = 160;
@@ -222,36 +222,7 @@ where
     }
 }
 
-use std::sync::LazyLock;
-
-static SCAN_RESULTS: Mutex<Option<Vec<String>>> = Mutex::new(None);
-
-struct WifiScanOptions;
-
-#[async_trait]
-impl SelectOptions for WifiScanOptions {
-    async fn options(&self) -> Vec<SelectOption<'_>> {
-        let guard = SCAN_RESULTS.lock().unwrap();
-        guard
-            .as_ref()
-            .map(|networks| {
-                networks
-                    .iter()
-                    .map(|ssid| {
-                        let ssid_for_value = ssid.clone();
-                        let ssid_for_label = ssid.clone();
-                        SelectOption {
-                            value: Box::leak(ssid_for_value.into_boxed_str()),
-                            label: Box::leak(ssid_for_label.into_boxed_str()),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-}
-
-pub async fn scan_and_store_networks<W>(wifi: &mut Wifi<W>) -> Result<()>
+pub async fn scan_and_store_networks<W>(wifi: &mut Wifi<W>, scan_results: &Arc<Mutex<Option<Vec<String>>>>) -> Result<()>
 where
     W: WifiBackend,
 {
@@ -259,25 +230,47 @@ where
     let networks = wifi.scan_networks().await?;
     info!("Found {} networks", networks.len());
     let ssids: Vec<String> = networks.into_iter().map(|n| n.ssid).collect();
-    let mut guard = SCAN_RESULTS.lock().unwrap();
+    let mut guard = scan_results.lock().unwrap();
     *guard = Some(ssids);
     Ok(())
 }
 
-pub static CONFIG_SPEC: LazyLock<ConfigSpec> = LazyLock::new(|| ConfigSpec {
-    namespace: "config",
-    ap_prefix: "InfoPanel",
-    title: "Info Panel Setup",
-    fields: Box::leak(
-        vec![
-            FieldSpec::select("ssid", "Wi-Fi Network", WifiScanOptions),
+struct WifiScanOptions {
+    networks: Arc<Mutex<Option<Vec<String>>>>,
+}
+
+#[async_trait]
+impl SelectOptions for WifiScanOptions {
+    async fn options(&self) -> Vec<SelectOption> {
+        let guard = self.networks.lock().unwrap();
+        guard
+            .as_ref()
+            .map(|networks| {
+                networks
+                    .iter()
+                    .map(|ssid| SelectOption {
+                        value: ssid.clone(),
+                        label: ssid.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn build_config_spec(scan_results: Arc<Mutex<Option<Vec<String>>>>) -> ConfigSpec {
+    ConfigSpec {
+        namespace: "config",
+        ap_prefix: "InfoPanel",
+        title: "Info Panel Setup",
+        fields: vec![
+            FieldSpec::select("ssid", "Wi-Fi Network", WifiScanOptions { networks: scan_results }),
             FieldSpec::password("pw", "Wi-Fi password"),
             FieldSpec::text("url", "Info panel URL"),
             FieldSpec::number("led_brightness", "LED brightness", 0, 255),
-        ]
-        .into_boxed_slice(),
-    ),
-});
+        ],
+    }
+}
 
 pub const PREBOOT_PORTAL_TIMING: ConfigTiming = ConfigTiming {
     idle_timeout: Duration::from_secs(30),
@@ -377,7 +370,10 @@ where
     let boot_reason = platform.boot_reason();
     let run_preboot_portal = matches!(boot_reason, BootReason::PowerOn);
 
-    let config = match read_config(&*CONFIG_SPEC, &store)? {
+    let scan_results: Arc<Mutex<Option<Vec<String>>>> = Arc::new(Mutex::new(None));
+    let config_spec = build_config_spec(scan_results.clone());
+
+    let config = match read_config(&config_spec, &store)? {
         ConfigState::Ready(config) => match DeviceConfig::from_stored(config) {
             Ok(config) => config,
             Err(err) => {
@@ -389,6 +385,7 @@ where
                     http_backend,
                     clock.clone(),
                     led,
+                    scan_results.clone(),
                     &format!("stored configuration is invalid: {err:#}"),
                 )
                 .await;
@@ -402,6 +399,7 @@ where
                 http_backend,
                 clock.clone(),
                 led,
+                scan_results.clone(),
                 "configuration missing",
             )
             .await;
@@ -416,6 +414,7 @@ where
             platform.clone(),
             clock.clone(),
             led,
+            scan_results.clone(),
         )
         .await
         {
@@ -465,7 +464,7 @@ where
     }
 }
 
-fn read_config<S>(spec: &'static ConfigSpec, store: &S) -> Result<ConfigState>
+fn read_config<S>(spec: &ConfigSpec, store: &S) -> Result<ConfigState>
 where
     S: ConfigStore,
 {
@@ -479,6 +478,7 @@ async fn run_preboot_portal_inner<W, S, H, P, Ck, L>(
     platform: P,
     clock: Ck,
     led: &mut L,
+    scan_results: Arc<Mutex<Option<Vec<String>>>>,
 ) -> Result<()>
 where
     W: WifiBackend,
@@ -489,12 +489,12 @@ where
     L: Led,
 {
     let _ = led.set_pixel(PREBOOT_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
-    scan_and_store_networks(wifi).await?;
+    scan_and_store_networks(wifi, &scan_results).await?;
     let mut portal_wifi = PortalWifi::new(wifi);
     let config_platform = ConfigPlatformAdapter::new(platform);
     let config_clock = ConfigClockAdapter::new(clock);
     enter_config_mode(
-        &*CONFIG_SPEC,
+        build_config_spec(scan_results),
         "preboot configuration window",
         &mut portal_wifi,
         store,
@@ -515,6 +515,7 @@ async fn run_required_config_mode<W, S, H, P, Ck, L>(
     http_backend: H,
     clock: Ck,
     led: &mut L,
+    scan_results: Arc<Mutex<Option<Vec<String>>>>,
     message: &str,
 ) -> !
 where
@@ -527,12 +528,12 @@ where
 {
     error!("{message}");
     let _ = led.set_pixel(REQUIRED_PORTAL_LED, PORTAL_LED_BRIGHTNESS);
-    let _ = scan_and_store_networks(wifi).await;
+    let _ = scan_and_store_networks(wifi, &scan_results).await;
     let mut portal_wifi = PortalWifi::new(wifi);
     let config_platform = ConfigPlatformAdapter::new(platform.clone());
     let config_clock = ConfigClockAdapter::new(clock.clone());
     let _ = enter_config_mode(
-        &*CONFIG_SPEC,
+        build_config_spec(scan_results),
         message,
         &mut portal_wifi,
         store,

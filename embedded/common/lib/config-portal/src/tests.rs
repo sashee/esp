@@ -9,21 +9,21 @@ use core::{
 use std::{
     collections::{BTreeMap, VecDeque},
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, Mutex},
 };
 
-static TEST_FIELDS: &[FieldSpec] = &[
-    FieldSpec::text("ssid", "Wi-Fi SSID"),
-    FieldSpec::password("pw", "Wi-Fi password"),
-    FieldSpec::number("brightness", "Brightness", 1, 10),
-];
-
-static TEST_SPEC: ConfigSpec = ConfigSpec {
-    namespace: "config",
-    ap_prefix: "InfoPanel",
-    title: "Info Panel Setup",
-    fields: TEST_FIELDS,
-};
+fn make_test_spec() -> ConfigSpec {
+    ConfigSpec {
+        namespace: "config",
+        ap_prefix: "InfoPanel",
+        title: "Info Panel Setup",
+        fields: vec![
+            FieldSpec::text("ssid", "Wi-Fi SSID"),
+            FieldSpec::password("pw", "Wi-Fi password"),
+            FieldSpec::number("brightness", "Brightness", 1, 10),
+        ],
+    }
+}
 
 struct TestSelectOptions {
     options: Vec<(&'static str, &'static str)>,
@@ -31,28 +31,31 @@ struct TestSelectOptions {
 
 #[async_trait]
 impl SelectOptions for TestSelectOptions {
-    async fn options(&self) -> Vec<SelectOption<'_>> {
+    async fn options(&self) -> Vec<SelectOption> {
         self.options
             .iter()
-            .map(|(value, label)| SelectOption { value, label })
+            .map(|(value, label)| SelectOption {
+                value: value.to_string(),
+                label: label.to_string(),
+            })
             .collect()
     }
 }
 
-static SELECT_SPEC: LazyLock<ConfigSpec> = LazyLock::new(|| {
+fn make_select_spec() -> ConfigSpec {
     ConfigSpec {
         namespace: "config",
         ap_prefix: "InfoPanel",
         title: "Wi-Fi Setup",
-        fields: Box::leak(vec![FieldSpec::select("ssid", "Wi-Fi Network", TestSelectOptions {
+        fields: vec![FieldSpec::select("ssid", "Wi-Fi Network", TestSelectOptions {
             options: vec![
                 ("network1", "Network One"),
                 ("network2", "Network Two"),
                 ("network3", "Network Three"),
             ],
-        })].into_boxed_slice()),
+        })],
     }
-});
+}
 
 fn block_on<F: Future>(future: F) -> F::Output {
     fn raw_waker() -> RawWaker {
@@ -379,7 +382,7 @@ fn body_text(response: &HttpResponse) -> String {
 fn read_config_returns_missing_without_schema() {
     let store = MockStore::with_values(map(&[("ssid", "home")]));
     assert!(matches!(
-        read_config(&TEST_SPEC, &store).unwrap(),
+        read_config(&make_test_spec(), &store).unwrap(),
         ConfigState::Missing
     ));
 }
@@ -392,7 +395,7 @@ fn read_config_returns_ready_when_complete() {
         ("brightness", "4"),
     ]));
 
-    match read_config(&TEST_SPEC, &store).unwrap() {
+    match read_config(&make_test_spec(), &store).unwrap() {
         ConfigState::Ready(config) => {
             assert_eq!(config.get("ssid"), Some("home"));
             assert_eq!(config.get("pw"), Some("secret"));
@@ -410,7 +413,7 @@ fn read_config_returns_missing_when_required_field_missing() {
     ]));
 
     assert!(matches!(
-        read_config(&TEST_SPEC, &store).unwrap(),
+        read_config(&make_test_spec(), &store).unwrap(),
         ConfigState::Missing
     ));
 }
@@ -423,7 +426,7 @@ fn clear_config_removes_fields() {
         ("brightness", "4"),
     ]));
 
-    clear_config(&TEST_SPEC, &store).unwrap();
+    clear_config(&make_test_spec(), &store).unwrap();
 
     assert_eq!(store.values(), BTreeMap::new());
     assert_eq!(
@@ -436,7 +439,7 @@ fn clear_config_removes_fields() {
 fn save_config_writes_values() {
     let store = MockStore::default();
     let saved = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", "secret"), ("brightness", "4")]),
     )
@@ -451,7 +454,7 @@ fn save_config_writes_values() {
 fn save_config_preserves_stored_password_when_blank() {
     let store = MockStore::with_values(map(&[("pw", "stored")]));
     let saved = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", ""), ("brightness", "4")]),
     )
@@ -463,7 +466,7 @@ fn save_config_preserves_stored_password_when_blank() {
 fn save_config_replaces_stored_password_when_present() {
     let store = MockStore::with_values(map(&[("pw", "stored")]));
     let saved = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", "newpass"), ("brightness", "4")]),
     )
@@ -475,7 +478,7 @@ fn save_config_replaces_stored_password_when_present() {
 fn save_config_rejects_missing_required_text_field() {
     let store = MockStore::default();
     let err = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", ""), ("pw", "secret"), ("brightness", "4")]),
     )
@@ -487,7 +490,7 @@ fn save_config_rejects_missing_required_text_field() {
 fn save_config_rejects_missing_password_without_previous_value() {
     let store = MockStore::default();
     let err = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", ""), ("brightness", "4")]),
     )
@@ -499,7 +502,7 @@ fn save_config_rejects_missing_password_without_previous_value() {
 fn save_config_accepts_empty_password_with_previous_value() {
     let store = MockStore::with_values(map(&[("pw", "stored")]));
     assert!(save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", ""), ("brightness", "4")])
     )
@@ -510,7 +513,7 @@ fn save_config_accepts_empty_password_with_previous_value() {
 fn save_config_rejects_non_numeric_value() {
     let store = MockStore::default();
     let err = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", "secret"), ("brightness", "abc")]),
     )
@@ -524,7 +527,7 @@ fn save_config_rejects_non_numeric_value() {
 fn save_config_rejects_out_of_range_value() {
     let store = MockStore::default();
     let err = save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", "secret"), ("brightness", "11")]),
     )
@@ -538,13 +541,13 @@ fn save_config_rejects_out_of_range_value() {
 fn save_config_accepts_boundary_numeric_values() {
     let store = MockStore::default();
     assert!(save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", "secret"), ("brightness", "1")])
     )
     .is_ok());
     assert!(save_config(
-        &TEST_SPEC,
+        &make_test_spec(),
         &store,
         &map(&[("ssid", "home"), ("pw", "secret"), ("brightness", "10")])
     )
@@ -569,7 +572,7 @@ fn get_root_returns_form_with_stored_values() {
     let activity = ConfigActivity::default();
 
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &activity,
@@ -587,7 +590,7 @@ fn get_root_shows_missing_config_note() {
     let store = MockStore::default();
     let body = body_text(
         &block_on(handle_http_request(
-            &TEST_SPEC,
+            &make_test_spec(),
             "configure",
             &store,
             &ConfigActivity::default(),
@@ -605,14 +608,14 @@ fn rendered_form_never_prefills_password_field() {
         ("pw", "secret"),
         ("brightness", "4"),
     ]));
-    let body = block_on(render_form(&TEST_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_test_spec(), "configure", &state, None, None));
     assert!(!body.contains("value=\"secret\""));
 }
 
 #[test]
 fn rendered_form_shows_keep_password_hint_when_password_exists() {
     let state = ConfigState::Ready(stored(&[("pw", "secret")]));
-    let body = block_on(render_form(&TEST_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_test_spec(), "configure", &state, None, None));
     assert!(body.contains("Leave blank to keep stored password"));
     assert!(body.contains("A password is already stored"));
 }
@@ -622,7 +625,7 @@ fn post_save_returns_success_and_marks_reboot_requested() {
     let store = MockStore::default();
     let activity = ConfigActivity::default();
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &activity,
@@ -643,7 +646,7 @@ fn post_save_invalid_form_rerenders_with_error_without_reboot() {
     let store = MockStore::default();
     let activity = ConfigActivity::default();
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &activity,
@@ -669,7 +672,7 @@ fn post_reset_clears_store_and_marks_reboot_requested() {
     ]));
     let activity = ConfigActivity::default();
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &activity,
@@ -685,7 +688,7 @@ fn post_reset_clears_store_and_marks_reboot_requested() {
 #[test]
 fn unsupported_method_on_known_path_returns_405() {
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &MockStore::default(),
         &ConfigActivity::default(),
@@ -698,7 +701,7 @@ fn unsupported_method_on_known_path_returns_405() {
 #[test]
 fn unknown_path_returns_404() {
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &MockStore::default(),
         &ConfigActivity::default(),
@@ -750,18 +753,20 @@ fn escape_html_escapes_special_characters() {
 
 #[test]
 fn field_value_prefers_submitted_value_for_non_password_fields() {
+    let spec = make_test_spec();
     let state = ConfigState::Ready(stored(&[("ssid", "old")]));
     let submitted = map(&[("ssid", "new")]);
     assert_eq!(
-        field_value(&TEST_FIELDS[0], &state, Some(&submitted)),
+        field_value(&spec.fields[0], &state, Some(&submitted)),
         "new"
     );
 }
 
 #[test]
 fn field_value_never_returns_stored_password() {
+    let spec = make_test_spec();
     let state = ConfigState::Ready(stored(&[("pw", "secret")]));
-    assert_eq!(field_value(&TEST_FIELDS[1], &state, None), "");
+    assert_eq!(field_value(&spec.fields[1], &state, None), "");
 }
 
 #[test]
@@ -788,7 +793,7 @@ fn enter_config_mode_starts_ap_with_expected_settings() {
     let clock = MockClock::from_ticks(&[0, 1000]);
 
     let _ = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -821,7 +826,7 @@ fn enter_config_mode_times_out_without_client() {
     let clock = MockClock::from_ticks(&[0, 0, 600]);
 
     block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -859,7 +864,7 @@ fn enter_config_mode_uses_connected_timeout_after_client_connects() {
     let clock = MockClock::from_ticks(&[0, 600, 1100]);
 
     block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -897,7 +902,7 @@ fn enter_config_mode_reboots_after_http_request_marks_activity() {
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         let _ = block_on(enter_config_mode(
-            &TEST_SPEC,
+            make_test_spec(),
             "configure",
             &mut wifi,
             MockStore::default(),
@@ -928,7 +933,7 @@ fn enter_config_mode_errors_when_ap_stops_unexpectedly() {
     };
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -955,7 +960,7 @@ fn enter_config_mode_propagates_ap_start_failure() {
     };
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -984,7 +989,7 @@ fn enter_config_mode_propagates_ap_stop_failure() {
     };
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -1012,7 +1017,7 @@ fn enter_config_mode_propagates_wifi_poll_failure() {
     };
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -1040,7 +1045,7 @@ fn enter_config_mode_propagates_started_check_failure() {
     };
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -1073,7 +1078,7 @@ fn enter_config_mode_propagates_http_backend_start_failure() {
     };
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -1095,7 +1100,7 @@ fn get_request_propagates_store_read_failure() {
     let store = MockStore::default();
     store.state.lock().unwrap().read_error = Some("read failed".into());
     let err = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &ConfigActivity::default(),
@@ -1110,7 +1115,7 @@ fn post_reset_propagates_store_clear_failure() {
     let store = MockStore::default();
     store.state.lock().unwrap().remove_error = Some("clear failed".into());
     let err = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &ConfigActivity::default(),
@@ -1125,7 +1130,7 @@ fn post_save_re_renders_when_store_write_fails() {
     let store = MockStore::default();
     store.state.lock().unwrap().write_error = Some("write failed".into());
     let response = block_on(handle_http_request(
-        &TEST_SPEC,
+        &make_test_spec(),
         "configure",
         &store,
         &ConfigActivity::default(),
@@ -1147,7 +1152,7 @@ fn enter_config_mode_propagates_mac_address_failure() {
     platform.state.lock().unwrap().mac_error = Some("mac failed".into());
 
     let err = block_on(enter_config_mode(
-        &TEST_SPEC,
+        make_test_spec(),
         "configure",
         &mut wifi,
         MockStore::default(),
@@ -1168,7 +1173,7 @@ fn enter_config_mode_propagates_mac_address_failure() {
 #[test]
 fn renders_select_with_options() {
     let state = ConfigState::Missing;
-    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_select_spec(), "configure", &state, None, None));
     assert!(body.contains("<select name=\"ssid\""));
     assert!(body.contains("<option value=\"network1\">Network One</option>"));
     assert!(body.contains("<option value=\"network2\">Network Two</option>"));
@@ -1178,14 +1183,14 @@ fn renders_select_with_options() {
 #[test]
 fn renders_select_with_other_option() {
     let state = ConfigState::Missing;
-    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_select_spec(), "configure", &state, None, None));
     assert!(body.contains("<option value=\"__other__\">Other...</option>"));
 }
 
 #[test]
 fn renders_other_text_input_hidden_by_default() {
     let state = ConfigState::Missing;
-    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_select_spec(), "configure", &state, None, None));
     assert!(body.contains("<input type=\"text\" name=\"ssid_other\""));
     assert!(body.contains("class=\"hidden\""));
 }
@@ -1193,14 +1198,14 @@ fn renders_other_text_input_hidden_by_default() {
 #[test]
 fn select_preselects_stored_value_when_in_options() {
     let state = ConfigState::Ready(stored(&[("ssid", "network2")]));
-    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_select_spec(), "configure", &state, None, None));
     assert!(body.contains("<option value=\"network2\" selected>Network Two</option>"));
 }
 
 #[test]
 fn select_shows_other_with_value_when_not_in_options() {
     let state = ConfigState::Ready(stored(&[("ssid", "MyHiddenNetwork")]));
-    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, None, None));
+    let body = block_on(render_form(&make_select_spec(), "configure", &state, None, None));
     assert!(body.contains("<option value=\"__other__\" selected>Other...</option>"));
     assert!(body.contains("<input type=\"text\" name=\"ssid_other\" value=\"MyHiddenNetwork\""));
 }
@@ -1209,7 +1214,7 @@ fn select_shows_other_with_value_when_not_in_options() {
 fn select_prefers_submitted_value_over_stored() {
     let state = ConfigState::Ready(stored(&[("ssid", "network1")]));
     let submitted = map(&[("ssid", "network3"), ("ssid_other", "")]);
-    let body = block_on(render_form(&SELECT_SPEC, "configure", &state, Some(&submitted), None));
+    let body = block_on(render_form(&make_select_spec(), "configure", &state, Some(&submitted), None));
     assert!(body.contains("<option value=\"network3\" selected>Network Three</option>"));
 }
 
@@ -1217,7 +1222,7 @@ fn select_prefers_submitted_value_over_stored() {
 fn select_stores_other_text_value() {
     let store = MockStore::default();
     save_config(
-        &SELECT_SPEC,
+        &make_select_spec(),
         &store,
         &map(&[("ssid", "__other__"), ("ssid_other", "MyCustomNetwork")]),
     )
@@ -1229,7 +1234,7 @@ fn select_stores_other_text_value() {
 #[test]
 fn select_validates_required() {
     let store = MockStore::default();
-    let err = save_config(&SELECT_SPEC, &store, &map(&[("ssid", "")])).unwrap_err();
+    let err = save_config(&make_select_spec(), &store, &map(&[("ssid", "")])).unwrap_err();
     assert!(err.to_string().contains("Wi-Fi Network is required"));
 }
 
@@ -1237,7 +1242,7 @@ fn select_validates_required() {
 fn select_allows_any_value_in_other() {
     let store = MockStore::default();
     save_config(
-        &SELECT_SPEC,
+        &make_select_spec(),
         &store,
         &map(&[("ssid", "__other__"), ("ssid_other", "AnyNetwork123!@#")]),
     )
@@ -1250,7 +1255,7 @@ fn select_allows_any_value_in_other() {
 fn select_requires_text_when_other_selected() {
     let store = MockStore::default();
     let err = save_config(
-        &SELECT_SPEC,
+        &make_select_spec(),
         &store,
         &map(&[("ssid", "__other__"), ("ssid_other", "")]),
     )
@@ -1261,7 +1266,7 @@ fn select_requires_text_when_other_selected() {
 #[test]
 fn select_saves_selected_option() {
     let store = MockStore::default();
-    save_config(&SELECT_SPEC, &store, &map(&[("ssid", "network2")])).unwrap();
+    save_config(&make_select_spec(), &store, &map(&[("ssid", "network2")])).unwrap();
     let values = store.values();
     assert_eq!(values.get("ssid"), Some(&"network2".to_string()));
 }
@@ -1270,7 +1275,7 @@ fn select_saves_selected_option() {
 fn select_saves_custom_text() {
     let store = MockStore::default();
     save_config(
-        &SELECT_SPEC,
+        &make_select_spec(),
         &store,
         &map(&[("ssid", "__other__"), ("ssid_other", "CustomSSID")]),
     )
@@ -1286,7 +1291,7 @@ fn select_loads_saved_value() {
     ]));
     let activity = ConfigActivity::default();
     let response = block_on(handle_http_request(
-        &SELECT_SPEC,
+        &make_select_spec(),
         "configure",
         &store,
         &activity,
@@ -1301,18 +1306,17 @@ struct EmptySelectOptions;
 
 #[async_trait]
 impl SelectOptions for EmptySelectOptions {
-    async fn options(&self) -> Vec<SelectOption<'_>> {
+    async fn options(&self) -> Vec<SelectOption> {
         vec![]
     }
 }
 
 fn make_empty_select_spec() -> ConfigSpec {
-    let fields: Vec<FieldSpec> = vec![FieldSpec::select("network", "Network", EmptySelectOptions)];
     ConfigSpec {
         namespace: "config",
         ap_prefix: "InfoPanel",
         title: "Wi-Fi Setup",
-        fields: Box::leak(fields.into_boxed_slice()),
+        fields: vec![FieldSpec::select("network", "Network", EmptySelectOptions)],
     }
 }
 
@@ -1329,19 +1333,18 @@ fn select_escapes_html_in_labels() {
     struct HtmlLabelOptions;
     #[async_trait]
     impl SelectOptions for HtmlLabelOptions {
-        async fn options(&self) -> Vec<SelectOption<'_>> {
+        async fn options(&self) -> Vec<SelectOption> {
             vec![
-                SelectOption { value: "foo", label: "Foo<script>evil()</script>" },
-                SelectOption { value: "bar", label: "Bar\"quoted\"" },
+                SelectOption { value: "foo".to_string(), label: "Foo<script>evil()</script>".to_string() },
+                SelectOption { value: "bar".to_string(), label: "Bar\"quoted\"".to_string() },
             ]
         }
     }
-    let fields: Vec<FieldSpec> = vec![FieldSpec::select("test", "Test", HtmlLabelOptions)];
     let spec = ConfigSpec {
         namespace: "config",
         ap_prefix: "Test",
         title: "Test",
-        fields: Box::leak(fields.into_boxed_slice()),
+        fields: vec![FieldSpec::select("test", "Test", HtmlLabelOptions)],
     };
     let state = ConfigState::Missing;
     let body = block_on(render_form(&spec, "configure", &state, None, None));
@@ -1356,7 +1359,7 @@ fn post_reset_clears_select_field() {
     ]));
     let activity = ConfigActivity::default();
     let response = block_on(handle_http_request(
-        &SELECT_SPEC,
+        &make_select_spec(),
         "configure",
         &store,
         &activity,
@@ -1375,7 +1378,7 @@ fn read_config_returns_ready_with_select_value() {
         ("ssid", "network2"),
     ]));
 
-    match read_config(&SELECT_SPEC, &store).unwrap() {
+    match read_config(&make_select_spec(), &store).unwrap() {
         ConfigState::Ready(config) => {
             assert_eq!(config.get("ssid"), Some("network2"));
         }
@@ -1389,7 +1392,7 @@ fn read_config_returns_ready_with_select_custom_value() {
         ("ssid", "MyCustomNetwork"),
     ]));
 
-    match read_config(&SELECT_SPEC, &store).unwrap() {
+    match read_config(&make_select_spec(), &store).unwrap() {
         ConfigState::Ready(config) => {
             assert_eq!(config.get("ssid"), Some("MyCustomNetwork"));
         }
