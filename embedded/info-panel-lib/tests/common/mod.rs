@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use embassy_time::Duration;
-use info_panel_lib::{BootReason, Clock, DisplayWrite, HttpClient, Led, Platform};
+use info_panel_lib::{BootReason, Clock, Hal, HttpClient, Platform, TFT_HEIGHT, TFT_WIDTH};
 use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -16,7 +16,7 @@ type HookResult<T> = Option<anyhow::Result<T>>;
 type StoreReadHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<BTreeMap<String, String>> + Send>>>;
 type StoreWriteHook = Arc<Mutex<Box<dyn FnMut(&BTreeMap<String, String>) -> HookResult<()> + Send>>>;
 type StoreRemoveHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<()> + Send>>>;
-type LedHook = Arc<Mutex<Box<dyn FnMut(rgb_led::Rgb, f32) -> HookResult<()> + Send>>>;
+type LedHook = Arc<Mutex<Box<dyn FnMut(LedCall) -> HookResult<()> + Send>>>;
 type DisplayInitHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
 type DisplayWriteHook = Arc<Mutex<Box<dyn FnMut(&[u8]) -> HookResult<()> + Send>>>;
 type DisplayFillHook = Arc<Mutex<Box<dyn FnMut(u16) -> HookResult<()> + Send>>>;
@@ -255,7 +255,7 @@ impl MockLed {
 
     pub fn on_set_pixel(
         mut self,
-        hook: impl FnMut(rgb_led::Rgb, f32) -> HookResult<()> + Send + 'static,
+        hook: impl FnMut(LedCall) -> HookResult<()> + Send + 'static,
     ) -> Self {
         self.set_pixel_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -268,10 +268,25 @@ impl Default for MockLed {
     }
 }
 
-impl Led for MockLed {
-    fn set_pixel(&mut self, rgb: rgb_led::Rgb, brightness: f32) -> anyhow::Result<()> {
+impl rgb_led::RgbLedBackend for MockLed {
+    type Error = anyhow::Error;
+
+    fn color_order(&self) -> rgb_led::ColorOrder {
+        rgb_led::ColorOrder::RGB
+    }
+
+    fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> anyhow::Result<()> {
+        let max = bytes.into_iter().max().unwrap_or(0) as f32;
+        let brightness = ((max / 255.0) * 100.0).round() / 100.0;
+        let scale = if max == 0.0 { 0.0 } else { 1.0 / max };
+        let call = LedCall {
+            r: bytes[0] as f32 * scale,
+            g: bytes[1] as f32 * scale,
+            b: bytes[2] as f32 * scale,
+            brightness,
+        };
         if let Some(hook) = &self.set_pixel_hook {
-            if let Some(result) = (hook.lock().unwrap())(rgb, brightness) {
+            if let Some(result) = (hook.lock().unwrap())(call) {
                 return result;
             }
         }
@@ -283,13 +298,8 @@ pub fn tracked_led() -> (MockLed, Arc<Mutex<Vec<LedCall>>>) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let tracked = calls.clone();
     (
-        MockLed::new().on_set_pixel(move |rgb, brightness| {
-            tracked.lock().unwrap().push(LedCall {
-                r: rgb.r,
-                g: rgb.g,
-                b: rgb.b,
-                brightness,
-            });
+        MockLed::new().on_set_pixel(move |call| {
+            tracked.lock().unwrap().push(call);
             None
         }),
         calls,
@@ -300,23 +310,25 @@ pub fn failing_led() -> (MockLed, Arc<Mutex<Vec<LedCall>>>) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let tracked = calls.clone();
     (
-        MockLed::new().on_set_pixel(move |rgb, brightness| {
-            tracked.lock().unwrap().push(LedCall {
-                r: rgb.r,
-                g: rgb.g,
-                b: rgb.b,
-                brightness,
-            });
+        MockLed::new().on_set_pixel(move |call| {
+            tracked.lock().unwrap().push(call);
             Some(Err(anyhow::anyhow!("mock LED error")))
         }),
         calls,
     )
 }
 
+pub fn led_bytes(rgb: rgb_led::Rgb, brightness: f32) -> [u8; 3] {
+    rgb_led::pixel_bytes(rgb_led::ColorOrder::RGB, rgb, brightness)
+}
+
 pub struct MockDisplay {
     init_hook: Option<DisplayInitHook>,
     write_frame_hook: Option<DisplayWriteHook>,
     fill_solid_hook: Option<DisplayFillHook>,
+    dc_high: bool,
+    current_transfer: Option<Vec<u8>>,
+    saw_fill_solid: bool,
 }
 
 impl MockDisplay {
@@ -325,6 +337,9 @@ impl MockDisplay {
             init_hook: None,
             write_frame_hook: None,
             fill_solid_hook: None,
+            dc_high: false,
+            current_transfer: None,
+            saw_fill_solid: false,
         }
     }
 
@@ -359,8 +374,49 @@ impl Default for MockDisplay {
     }
 }
 
-impl DisplayWrite for MockDisplay {
-    async fn init(&mut self) -> anyhow::Result<()> {
+impl MockDisplay {
+    fn finish_transfer(&mut self) -> anyhow::Result<()> {
+        let Some(data) = self.current_transfer.take() else {
+            return Ok(());
+        };
+
+        let full_frame_bytes = (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2;
+        let is_uniform_solid = data.len() == full_frame_bytes
+            && data.chunks_exact(2).all(|chunk| chunk == &data[..2]);
+
+        if is_uniform_solid && !self.saw_fill_solid {
+            self.saw_fill_solid = true;
+            if let Some(hook) = &self.fill_solid_hook {
+                let color = u16::from_be_bytes([data[0], data[1]]);
+                if let Some(result) = (hook.lock().unwrap())(color) {
+                    return result;
+                }
+            }
+        } else if let Some(hook) = &self.write_frame_hook {
+            if let Some(result) = (hook.lock().unwrap())(&data) {
+                return result;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl tft_display::TftBackend for MockDisplay {
+    type Error = anyhow::Error;
+
+    fn set_dc_low(&mut self) -> anyhow::Result<()> {
+        self.finish_transfer()?;
+        self.dc_high = false;
+        Ok(())
+    }
+
+    fn set_dc_high(&mut self) -> anyhow::Result<()> {
+        self.dc_high = true;
+        Ok(())
+    }
+
+    fn set_rst_low(&mut self) -> anyhow::Result<()> {
         if let Some(hook) = &self.init_hook {
             if let Some(result) = (hook.lock().unwrap())() {
                 return result;
@@ -369,26 +425,35 @@ impl DisplayWrite for MockDisplay {
         Ok(())
     }
 
-    fn write_frame(
-        &mut self,
-        source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
-    ) -> anyhow::Result<()> {
-        let data = read_source_to_vec(source)?;
-        if let Some(hook) = &self.write_frame_hook {
-            if let Some(result) = (hook.lock().unwrap())(&data) {
-                return result;
-            }
-        }
+    fn set_rst_high(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn fill_solid(&mut self, color: u16) -> anyhow::Result<()> {
-        if let Some(hook) = &self.fill_solid_hook {
-            if let Some(result) = (hook.lock().unwrap())(color) {
-                return result;
+    fn write(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        if self.dc_high {
+            if let Some(transfer) = &mut self.current_transfer {
+                transfer.extend_from_slice(data);
+                let full_frame_bytes = (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2;
+                if transfer.len() >= full_frame_bytes {
+                    self.finish_transfer()?;
+                }
             }
+            return Ok(());
         }
+
+        self.finish_transfer()?;
+
+        if data == [0x2C] {
+            self.current_transfer = Some(Vec::new());
+        }
+
         Ok(())
+    }
+}
+
+impl Drop for MockDisplay {
+    fn drop(&mut self) {
+        let _ = self.finish_transfer();
     }
 }
 
@@ -474,6 +539,72 @@ pub fn display_with_fill_solid_fail_nth(
         }),
         state,
     )
+}
+
+pub fn hal<W, S, H, P, Ck, HC, TB, LB>(
+    wifi_backend: W,
+    store: S,
+    http_backend: H,
+    platform: P,
+    clock: Ck,
+    http_client: HC,
+    tft_backend: TB,
+    led_backend: LB,
+) -> Hal<W, S, H, P, Ck, HC, TB, LB> {
+    Hal {
+        wifi_backend,
+        store,
+        http_backend,
+        platform,
+        clock,
+        http_client,
+        tft_backend,
+        led_backend,
+    }
+}
+
+pub struct FailingDisplay {
+    init_failed: bool,
+}
+
+impl FailingDisplay {
+    pub fn new() -> Self {
+        Self { init_failed: false }
+    }
+}
+
+impl Default for FailingDisplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl tft_display::TftBackend for FailingDisplay {
+    type Error = anyhow::Error;
+
+    fn set_dc_low(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn set_dc_high(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn set_rst_low(&mut self) -> anyhow::Result<()> {
+        if !self.init_failed {
+            self.init_failed = true;
+            return Err(anyhow::anyhow!("display init failed"));
+        }
+        Ok(())
+    }
+
+    fn set_rst_high(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn write(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct MockHttpClient {

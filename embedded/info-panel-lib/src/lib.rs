@@ -92,6 +92,22 @@ pub trait Clock {
     async fn sleep(&self, duration: Duration);
 }
 
+pub struct TftClockAdapter<C> {
+    inner: C,
+}
+
+impl<C> TftClockAdapter<C> {
+    pub fn new(inner: C) -> Self {
+        Self { inner }
+    }
+}
+
+impl<C: Clock> tft_display::Clock for TftClockAdapter<C> {
+    async fn sleep_ms(&mut self, millis: u64) {
+        Clock::sleep(&self.inner, Duration::from_millis(millis)).await;
+    }
+}
+
 pub struct ConfigPlatformAdapter<P> {
     inner: P,
 }
@@ -336,15 +352,19 @@ where
     Platform::reboot(platform);
 }
 
-pub async fn run<W, S, H, P, Ck, L, HC>(
-    wifi: &mut Wifi<W>,
-    store: S,
-    http_backend: H,
-    platform: P,
-    clock: Ck,
-    http_client: HC,
-    display: impl DisplayWrite,
-    led: &mut L,
+pub struct Hal<W, S, H, P, Ck, HC, TB, LB> {
+    pub wifi_backend: W,
+    pub store: S,
+    pub http_backend: H,
+    pub platform: P,
+    pub clock: Ck,
+    pub http_client: HC,
+    pub tft_backend: TB,
+    pub led_backend: LB,
+}
+
+pub async fn run<W, S, H, P, Ck, HC, TB, LB>(
+    hal: Hal<W, S, H, P, Ck, HC, TB, LB>,
 ) -> !
 where
     W: WifiBackend,
@@ -352,26 +372,54 @@ where
     H: ConfigHttpBackend,
     P: Platform + Clone,
     Ck: Clock + Clone,
-    L: Led,
     HC: HttpClient + Send,
+    TB: tft_display::TftBackend<Error = anyhow::Error>,
+    LB: rgb_led::RgbLedBackend,
 {
-    match run_inner(wifi, store, http_backend, platform.clone(), clock.clone(), http_client, display, led).await {
+    let Hal {
+        wifi_backend,
+        store,
+        http_backend,
+        platform,
+        clock,
+        http_client,
+        tft_backend,
+        led_backend,
+    } = hal;
+
+    let mut wifi = Wifi::new(wifi_backend);
+    let display_clock = TftClockAdapter::new(clock.clone());
+    let display = tft_display::TftDisplay::new(tft_backend, display_clock, TFT_WIDTH, TFT_HEIGHT);
+    let mut led = rgb_led::RgbLed::new(led_backend);
+
+    match run_inner(
+        &mut wifi,
+        store,
+        http_backend,
+        platform.clone(),
+        clock.clone(),
+        http_client,
+        display,
+        &mut led,
+    )
+    .await
+    {
         Ok(never) => match never {},
         Err(err) => {
             error!("fatal: {err:#}");
-            enter_error_mode(led, &clock, &platform).await;
+            enter_error_mode(&mut led, &clock, &platform).await;
         }
     }
 }
 
-async fn run_inner<W, S, H, P, Ck, L, HC>(
+async fn run_inner<W, S, H, P, Ck, L, HC, TB, TC>(
     wifi: &mut Wifi<W>,
     store: S,
     http_backend: H,
     platform: P,
     clock: Ck,
     mut http_client: HC,
-    mut display: impl DisplayWrite,
+    mut display: tft_display::TftDisplay<TB, TC>,
     led: &mut L,
 ) -> Result<Infallible>
 where
@@ -382,6 +430,8 @@ where
     Ck: Clock + Clone,
     L: Led,
     HC: HttpClient + Send,
+    TB: tft_display::TftBackend<Error = anyhow::Error>,
+    TC: tft_display::Clock,
 {
     display.init().await?;
 
@@ -459,31 +509,6 @@ where
         }
 
         fetch_and_draw_rgb565_with_retries(&mut http_client, &mut display, &clock, config.url()).await?;
-    }
-}
-
-#[allow(async_fn_in_trait)]
-pub trait DisplayWrite {
-    async fn init(&mut self) -> Result<()>;
-    fn write_frame(&mut self, source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>) -> Result<()>;
-    fn fill_solid(&mut self, color: u16) -> Result<()>;
-}
-
-impl<B, C> DisplayWrite for tft_display::TftDisplay<B, C>
-where
-    B: tft_display::TftBackend<Error = anyhow::Error>,
-    C: tft_display::Clock,
-{
-    async fn init(&mut self) -> Result<()> {
-        tft_display::TftDisplay::init(self).await
-    }
-
-    fn write_frame(&mut self, source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>) -> Result<()> {
-        tft_display::TftDisplay::write_frame(self, source)
-    }
-
-    fn fill_solid(&mut self, color: u16) -> Result<()> {
-        tft_display::TftDisplay::fill_solid(self, color)
     }
 }
 
@@ -613,15 +638,16 @@ where
     Ok(())
 }
 
-async fn fetch_and_draw_rgb565_with_retries<HC, D, Ck>(
+async fn fetch_and_draw_rgb565_with_retries<HC, TB, TC, Ck>(
     http_client: &mut HC,
-    display: &mut D,
+    display: &mut tft_display::TftDisplay<TB, TC>,
     clock: &Ck,
     url: &str,
 ) -> Result<()>
 where
     HC: HttpClient,
-    D: DisplayWrite,
+    TB: tft_display::TftBackend<Error = anyhow::Error>,
+    TC: tft_display::Clock,
     Ck: Clock,
 {
     let mut last_err: Option<anyhow::Error> = None;

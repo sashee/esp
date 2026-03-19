@@ -1,5 +1,5 @@
 use info_panel_lib::{
-    rgb565, BootReason, Clock, DeviceConfig, DisplayWrite, HttpClient, Led, Platform,
+    rgb565, BootReason, Clock, DeviceConfig, Hal, HttpClient, Platform,
     TFT_HEIGHT, TFT_WIDTH,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -45,27 +45,55 @@ impl MockLed {
     }
 }
 
-impl Led for MockLed {
-    fn set_pixel(&mut self, rgb: rgb_led::Rgb, _brightness: f32) -> anyhow::Result<()> {
-        self.colors.push((rgb.r, rgb.g, rgb.b));
+impl rgb_led::RgbLedBackend for MockLed {
+    type Error = anyhow::Error;
+
+    fn color_order(&self) -> rgb_led::ColorOrder {
+        rgb_led::ColorOrder::RGB
+    }
+
+    fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> anyhow::Result<()> {
+        let max = bytes.into_iter().max().unwrap_or(0) as f32;
+        let scale = if max == 0.0 { 0.0 } else { 1.0 / max };
+        self.colors.push((bytes[0] as f32 * scale, bytes[1] as f32 * scale, bytes[2] as f32 * scale));
         Ok(())
+    }
+}
+
+impl rgb_led::RgbLedBackend for &mut MockLed {
+    type Error = anyhow::Error;
+
+    fn color_order(&self) -> rgb_led::ColorOrder {
+        (**self).color_order()
+    }
+
+    fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> anyhow::Result<()> {
+        (**self).set_pixel_bytes(bytes)
     }
 }
 
 struct MockDisplay;
 
-impl DisplayWrite for MockDisplay {
-    async fn init(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn write_frame(
-        &mut self,
-        _source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
-    ) -> anyhow::Result<()> {
+impl tft_display::TftBackend for MockDisplay {
+    type Error = anyhow::Error;
+
+    fn set_dc_low(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn fill_solid(&mut self, _color: u16) -> anyhow::Result<()> {
+    fn set_dc_high(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn set_rst_low(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn set_rst_high(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn write(&mut self, _data: &[u8]) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -354,7 +382,8 @@ fn test_device_config_invalid_led_brightness() {
 #[test]
 fn run_enters_ap_mode_when_nvs_empty() {
     let mut led = MockLed::new();
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
+    let wifi_backend = MockWifiBackend::default();
+    let wifi_state = wifi_backend.state.clone();
     let store = MockStore;
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -362,19 +391,17 @@ fn run_enters_ap_mode_when_nvs_empty() {
     let http_client = MockHttpClient;
     let display = MockDisplay;
 
-    let led_ref = &mut led;
-
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(Hal {
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
-            display,
-            led_ref,
-        ));
+            tft_backend: display,
+            led_backend: &mut led,
+        }));
     }));
     let _ = result;
 
@@ -382,7 +409,7 @@ fn run_enters_ap_mode_when_nvs_empty() {
     assert_eq!(led.colors.last(), Some(&(0.0, 1.0, 0.0)));
 
     // Wifi AP should have been started with expected SSID
-    let state = wifi.backend().state.lock().unwrap();
+    let state = wifi_state.lock().unwrap();
     assert_eq!(state.start_configs.len(), 1);
     assert_eq!(state.start_configs[0].ssid, "InfoPanel-AABB");
 }

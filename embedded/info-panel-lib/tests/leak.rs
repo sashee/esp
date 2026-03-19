@@ -76,10 +76,9 @@ fn test_refresh_cycle_no_memory_leak() {
     let after_call = before_call + LEAK_TEST_ITERATIONS;
 
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(true);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
@@ -96,16 +95,16 @@ fn test_refresh_cycle_no_memory_leak() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "leak iteration budget reached");

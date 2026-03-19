@@ -11,9 +11,8 @@ use std::sync::{Arc, Mutex};
 #[test]
 fn test_image_fetches_url_after_wifi_connect() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -23,16 +22,16 @@ fn test_image_fetches_url_after_wifi_connect() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     let fetched_urls = urls.lock().unwrap();
@@ -48,9 +47,8 @@ fn test_image_fetches_url_after_wifi_connect() {
 #[test]
 fn test_image_fetches_empty_url_when_url_empty() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
@@ -67,16 +65,16 @@ fn test_image_fetches_empty_url_when_url_empty() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -88,9 +86,8 @@ fn test_image_fetches_empty_url_when_url_empty() {
 #[test]
 fn test_image_retries_3_times_on_http_failure() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -100,16 +97,16 @@ fn test_image_retries_3_times_on_http_failure() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_eq!(
@@ -135,10 +132,9 @@ fn test_image_retries_3_times_on_http_failure() {
 #[test]
 fn test_image_succeeds_on_first_retry() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -151,16 +147,16 @@ fn test_image_succeeds_on_first_retry() {
     let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_eq!(
@@ -180,10 +176,9 @@ fn test_image_succeeds_on_first_retry() {
 #[test]
 fn test_image_succeeds_on_second_retry() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -196,16 +191,16 @@ fn test_image_succeeds_on_second_retry() {
     let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_eq!(
@@ -225,9 +220,8 @@ fn test_image_succeeds_on_second_retry() {
 #[test]
 fn test_image_enters_error_mode_when_all_retries_fail() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -237,16 +231,16 @@ fn test_image_enters_error_mode_when_all_retries_fail() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     let last = led_calls.lock().unwrap().last().cloned();
@@ -272,9 +266,8 @@ fn test_image_enters_error_mode_when_all_retries_fail() {
 #[test]
 fn test_image_error_mode_waits_before_restart() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -283,16 +276,16 @@ fn test_image_error_mode_waits_before_restart() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -318,10 +311,9 @@ fn test_image_error_mode_waits_before_restart() {
 #[test]
 fn test_image_succeeds_on_third_retry() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -334,16 +326,16 @@ fn test_image_succeeds_on_third_retry() {
     let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_eq!(
@@ -363,10 +355,9 @@ fn test_image_succeeds_on_third_retry() {
 #[test]
 fn test_image_displays_frame_on_tft_when_fetch_succeeds() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -377,16 +368,16 @@ fn test_image_displays_frame_on_tft_when_fetch_succeeds() {
     let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -400,9 +391,8 @@ fn test_image_displays_frame_on_tft_when_fetch_succeeds() {
 #[test]
 fn test_image_enters_error_mode_on_write_frame_failure() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -412,16 +402,16 @@ fn test_image_enters_error_mode_on_write_frame_failure() {
     let (display, _display_state) = display_with_write_frame_fail_nth(global_counter, 1);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     let last = led_calls.lock().unwrap().last().cloned();
@@ -447,9 +437,8 @@ fn test_image_enters_error_mode_on_write_frame_failure() {
 #[test]
 fn test_image_enters_error_mode_on_initial_fill_failure() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -460,16 +449,16 @@ fn test_image_enters_error_mode_on_initial_fill_failure() {
     let (display, _display_state) = display_with_fill_solid_fail_nth(global_counter, 1);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     let last = led_calls.lock().unwrap().last().cloned();
@@ -502,10 +491,9 @@ fn test_image_enters_error_mode_on_initial_fill_failure() {
 #[test]
 fn test_image_handles_invalid_frame_size() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -516,16 +504,16 @@ fn test_image_handles_invalid_frame_size() {
     let write_frame_calls = display_state.write_frame_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -539,9 +527,8 @@ fn test_image_handles_invalid_frame_size() {
 
 #[test]
 fn test_image_refreshes_after_30_second_interval() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new().with_is_connected(true);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -570,16 +557,16 @@ fn test_image_refreshes_after_30_second_interval() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "refresh fetch observed after 30-second interval");
@@ -589,17 +576,11 @@ fn test_image_refreshes_after_30_second_interval() {
 fn test_image_aborts_refresh_on_wifi_disconnect() {
     let led_calls = Arc::new(Mutex::new(Vec::new()));
     let led_calls_hook = led_calls.clone();
-    let mut led = MockLed::new().on_set_pixel(move |rgb, brightness| {
-        led_calls_hook.lock().unwrap().push(LedCall {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-            brightness,
-        });
+    let led = MockLed::new().on_set_pixel(move |call| {
+        led_calls_hook.lock().unwrap().push(call);
         None
     });
     let wifi_backend = MockWifiBackend::new().with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let get_calls = Arc::new(Mutex::new(0));
@@ -635,16 +616,16 @@ fn test_image_aborts_refresh_on_wifi_disconnect() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "wifi disconnect aborts refresh before second HTTP fetch");
@@ -652,9 +633,8 @@ fn test_image_aborts_refresh_on_wifi_disconnect() {
 
 #[test]
 fn test_image_multiple_refresh_cycles() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new().with_is_connected(true);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -683,16 +663,16 @@ fn test_image_multiple_refresh_cycles() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "two refresh cycles observed");
@@ -701,10 +681,9 @@ fn test_image_multiple_refresh_cycles() {
 #[test]
 fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(true);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -718,16 +697,16 @@ fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
     let (display, _display_state) = display_with_write_frame_fail_nth(global_counter, 2);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // Either the write_frame failure triggers error mode (and we see reboot)
@@ -760,9 +739,8 @@ fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
 #[test]
 fn test_image_fails_when_url_invalid() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
@@ -780,16 +758,16 @@ fn test_image_fails_when_url_invalid() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // HTTP request was attempted with the invalid URL

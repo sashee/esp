@@ -20,12 +20,10 @@ use esp_idf_svc::{
     http::client::{Configuration as HttpConfiguration, EspHttpConnection},
     nvs::EspDefaultNvsPartition,
 };
+use rgb_led::ColorOrder;
 use rgb_led::esp_idf::Ws2812RmtBackend;
-use rgb_led::{ColorOrder, RgbLed};
-use tft_display::esp_idf::{SpiTftBackend, EspDelay};
-use tft_display::TftDisplay;
+use tft_display::esp_idf::SpiTftBackend;
 use wifi::esp_idf::EspWifiBackend;
-use wifi::Wifi as WifiController;
 
 use info_panel_lib::{
     BootReason, Clock, HttpClient, Platform,
@@ -151,13 +149,13 @@ async fn async_main() -> Result<()> {
     let spi2 = peripherals.spi2;
     let pins = peripherals.pins;
 
-    let mut led = RgbLed::new(Ws2812RmtBackend::new(pins.gpio8)?, ColorOrder::RGB);
+    let led_backend = Ws2812RmtBackend::new(pins.gpio8, ColorOrder::RGB)?;
 
-    let mut wifi = WifiController::new(EspWifiBackend::new_with_default_nvs(
+    let wifi_backend = EspWifiBackend::new_with_default_nvs(
         modem,
         sysloop,
         Some(nvs),
-    )?);
+    )?;
 
     let http_backend = config_portal::esp_idf::EspHttpBackend::new();
     let clock = EspClock;
@@ -177,18 +175,17 @@ async fn async_main() -> Result<()> {
     let dc = PinDriver::output(pins.gpio2)?;
     let rst = PinDriver::output(pins.gpio1)?;
 
-    let display = TftDisplay::new(SpiTftBackend::new(spi, dc, rst), EspDelay, info_panel_lib::TFT_WIDTH, info_panel_lib::TFT_HEIGHT);
-
-    // run() never returns
-    info_panel_lib::run(
-        &mut wifi,
+    let hal = info_panel_lib::Hal {
+        wifi_backend,
         store,
         http_backend,
         platform,
         clock,
         http_client,
-        display,
-        &mut led,
-    )
-    .await;
+        tft_backend: SpiTftBackend::new(spi, dc, rst),
+        led_backend,
+    };
+
+    // run() never returns
+    info_panel_lib::run(hal).await;
 }

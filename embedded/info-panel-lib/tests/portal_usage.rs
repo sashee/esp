@@ -8,9 +8,8 @@ use std::sync::Arc;
 #[test]
 fn test_portal_ap_ip_is_192_168_4_1() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend();
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -19,16 +18,16 @@ fn test_portal_ap_ip_is_192_168_4_1() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // Verify the AP was started
@@ -49,11 +48,10 @@ fn test_portal_ap_ip_is_192_168_4_1() {
 #[test]
 fn test_portal_scans_networks_before_portal() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend();
     let scan_order = wifi_state.scan_order.clone();
     let start_ap_order = wifi_state.start_ap_order.clone();
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -62,16 +60,16 @@ fn test_portal_scans_networks_before_portal() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // scan_networks must be called before start_access_point
@@ -91,13 +89,12 @@ fn test_portal_scans_networks_before_portal() {
 #[test]
 fn test_portal_scans_with_duplicate_ssid() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let wifi_backend = MockWifiBackend::new().with_scan_networks_result(vec![
         wifi::FoundNetwork::new("HomeNetwork", None, Some(-50)),
         wifi::FoundNetwork::new("HomeNetwork", None, Some(-60)),
         wifi::FoundNetwork::new("OtherNet", None, Some(-70)),
     ]);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -107,16 +104,16 @@ fn test_portal_scans_with_duplicate_ssid() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // Portal should complete normally even with duplicate SSIDs
@@ -129,9 +126,8 @@ fn test_portal_scans_with_duplicate_ssid() {
 #[test]
 fn test_portal_ap_stop_is_called_on_exit() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend();
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -141,16 +137,16 @@ fn test_portal_ap_stop_is_called_on_exit() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(

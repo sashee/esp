@@ -7,14 +7,13 @@ use std::sync::{Arc, Mutex};
 
 #[test]
 fn test_portal_runs_preboot_portal_on_power_on() {
-    let mut led = MockLed::new().on_set_pixel(|rgb, _brightness| {
+    let led = MockLed::new().on_set_pixel(|rgb| {
         if rgb.r.abs() < 0.01 && (rgb.g - 0.53).abs() < 0.01 && (rgb.b - 1.0).abs() < 0.01 {
             ok("preboot portal blue LED observed on power-on");
         }
         None
     });
     let wifi_backend = MockWifiBackend::new().with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
@@ -23,16 +22,16 @@ fn test_portal_runs_preboot_portal_on_power_on() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "preboot portal blue LED observed on power-on");
@@ -41,10 +40,9 @@ fn test_portal_runs_preboot_portal_on_power_on() {
 #[test]
 fn test_portal_skips_preboot_portal_on_other_boot_reasons() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -53,16 +51,16 @@ fn test_portal_skips_preboot_portal_on_other_boot_reasons() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // AP should NOT have been started (no preboot portal for Software boot)
@@ -82,11 +80,10 @@ fn test_portal_skips_preboot_portal_on_other_boot_reasons() {
 
 #[test]
 fn test_portal_preboot_runs_even_with_valid_config() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new()
         .with_is_connected(false)
         .on_start_access_point(|_config| ok("preboot portal runs even with valid config"));
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store(); // complete valid config
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
@@ -95,16 +92,16 @@ fn test_portal_preboot_runs_even_with_valid_config() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "preboot portal runs even with valid config");
@@ -113,10 +110,9 @@ fn test_portal_preboot_runs_even_with_valid_config() {
 #[test]
 fn test_portal_preboot_waits_for_connection() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     // Client connected → portal uses connected_timeout (10min)
     let wifi_backend = MockWifiBackend::new().with_client_count(1).with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -127,16 +123,16 @@ fn test_portal_preboot_waits_for_connection() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // After preboot portal with client connected and timeout, normal boot continues
@@ -150,9 +146,8 @@ fn test_portal_preboot_waits_for_connection() {
 #[test]
 fn test_portal_preboot_portal_uses_30_second_timeout() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let wifi_backend = MockWifiBackend::new().with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
@@ -162,16 +157,16 @@ fn test_portal_preboot_portal_uses_30_second_timeout() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
 }
@@ -179,9 +174,8 @@ fn test_portal_preboot_portal_uses_30_second_timeout() {
 #[test]
 fn test_portal_preboot_led_error_enters_error_mode() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = failing_led(); // LED always fails
+    let (led, led_calls) = failing_led(); // LED always fails
     let wifi_backend = MockWifiBackend::new().with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -191,16 +185,16 @@ fn test_portal_preboot_led_error_enters_error_mode() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // LED errors in preboot portal are ignored (let _ = led.set_pixel(...))
@@ -228,7 +222,7 @@ fn test_portal_preboot_then_normal_boot_succeeds() {
     let preboot_started_hook = preboot_started.clone();
     let saw_preboot_led_hook = saw_preboot_led.clone();
     let saw_connecting_led_hook = saw_connecting_led.clone();
-    let mut led = MockLed::new().on_set_pixel(move |rgb, _brightness| {
+    let led = MockLed::new().on_set_pixel(move |rgb| {
         if rgb.r.abs() < 0.01 && (rgb.g - 0.53).abs() < 0.01 && (rgb.b - 1.0).abs() < 0.01 {
             *saw_preboot_led_hook.lock().unwrap() = true;
         }
@@ -252,7 +246,6 @@ fn test_portal_preboot_then_normal_boot_succeeds() {
             *preboot_started_for_wifi.lock().unwrap() = true;
             None
         });
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
@@ -261,16 +254,16 @@ fn test_portal_preboot_then_normal_boot_succeeds() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "preboot portal transitions into normal connected boot");

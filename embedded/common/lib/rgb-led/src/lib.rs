@@ -43,28 +43,25 @@ impl ColorOrder {
 pub trait RgbLedBackend {
     type Error;
 
+    fn color_order(&self) -> ColorOrder;
     fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> Result<(), Self::Error>;
 }
 
 pub struct RgbLed<B> {
     backend: B,
-    color_order: ColorOrder,
 }
 
 impl<B> RgbLed<B>
 where
     B: RgbLedBackend,
 {
-    pub const fn new(backend: B, color_order: ColorOrder) -> Self {
-        Self {
-            backend,
-            color_order,
-        }
+    pub const fn new(backend: B) -> Self {
+        Self { backend }
     }
 
     pub fn set_pixel(&mut self, rgb: Rgb, brightness: f32) -> Result<(), B::Error> {
         self.backend
-            .set_pixel_bytes(pixel_bytes(self.color_order, rgb, brightness))
+            .set_pixel_bytes(pixel_bytes(self.backend.color_order(), rgb, brightness))
     }
 }
 

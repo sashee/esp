@@ -10,7 +10,7 @@ use esp_idf_hal::{
     units::Hertz,
 };
 
-use crate::RgbLedBackend;
+use crate::{ColorOrder, RgbLedBackend};
 
 const RMT_LED_RESOLUTION_HZ: Hertz = Hertz(10_000_000);
 const T0H: Duration = Duration::from_nanos(350);
@@ -21,10 +21,11 @@ const TRESET: Duration = Duration::from_micros(281);
 
 pub struct Ws2812RmtBackend<'a> {
     tx_channel: TxChannelDriver<'a>,
+    color_order: ColorOrder,
 }
 
 impl<'d> Ws2812RmtBackend<'d> {
-    pub fn new(led: impl OutputPin + 'd) -> Result<Self> {
+    pub fn new(led: impl OutputPin + 'd, color_order: ColorOrder) -> Result<Self> {
         let tx_channel = TxChannelDriver::new(
             led,
             &TxChannelConfig {
@@ -36,12 +37,19 @@ impl<'d> Ws2812RmtBackend<'d> {
             },
         )?;
 
-        Ok(Self { tx_channel })
+        Ok(Self {
+            tx_channel,
+            color_order,
+        })
     }
 }
 
 impl RgbLedBackend for Ws2812RmtBackend<'_> {
     type Error = anyhow::Error;
+
+    fn color_order(&self) -> ColorOrder {
+        self.color_order
+    }
 
     fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> Result<(), Self::Error> {
         let signal = ws2812_signal(bytes)?;

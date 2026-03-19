@@ -12,14 +12,13 @@ fn portal_timeout_clock() -> MockClock {
 
 #[test]
 fn test_portal_starts_ap_when_nvs_empty() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new().on_start_access_point(|config| {
         if !config.ssid.starts_with("InfoPanel-") {
             nok("required portal AP SSID should start with InfoPanel-");
         }
         ok("required portal started access point for missing config");
     });
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -28,16 +27,16 @@ fn test_portal_starts_ap_when_nvs_empty() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "required portal started access point for missing config");
@@ -46,9 +45,8 @@ fn test_portal_starts_ap_when_nvs_empty() {
 #[test]
 fn test_portal_always_reboots_after_portal_exits() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let wifi_backend = MockWifiBackend::default();
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -58,16 +56,16 @@ fn test_portal_always_reboots_after_portal_exits() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -78,13 +76,13 @@ fn test_portal_always_reboots_after_portal_exits() {
 
 #[test]
 fn test_portal_sets_green_led_when_required_portal_runs() {
-    let mut led = MockLed::new().on_set_pixel(|rgb, _brightness| {
+    let led = MockLed::new().on_set_pixel(|rgb| {
         if rgb.r.abs() < 0.01 && (rgb.g - 1.0).abs() < 0.01 && rgb.b.abs() < 0.01 {
             ok("required portal green LED observed");
         }
         None
     });
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
+    let wifi_backend = MockWifiBackend::default();
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -93,16 +91,16 @@ fn test_portal_sets_green_led_when_required_portal_runs() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "required portal green LED observed");
@@ -111,8 +109,8 @@ fn test_portal_sets_green_led_when_required_portal_runs() {
 #[test]
 fn test_portal_uses_correct_idle_timeout() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
+    let (led, _led_calls) = tracked_led();
+    let wifi_backend = MockWifiBackend::default();
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -123,16 +121,16 @@ fn test_portal_uses_correct_idle_timeout() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -144,8 +142,8 @@ fn test_portal_uses_correct_idle_timeout() {
 #[test]
 fn test_portal_restarts_after_idle_timeout() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
+    let (led, _led_calls) = tracked_led();
+    let wifi_backend = MockWifiBackend::default();
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -155,16 +153,16 @@ fn test_portal_restarts_after_idle_timeout() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -177,10 +175,9 @@ fn test_portal_restarts_after_idle_timeout() {
 #[test]
 fn test_portal_continues_after_client_connection_timeout() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     // With client_count=1, portal detects client immediately and uses connected_timeout (10min)
     let wifi_backend = MockWifiBackend::new().with_client_count(1);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -191,16 +188,16 @@ fn test_portal_continues_after_client_connection_timeout() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(
@@ -211,11 +208,10 @@ fn test_portal_continues_after_client_connection_timeout() {
 
 #[test]
 fn test_portal_scan_failure_does_not_prevent_portal() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new()
         .on_scan_networks(|| Some(Err(anyhow::anyhow!("mock scan_networks error"))))
         .on_start_access_point(|_config| ok("portal starts AP even when scan fails"));
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -224,16 +220,16 @@ fn test_portal_scan_failure_does_not_prevent_portal() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "portal starts AP even when scan fails");

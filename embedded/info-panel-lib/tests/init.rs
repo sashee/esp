@@ -6,30 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 
-// A MockDisplay that returns an error on init
-struct FailingDisplay;
-
-impl info_panel_lib::DisplayWrite for FailingDisplay {
-    async fn init(&mut self) -> anyhow::Result<()> {
-        Err(anyhow::anyhow!("display init failed"))
-    }
-    fn write_frame(
-        &mut self,
-        _source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn fill_solid(&mut self, _color: u16) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn test_init_clears_tft_on_startup() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, _led_calls) = tracked_led();
+    let (led, _led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -42,16 +23,16 @@ fn test_init_clears_tft_on_startup() {
     let connect_order = wifi_state.connect_order.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert!(*init_called.lock().unwrap(), "display.init() must be called");
@@ -71,27 +52,27 @@ fn test_init_clears_tft_on_startup() {
 
 #[test]
 fn test_init_enters_error_mode_when_display_init_fails() {
-    let (mut led, led_calls) = tracked_led();
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
+    let (led, led_calls) = tracked_led();
+    let wifi_backend = MockWifiBackend::default();
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
         tracked_platform([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
     let http_client = MockHttpClient::new();
-    let display = FailingDisplay;
+    let display = FailingDisplay::new();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // LED should have been set to red (ERROR_LED = 1.0, 0.0, 0.0)
@@ -118,9 +99,8 @@ fn test_init_enters_error_mode_when_display_init_fails() {
 #[test]
 fn test_init_connects_wifi_when_nvs_has_complete_config() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -129,16 +109,16 @@ fn test_init_connects_wifi_when_nvs_has_complete_config() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // WiFi configure_client should have been called with stored ssid and password
@@ -176,7 +156,7 @@ fn test_init_connects_wifi_when_nvs_has_complete_config() {
 fn test_init_goes_to_required_portal_when_led_brightness_missing() {
     let saw_green = Arc::new(Mutex::new(false));
     let saw_green_hook = saw_green.clone();
-    let mut led = MockLed::new().on_set_pixel(move |rgb, _brightness| {
+    let led = MockLed::new().on_set_pixel(move |rgb| {
         if rgb.r.abs() < 0.01 && (rgb.g - 1.0).abs() < 0.01 && rgb.b.abs() < 0.01 {
             *saw_green_hook.lock().unwrap() = true;
         }
@@ -192,7 +172,6 @@ fn test_init_goes_to_required_portal_when_led_brightness_missing() {
         }
         ok("missing brightness enters required portal");
     });
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     // Store with ssid, pw, url but NO led_brightness
     let mut values = BTreeMap::new();
@@ -208,16 +187,16 @@ fn test_init_goes_to_required_portal_when_led_brightness_missing() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "missing brightness enters required portal");
@@ -225,11 +204,10 @@ fn test_init_goes_to_required_portal_when_led_brightness_missing() {
 
 #[test]
 fn test_init_goes_to_required_portal_when_led_brightness_invalid() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new().on_start_access_point(|_config| {
         ok("invalid brightness enters required portal");
     });
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     // Store with all fields but led_brightness is not a valid u8
     let mut values = BTreeMap::new();
@@ -246,16 +224,16 @@ fn test_init_goes_to_required_portal_when_led_brightness_invalid() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "invalid brightness enters required portal");
@@ -263,11 +241,10 @@ fn test_init_goes_to_required_portal_when_led_brightness_invalid() {
 
 #[test]
 fn test_init_goes_to_required_portal_when_config_corrupted() {
-    let mut led = MockLed::new();
+    let led = MockLed::new();
     let wifi_backend = MockWifiBackend::new().on_start_access_point(|_config| {
         ok("corrupted config enters required portal");
     });
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     // Store with only ssid and pw (missing url and led_brightness)
     let mut values = BTreeMap::new();
@@ -282,16 +259,16 @@ fn test_init_goes_to_required_portal_when_config_corrupted() {
     let display = MockDisplay::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     assert_ok_signal(result, "corrupted config enters required portal");
@@ -300,9 +277,8 @@ fn test_init_goes_to_required_portal_when_config_corrupted() {
 #[test]
 fn test_init_enters_error_mode_when_led_set_fails_during_connect() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = failing_led();
+    let (led, led_calls) = failing_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -312,16 +288,16 @@ fn test_init_enters_error_mode_when_led_set_fails_during_connect() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // Last LED call should be red (error mode)
@@ -350,9 +326,8 @@ fn test_init_enters_error_mode_when_led_set_fails_during_connect() {
 #[test]
 fn test_init_sets_blue_led_when_wifi_connected() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -361,16 +336,16 @@ fn test_init_sets_blue_led_when_wifi_connected() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // LED should have been set to blue (CONNECTED_LED = 0.0, 0.0, 1.0)
@@ -392,9 +367,8 @@ fn test_init_sets_blue_led_when_wifi_connected() {
 #[test]
 fn test_init_sets_orange_led_during_wifi_connection() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -404,16 +378,16 @@ fn test_init_sets_orange_led_during_wifi_connection() {
     let connect_order = wifi_state.connect_order.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // CONNECTING_LED (orange: 1.0, 0.78, 0.0) must be set with config brightness (128/255)
@@ -440,10 +414,9 @@ fn test_init_sets_orange_led_during_wifi_connection() {
 #[test]
 fn test_init_enters_error_mode_when_wifi_connect_fails() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.on_connect(|_timeout| Some(Err(anyhow::anyhow!("mock connect error"))));
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -453,16 +426,16 @@ fn test_init_enters_error_mode_when_wifi_connect_fails() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // Error mode LED (red) with brightness 0.06
@@ -489,12 +462,11 @@ fn test_init_enters_error_mode_when_wifi_connect_fails() {
 #[test]
 fn test_init_enters_error_mode_when_wifi_configure_fails() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.on_configure_client(|_credentials, _channel, _auth| {
         Some(Err(anyhow::anyhow!("mock configure_client error")))
     });
-    let mut wifi = wifi::Wifi::new(wifi_backend);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -504,16 +476,16 @@ fn test_init_enters_error_mode_when_wifi_configure_fails() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // Error mode LED (red) with brightness 0.06

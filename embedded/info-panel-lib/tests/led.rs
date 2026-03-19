@@ -9,8 +9,8 @@ use std::sync::Arc;
 #[test]
 fn test_led_uses_default_brightness_for_portal() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
-    let mut wifi = wifi::Wifi::new(MockWifiBackend::default());
+    let (led, led_calls) = tracked_led();
+    let wifi_backend = MockWifiBackend::default();
     let store = empty_config_store(); // no led_brightness → triggers required portal
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
@@ -19,16 +19,16 @@ fn test_led_uses_default_brightness_for_portal() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // REQUIRED_PORTAL_LED with PORTAL_LED_BRIGHTNESS (0.06)
@@ -47,10 +47,9 @@ fn test_led_uses_default_brightness_for_portal() {
 #[test]
 fn test_led_uses_config_brightness_for_connecting() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
@@ -66,16 +65,16 @@ fn test_led_uses_config_brightness_for_connecting() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // CONNECTING_LED (orange: 1.0, 0.78, 0.0) with brightness 200/255 ≈ 0.784
@@ -96,10 +95,9 @@ fn test_led_uses_config_brightness_for_connecting() {
 #[test]
 fn test_led_uses_config_brightness_for_connected() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
@@ -115,16 +113,16 @@ fn test_led_uses_config_brightness_for_connected() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // CONNECTED_LED (blue: 0.0, 0.0, 1.0) with brightness 128/255 ≈ 0.502
@@ -145,10 +143,9 @@ fn test_led_uses_config_brightness_for_connected() {
 #[test]
 fn test_led_off_when_brightness_is_zero() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
@@ -164,16 +161,16 @@ fn test_led_off_when_brightness_is_zero() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // All non-error LEDs should have brightness 0.0
@@ -193,10 +190,9 @@ fn test_led_off_when_brightness_is_zero() {
 #[test]
 fn test_led_max_brightness_when_brightness_is_255() {
     let global_counter = Arc::new(AtomicU32::new(1));
-    let (mut led, led_calls) = tracked_led();
+    let (led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
     let wifi_backend = wifi_backend.with_is_connected(false);
-    let mut wifi = wifi::Wifi::new(wifi_backend);
 
     let mut values = BTreeMap::new();
     values.insert("ssid".to_string(), "test_ssid".to_string());
@@ -212,16 +208,16 @@ fn test_led_max_brightness_when_brightness_is_255() {
     let (display, _display_state) = tracked_display(global_counter);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        block_on(info_panel_lib::run(
-            &mut wifi,
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
             store,
             http_backend,
             platform,
             clock,
             http_client,
             display,
-            &mut led,
-        ))
+            led,
+            )))
     }));
 
     // CONNECTING_LED (orange) with brightness 255/255 = 1.0

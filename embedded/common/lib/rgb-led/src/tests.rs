@@ -12,6 +12,7 @@ impl core::fmt::Display for MockError {
 struct MockBackend {
     last_bytes: Option<[u8; 3]>,
     fail_with: Option<&'static str>,
+    color_order: ColorOrder,
 }
 
 impl MockBackend {
@@ -19,19 +20,30 @@ impl MockBackend {
         Self {
             last_bytes: None,
             fail_with: None,
+            color_order: ColorOrder::RGB,
         }
+    }
+
+    fn with_color_order(mut self, color_order: ColorOrder) -> Self {
+        self.color_order = color_order;
+        self
     }
 
     fn failing(message: &'static str) -> Self {
         Self {
             last_bytes: None,
             fail_with: Some(message),
+            color_order: ColorOrder::RGB,
         }
     }
 }
 
 impl RgbLedBackend for MockBackend {
     type Error = MockError;
+
+    fn color_order(&self) -> ColorOrder {
+        self.color_order
+    }
 
     fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> Result<(), Self::Error> {
         if let Some(message) = self.fail_with {
@@ -116,7 +128,7 @@ fn white_levels_scale_as_expected() {
 
 #[test]
 fn rgb_led_passes_calculated_bytes_to_backend() {
-    let mut led = RgbLed::new(MockBackend::new(), ColorOrder::GBR);
+    let mut led = RgbLed::new(MockBackend::new().with_color_order(ColorOrder::GBR));
 
     led.set_pixel(Rgb::new(1.0, 0.25, 0.75), 0.5).unwrap();
 
@@ -125,9 +137,18 @@ fn rgb_led_passes_calculated_bytes_to_backend() {
 
 #[test]
 fn rgb_led_propagates_backend_errors() {
-    let mut led = RgbLed::new(MockBackend::failing("backend failed"), ColorOrder::RGB);
+    let mut led = RgbLed::new(MockBackend::failing("backend failed"));
 
     let err = led.set_pixel(Rgb::new(1.0, 0.25, 0.75), 0.5).unwrap_err();
 
     assert_eq!(err.to_string(), "backend failed");
+}
+
+#[test]
+fn rgb_led_uses_backend_color_order() {
+    let mut led = RgbLed::new(MockBackend::new().with_color_order(ColorOrder::BRG));
+
+    led.set_pixel(Rgb::new(1.0, 0.5, 0.25), 0.5).unwrap();
+
+    assert_eq!(led.backend.last_bytes, Some([32, 128, 64]));
 }
