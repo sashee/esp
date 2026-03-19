@@ -20,21 +20,10 @@ pub use config_portal::ConfigTiming;
 
 pub const TFT_WIDTH: u16 = 128;
 pub const TFT_HEIGHT: u16 = 160;
+pub const CONFIG_NAMESPACE: &str = "config";
 
 pub fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3)
-}
-
-pub fn fill_frame_with_color(color: u16) -> Vec<u8> {
-    let pixel_count = (TFT_WIDTH as usize) * (TFT_HEIGHT as usize);
-    let mut frame = Vec::with_capacity(pixel_count * 2);
-    let hi = (color >> 8) as u8;
-    let lo = (color & 0xFF) as u8;
-    for _ in 0..pixel_count {
-        frame.push(hi);
-        frame.push(lo);
-    }
-    frame
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +48,36 @@ pub enum BootReason {
 
 #[allow(async_fn_in_trait)]
 pub trait HttpClient {
-    async fn get(&mut self, url: &str) -> Result<Vec<u8>>;
+    async fn get(
+        &mut self,
+        url: &str,
+    ) -> Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>>;
+}
+
+pub struct MemoryFrameSource {
+    data: Vec<u8>,
+    offset: usize,
+}
+
+impl MemoryFrameSource {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data, offset: 0 }
+    }
+}
+
+impl tft_display::FrameSource for MemoryFrameSource {
+    type Error = anyhow::Error;
+
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
+        if self.offset >= self.data.len() {
+            return Ok(0);
+        }
+
+        let read = (self.data.len() - self.offset).min(buf.len());
+        buf[..read].copy_from_slice(&self.data[self.offset..self.offset + read]);
+        self.offset += read;
+        Ok(read)
+    }
 }
 
 pub trait Platform {
@@ -260,7 +278,7 @@ impl SelectOptions for WifiScanOptions {
 
 fn build_config_spec(scan_results: Arc<Mutex<Option<Vec<String>>>>) -> ConfigSpec {
     ConfigSpec {
-        namespace: "config",
+        namespace: CONFIG_NAMESPACE,
         ap_prefix: "InfoPanel",
         title: "Info Panel Setup",
         fields: vec![
@@ -427,7 +445,7 @@ where
     led.set_pixel(CONNECTED_LED, config.led_brightness())?;
     info!("Wi-Fi connected");
 
-    display.write_frame(&fill_frame_with_color(rgb565(0, 0, 0)))?;
+    display.fill_solid(rgb565(0, 0, 0))?;
 
     Clock::sleep(&clock, Duration::from_millis(500)).await;
 
@@ -447,7 +465,8 @@ where
 #[allow(async_fn_in_trait)]
 pub trait DisplayWrite {
     async fn init(&mut self) -> Result<()>;
-    fn write_frame(&mut self, data: &[u8]) -> Result<()>;
+    fn write_frame(&mut self, source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>) -> Result<()>;
+    fn fill_solid(&mut self, color: u16) -> Result<()>;
 }
 
 impl<B, C> DisplayWrite for tft_display::TftDisplay<B, C>
@@ -459,8 +478,12 @@ where
         tft_display::TftDisplay::init(self).await
     }
 
-    fn write_frame(&mut self, data: &[u8]) -> Result<()> {
-        tft_display::TftDisplay::write_frame(self, data)
+    fn write_frame(&mut self, source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>) -> Result<()> {
+        tft_display::TftDisplay::write_frame(self, source)
+    }
+
+    fn fill_solid(&mut self, color: u16) -> Result<()> {
+        tft_display::TftDisplay::fill_solid(self, color)
     }
 }
 
@@ -604,12 +627,8 @@ where
     let mut last_err: Option<anyhow::Error> = None;
     for _ in 0..3 {
         match http_client.get(url).await {
-            Ok(frame_bytes) => {
-                info!(
-                    "RGB565 frame downloaded successfully: {} bytes",
-                    frame_bytes.len()
-                );
-                display.write_frame(&frame_bytes)?;
+            Ok(mut frame_source) => {
+                display.write_frame(frame_source.as_mut())?;
                 info!("RGB565 frame rendered on TFT");
                 return Ok(());
             }

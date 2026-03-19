@@ -4,7 +4,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 mod common;
 
 use common::*;
-use info_panel_lib::{BootReason, HttpClient};
+use info_panel_lib::{BootReason, HttpClient, MemoryFrameSource};
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 
@@ -42,7 +42,10 @@ impl LeakTestHttpClient {
 }
 
 impl HttpClient for LeakTestHttpClient {
-    async fn get(&mut self, _url: &str) -> anyhow::Result<Vec<u8>> {
+    async fn get(
+        &mut self,
+        _url: &str,
+    ) -> anyhow::Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>> {
         self.call_count += 1;
         let n = self.call_count;
 
@@ -58,7 +61,7 @@ impl HttpClient for LeakTestHttpClient {
             ok("leak iteration budget reached");
         }
 
-        Ok(vec![0u8; 128 * 160 * 2])
+        Ok(Box::new(MemoryFrameSource::new(vec![0u8; 128 * 160 * 2])))
     }
 }
 

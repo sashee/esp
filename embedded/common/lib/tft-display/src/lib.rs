@@ -21,6 +21,12 @@ pub trait Clock {
     async fn sleep_ms(&mut self, millis: u64);
 }
 
+pub trait FrameSource {
+    type Error;
+
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error>;
+}
+
 pub struct TftDisplay<B, C> {
     backend: B,
     clock: C,
@@ -68,18 +74,13 @@ where
         Ok(())
     }
 
-    pub fn write_frame(&mut self, data: &[u8]) -> Result<(), B::Error>
+    pub fn write_frame<S>(&mut self, source: &mut S) -> Result<(), B::Error>
     where
         B::Error: From<anyhow::Error>,
+        S: FrameSource + ?Sized,
+        B::Error: From<S::Error>,
     {
         let expected = (self.width as usize) * (self.height as usize) * 2;
-        if data.len() != expected {
-            return Err(B::Error::from(anyhow::anyhow!(
-                "frame size {} does not match expected {}",
-                data.len(),
-                expected
-            )));
-        }
 
         self.write_cmd(0x2A)?;
         self.write_data16(0, self.width - 1)?;
@@ -90,7 +91,67 @@ where
         self.write_cmd(0x2C)?;
 
         self.backend.set_dc_high()?;
-        self.backend.write(data)?;
+
+        let mut total = 0usize;
+        let mut buf = [0u8; 512];
+
+        while total < expected {
+            let remaining = expected - total;
+            let to_read = remaining.min(buf.len());
+            let read = source.read(&mut buf[..to_read]).map_err(B::Error::from)?;
+            if read == 0 {
+                return Err(B::Error::from(anyhow::anyhow!(
+                    "frame size {} does not match expected {}",
+                    total,
+                    expected
+                )));
+            }
+            self.backend.write(&buf[..read])?;
+            total += read;
+        }
+
+        let mut extra = [0u8; 1];
+        let read = source.read(&mut extra).map_err(B::Error::from)?;
+        if read != 0 {
+            return Err(B::Error::from(anyhow::anyhow!(
+                "frame size exceeds expected {}",
+                expected
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub fn fill_solid(&mut self, color: u16) -> Result<(), B::Error>
+    where
+        B::Error: From<anyhow::Error>,
+    {
+        self.write_cmd(0x2A)?;
+        self.write_data16(0, self.width - 1)?;
+
+        self.write_cmd(0x2B)?;
+        self.write_data16(0, self.height - 1)?;
+
+        self.write_cmd(0x2C)?;
+
+        self.backend.set_dc_high()?;
+
+        let mut buf = [0u8; 512];
+        let hi = (color >> 8) as u8;
+        let lo = (color & 0xFF) as u8;
+        for chunk in buf.chunks_exact_mut(2) {
+            chunk[0] = hi;
+            chunk[1] = lo;
+        }
+
+        let total = (self.width as usize) * (self.height as usize) * 2;
+        let mut written = 0usize;
+        while written < total {
+            let remaining = total - written;
+            let to_write = remaining.min(buf.len());
+            self.backend.write(&buf[..to_write])?;
+            written += to_write;
+        }
 
         Ok(())
     }

@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use anyhow::Result;
 
-use crate::{Clock, TftBackend};
+use crate::{Clock, FrameSource, TftBackend};
 
 pub struct MockTftBackend {
     commands: Vec<Command>,
@@ -45,6 +45,53 @@ impl MockTftBackend {
 impl Default for MockTftBackend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub struct MockFrameSource {
+    data: Vec<u8>,
+    chunk_sizes: Vec<usize>,
+    offset: usize,
+    chunk_index: usize,
+}
+
+impl MockFrameSource {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            chunk_sizes: Vec::new(),
+            offset: 0,
+            chunk_index: 0,
+        }
+    }
+
+    pub fn with_chunk_sizes(mut self, chunk_sizes: Vec<usize>) -> Self {
+        self.chunk_sizes = chunk_sizes;
+        self
+    }
+}
+
+impl FrameSource for MockFrameSource {
+    type Error = anyhow::Error;
+
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
+        if self.offset >= self.data.len() {
+            return Ok(0);
+        }
+
+        let remaining = self.data.len() - self.offset;
+        let requested = self
+            .chunk_sizes
+            .get(self.chunk_index)
+            .copied()
+            .unwrap_or(buf.len())
+            .min(buf.len())
+            .min(remaining);
+
+        buf[..requested].copy_from_slice(&self.data[self.offset..self.offset + requested]);
+        self.offset += requested;
+        self.chunk_index += 1;
+        Ok(requested)
     }
 }
 
@@ -135,6 +182,10 @@ mod tests {
     const TEST_WIDTH: u16 = 100;
     const TEST_HEIGHT: u16 = 100;
 
+    fn frame_writes(writes: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        writes.into_iter().skip(7).collect()
+    }
+
     #[test]
     fn test_tft_display_new() {
         let backend = MockTftBackend::new();
@@ -149,11 +200,13 @@ mod tests {
         let clock = MockClock::new();
         let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
 
-        let result = display.write_frame(&[]);
+        let mut source = MockFrameSource::new(Vec::new());
+        let result = display.write_frame(&mut source);
         assert!(result.is_err());
 
         let wrong_size = vec![0u8; 100];
-        let result = display.write_frame(&wrong_size);
+        let mut source = MockFrameSource::new(wrong_size);
+        let result = display.write_frame(&mut source);
         assert!(result.is_err());
     }
 
@@ -165,8 +218,86 @@ mod tests {
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let frame = vec![0u8; pixel_count];
-        let result = display.write_frame(&frame);
+        let mut source = MockFrameSource::new(frame);
+        let result = display.write_frame(&mut source);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_write_frame_fails_on_early_eof() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+
+        let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count - 1]);
+
+        let result = display.write_frame(&mut source);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not match expected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_write_frame_accepts_arbitrary_chunk_boundaries() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+
+        let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
+        let frame: Vec<u8> = (0..pixel_count).map(|i| (i % 251) as u8).collect();
+        let mut source = MockFrameSource::new(frame.clone()).with_chunk_sizes(vec![1, 3, 7, 2, 511, 5]);
+
+        display.write_frame(&mut source).unwrap();
+
+        let writes = display.backend.take_writes();
+        let payload: Vec<u8> = frame_writes(writes).into_iter().flatten().collect();
+        assert_eq!(payload, frame);
+    }
+
+    #[test]
+    fn test_write_frame_fails_on_extra_bytes() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+
+        let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
+        let mut frame = vec![0u8; pixel_count];
+        frame.extend_from_slice(&[1, 2, 3]);
+        let mut source = MockFrameSource::new(frame);
+
+        let result = display.write_frame(&mut source);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeds expected"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_fill_solid_writes_full_frame_without_allocation() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+
+        display.fill_solid(0x1234).unwrap();
+
+        let writes = display.backend.take_writes();
+        let payload: Vec<u8> = frame_writes(writes).into_iter().flatten().collect();
+        let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize);
+        assert_eq!(payload.len(), pixel_count * 2);
+        assert!(payload.chunks_exact(2).all(|chunk| chunk == [0x12, 0x34]));
+    }
+
+    #[test]
+    fn test_write_frame_propagates_backend_errors() {
+        let backend = MockTftBackend::new().with_error();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+
+        let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+
+        let result = display.write_frame(&mut source);
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -226,8 +357,8 @@ mod tests {
         let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
-        let frame = vec![0u8; pixel_count];
-        display.write_frame(&frame).unwrap();
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        display.write_frame(&mut source).unwrap();
 
         let commands = display.backend.take_commands();
         let writes: Vec<_> = commands.iter()
@@ -247,8 +378,8 @@ mod tests {
         let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
-        let frame = vec![0u8; pixel_count];
-        display.write_frame(&frame).unwrap();
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        display.write_frame(&mut source).unwrap();
 
         let commands = display.backend.take_commands();
         let writes: Vec<_> = commands.iter()
@@ -269,17 +400,15 @@ mod tests {
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let frame = vec![0xAA; pixel_count];
-        display.write_frame(&frame).unwrap();
+        let mut source = MockFrameSource::new(frame.clone()).with_chunk_sizes(vec![257, 513, 1024]);
+        display.write_frame(&mut source).unwrap();
 
         let writes = display.backend.take_writes();
         
         assert!(writes.iter().any(|v| v == &[0x2C]));
-        
-        let pixel_data: Vec<_> = writes.iter()
-            .filter(|v| v.len() == pixel_count)
-            .cloned()
-            .collect();
-        assert!(!pixel_data.is_empty());
+
+        let pixel_data: Vec<u8> = frame_writes(writes).into_iter().flatten().collect();
+        assert_eq!(pixel_data, frame);
     }
 
     #[test]
@@ -289,8 +418,8 @@ mod tests {
         let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
-        let frame = vec![0u8; pixel_count];
-        display.write_frame(&frame).unwrap();
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        display.write_frame(&mut source).unwrap();
 
         let commands = display.backend.take_commands();
         let writes: Vec<_> = commands.iter()
@@ -312,8 +441,8 @@ mod tests {
         let mut display = crate::TftDisplay::new(backend, clock, 240, 320);
 
         let pixel_count = 240 * 320 * 2;
-        let frame = vec![0u8; pixel_count];
-        display.write_frame(&frame).unwrap();
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        display.write_frame(&mut source).unwrap();
 
         let writes = display.backend.take_writes();
         
@@ -349,8 +478,8 @@ mod tests {
         display.backend.should_error = true;
         
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
-        let frame = vec![0u8; pixel_count];
-        let result = display.write_frame(&frame);
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        let result = display.write_frame(&mut source);
         
         assert!(result.is_err());
     }
@@ -369,8 +498,8 @@ mod tests {
         let mut display = crate::TftDisplay::new(backend, clock, 240, 320);
 
         let pixel_count = 240 * 320 * 2;
-        let frame = vec![0u8; pixel_count];
-        let result = display.write_frame(&frame);
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        let result = display.write_frame(&mut source);
         
         assert!(result.is_ok());
         

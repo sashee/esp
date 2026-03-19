@@ -19,6 +19,7 @@ type StoreRemoveHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<()> + Send
 type LedHook = Arc<Mutex<Box<dyn FnMut(rgb_led::Rgb, f32) -> HookResult<()> + Send>>>;
 type DisplayInitHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
 type DisplayWriteHook = Arc<Mutex<Box<dyn FnMut(&[u8]) -> HookResult<()> + Send>>>;
+type DisplayFillHook = Arc<Mutex<Box<dyn FnMut(u16) -> HookResult<()> + Send>>>;
 type HttpGetHook = Arc<Mutex<Box<dyn FnMut(&str) -> HookResult<Vec<u8>> + Send>>>;
 type PlatformBootHook = Arc<Mutex<Box<dyn FnMut() -> Option<BootReason> + Send>>>;
 type PlatformMacHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<[u8; 6]> + Send>>>;
@@ -100,6 +101,23 @@ pub fn assert_ok_signal<T>(result: std::thread::Result<T>, expected: &str) {
 
 pub fn valid_frame_bytes() -> Vec<u8> {
     vec![0u8; 128 * 160 * 2]
+}
+
+fn read_source_to_vec(
+    source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
+) -> anyhow::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    let mut buf = [0u8; 257];
+
+    loop {
+        let read = source.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..read]);
+    }
+
+    Ok(data)
 }
 
 pub fn valid_config_store() -> MockStore {
@@ -298,6 +316,7 @@ pub fn failing_led() -> (MockLed, Arc<Mutex<Vec<LedCall>>>) {
 pub struct MockDisplay {
     init_hook: Option<DisplayInitHook>,
     write_frame_hook: Option<DisplayWriteHook>,
+    fill_solid_hook: Option<DisplayFillHook>,
 }
 
 impl MockDisplay {
@@ -305,6 +324,7 @@ impl MockDisplay {
         Self {
             init_hook: None,
             write_frame_hook: None,
+            fill_solid_hook: None,
         }
     }
 
@@ -321,6 +341,14 @@ impl MockDisplay {
         hook: impl FnMut(&[u8]) -> HookResult<()> + Send + 'static,
     ) -> Self {
         self.write_frame_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_fill_solid(
+        mut self,
+        hook: impl FnMut(u16) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.fill_solid_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
     }
 }
@@ -341,9 +369,22 @@ impl DisplayWrite for MockDisplay {
         Ok(())
     }
 
-    fn write_frame(&mut self, data: &[u8]) -> anyhow::Result<()> {
+    fn write_frame(
+        &mut self,
+        source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
+    ) -> anyhow::Result<()> {
+        let data = read_source_to_vec(source)?;
         if let Some(hook) = &self.write_frame_hook {
-            if let Some(result) = (hook.lock().unwrap())(data) {
+            if let Some(result) = (hook.lock().unwrap())(&data) {
+                return result;
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_solid(&mut self, color: u16) -> anyhow::Result<()> {
+        if let Some(hook) = &self.fill_solid_hook {
+            if let Some(result) = (hook.lock().unwrap())(color) {
                 return result;
             }
         }
@@ -355,17 +396,20 @@ pub struct TrackedDisplayState {
     pub init_called: Arc<Mutex<bool>>,
     pub init_order: Arc<Mutex<Option<u32>>>,
     pub write_frame_calls: Arc<Mutex<usize>>,
+    pub fill_solid_calls: Arc<Mutex<usize>>,
 }
 
 pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedDisplayState) {
     let init_called = Arc::new(Mutex::new(false));
     let init_order = Arc::new(Mutex::new(None));
     let write_frame_calls = Arc::new(Mutex::new(0));
+    let fill_solid_calls = Arc::new(Mutex::new(0));
 
     let init_called_hook = init_called.clone();
     let init_order_hook = init_order.clone();
     let counter_for_init = global_counter.clone();
     let write_calls_hook = write_frame_calls.clone();
+    let fill_calls_hook = fill_solid_calls.clone();
 
     (
         MockDisplay::new()
@@ -378,11 +422,16 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
             .on_write_frame(move |_data| {
                 *write_calls_hook.lock().unwrap() += 1;
                 None
+            })
+            .on_fill_solid(move |_color| {
+                *fill_calls_hook.lock().unwrap() += 1;
+                None
             }),
         TrackedDisplayState {
             init_called,
             init_order,
             write_frame_calls,
+            fill_solid_calls,
         },
     )
 }
@@ -400,6 +449,26 @@ pub fn display_with_write_frame_fail_nth(
                 Some(Err(anyhow::anyhow!("mock write_frame error")))
             } else {
                 *write_calls.lock().unwrap() = current;
+                Some(Ok(()))
+            }
+        }),
+        state,
+    )
+}
+
+pub fn display_with_fill_solid_fail_nth(
+    global_counter: Arc<AtomicU32>,
+    fail_nth: usize,
+) -> (MockDisplay, TrackedDisplayState) {
+    let (display, state) = tracked_display(global_counter);
+    let fill_calls = state.fill_solid_calls.clone();
+    (
+        display.on_fill_solid(move |_color| {
+            let current = *fill_calls.lock().unwrap() + 1;
+            if current == fail_nth {
+                Some(Err(anyhow::anyhow!("mock fill_solid error")))
+            } else {
+                *fill_calls.lock().unwrap() = current;
                 Some(Ok(()))
             }
         }),
@@ -444,13 +513,18 @@ impl Default for MockHttpClient {
 }
 
 impl HttpClient for MockHttpClient {
-    async fn get(&mut self, url: &str) -> anyhow::Result<Vec<u8>> {
+    async fn get(
+        &mut self,
+        url: &str,
+    ) -> anyhow::Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>> {
         if let Some(hook) = &self.get_hook {
             if let Some(result) = (hook.lock().unwrap())(url) {
-                return result;
+                return result.map(|data| Box::new(info_panel_lib::MemoryFrameSource::new(data)) as _);
             }
         }
-        Ok(self.response.clone())
+        Ok(Box::new(info_panel_lib::MemoryFrameSource::new(
+            self.response.clone(),
+        )))
     }
 }
 

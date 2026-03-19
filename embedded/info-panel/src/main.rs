@@ -2,7 +2,6 @@ use anyhow::Result;
 use config_portal::esp_idf::NvsConfigStore;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_svc::{
-    http::client::Client,
     io::Read,
 };
 use esp_idf_svc::{
@@ -93,34 +92,44 @@ impl Clock for EspClock {
 
 struct EspHttpClient;
 
+struct EspHttpFrameSource {
+    connection: EspHttpConnection,
+}
+
+impl EspHttpFrameSource {
+    fn new(connection: EspHttpConnection) -> Self {
+        Self { connection }
+    }
+}
+
+impl tft_display::FrameSource for EspHttpFrameSource {
+    type Error = anyhow::Error;
+
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
+        Ok(Read::read(&mut self.connection, buf)?)
+    }
+}
+
 impl HttpClient for EspHttpClient {
-    async fn get(&mut self, url: &str) -> Result<Vec<u8>> {
-        let connection = EspHttpConnection::new(&HttpConfiguration {
+    async fn get(
+        &mut self,
+        url: &str,
+    ) -> Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>> {
+        let mut connection = EspHttpConnection::new(&HttpConfiguration {
             timeout: Some(core::time::Duration::from_secs(30)),
             use_global_ca_store: false,
             ..Default::default()
         })?;
-        let mut client = Client::wrap(connection);
 
-        let request = client.request(embedded_svc::http::Method::Get, url, &[])?;
-        let mut response = request.submit()?;
+        connection.initiate_request(embedded_svc::http::Method::Get, url, &[])?;
+        connection.initiate_response()?;
 
-        let status = response.status();
+        let status = connection.status();
         if !(200..=299).contains(&status) {
             anyhow::bail!("HTTP status {} while downloading {}", status, url);
         }
 
-        let mut data = Vec::new();
-        let mut buf = [0u8; 256];
-        loop {
-            let n = Read::read(&mut response, &mut buf)?;
-            if n == 0 {
-                break;
-            }
-            data.extend_from_slice(&buf[..n]);
-        }
-
-        Ok(data)
+        Ok(Box::new(EspHttpFrameSource::new(connection)))
     }
 }
 
@@ -134,7 +143,7 @@ async fn async_main() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
-    let store = NvsConfigStore::new(nvs.clone(), info_panel_lib::CONFIG_SPEC.namespace);
+    let store = NvsConfigStore::new(nvs.clone(), info_panel_lib::CONFIG_NAMESPACE);
 
     let platform = EspPlatform;
 

@@ -148,6 +148,7 @@ fn test_image_succeeds_on_first_retry() {
     let calls = http_state.get_calls.clone();
     let (display, display_state) = tracked_display(global_counter);
     let write_frame_calls = display_state.write_frame_calls.clone();
+    let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -169,8 +170,9 @@ fn test_image_succeeds_on_first_retry() {
     );
 
     assert!(
-        *write_frame_calls.lock().unwrap() >= 2,
-        "display.write_frame() must be called at least twice (black fill + fetched frame). Got: {}",
+        *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
+        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
 }
@@ -191,6 +193,7 @@ fn test_image_succeeds_on_second_retry() {
     let calls = http_state.get_calls.clone();
     let (display, display_state) = tracked_display(global_counter);
     let write_frame_calls = display_state.write_frame_calls.clone();
+    let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -212,8 +215,9 @@ fn test_image_succeeds_on_second_retry() {
     );
 
     assert!(
-        *write_frame_calls.lock().unwrap() >= 2,
-        "display.write_frame() must be called at least twice (black fill + fetched frame). Got: {}",
+        *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
+        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
 }
@@ -327,6 +331,7 @@ fn test_image_succeeds_on_third_retry() {
     let calls = http_state.get_calls.clone();
     let (display, display_state) = tracked_display(global_counter);
     let write_frame_calls = display_state.write_frame_calls.clone();
+    let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -348,8 +353,9 @@ fn test_image_succeeds_on_third_retry() {
     );
 
     assert!(
-        *write_frame_calls.lock().unwrap() >= 2,
-        "display.write_frame() must be called at least twice (black fill + fetched frame). Got: {}",
+        *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
+        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
 }
@@ -368,6 +374,7 @@ fn test_image_displays_frame_on_tft_when_fetch_succeeds() {
     let http_client = MockHttpClient::new();
     let (display, display_state) = tracked_display(global_counter);
     let write_frame_calls = display_state.write_frame_calls.clone();
+    let fill_solid_calls = display_state.fill_solid_calls.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -382,10 +389,10 @@ fn test_image_displays_frame_on_tft_when_fetch_succeeds() {
         ))
     }));
 
-    // write_frame called: 1 for initial black fill + 1 for fetched frame = 2
     assert!(
-        *write_frame_calls.lock().unwrap() >= 2,
-        "display.write_frame() must be called for initial fill and fetched frame. Got: {}",
+        *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
+        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
 }
@@ -402,8 +409,7 @@ fn test_image_enters_error_mode_on_write_frame_failure() {
         tracked_platform([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
     let clock = MockClock::from_ticks(&[0, 250]);
     let http_client = MockHttpClient::new();
-    // Fail on write_frame call #2 (1st is black fill, 2nd is fetched frame)
-    let (display, _display_state) = display_with_write_frame_fail_nth(global_counter, 2);
+    let (display, _display_state) = display_with_write_frame_fail_nth(global_counter, 1);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -439,7 +445,7 @@ fn test_image_enters_error_mode_on_write_frame_failure() {
 }
 
 #[test]
-fn test_image_enters_error_mode_on_initial_write_frame_failure() {
+fn test_image_enters_error_mode_on_initial_fill_failure() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let (mut led, led_calls) = tracked_led();
     let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
@@ -451,8 +457,7 @@ fn test_image_enters_error_mode_on_initial_write_frame_failure() {
     let clock = MockClock::from_ticks(&[0, 250]);
     let (http_client, http_state) = tracked_http_client();
     let get_calls = http_state.get_calls.clone();
-    // Fail on write_frame call #1 (initial black fill)
-    let (display, _display_state) = display_with_write_frame_fail_nth(global_counter, 1);
+    let (display, _display_state) = display_with_fill_solid_fail_nth(global_counter, 1);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
@@ -471,7 +476,7 @@ fn test_image_enters_error_mode_on_initial_write_frame_failure() {
     assert!(
         last.as_ref().map(|c| (c.r - 1.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 0.0).abs() < 0.01)
             .unwrap_or(false),
-        "LED must be set to ERROR_LED (red) after initial write_frame failure. Last: {:?}",
+        "LED must be set to ERROR_LED (red) after initial fill failure. Last: {:?}",
         last
     );
 
@@ -483,14 +488,14 @@ fn test_image_enters_error_mode_on_initial_write_frame_failure() {
 
     assert!(
         *reboot_called.lock().unwrap(),
-        "platform.reboot() must be called after initial write_frame failure"
+        "platform.reboot() must be called after initial fill failure"
     );
 
     // Image fetch should never have been reached since initial fill failed
     assert_eq!(
         *get_calls.lock().unwrap(),
         0,
-        "http_client.get() must NOT be called when initial write_frame fails"
+        "http_client.get() must NOT be called when initial fill fails"
     );
 }
 
@@ -523,9 +528,8 @@ fn test_image_handles_invalid_frame_size() {
         ))
     }));
 
-    // Library passes wrong-sized data through to write_frame without validation
     assert!(
-        *write_frame_calls.lock().unwrap() >= 2,
+        *write_frame_calls.lock().unwrap() >= 1,
         "display.write_frame() must be called with the invalid-size data. Got: {}",
         *write_frame_calls.lock().unwrap()
     );
@@ -731,7 +735,7 @@ fn test_image_enters_error_mode_on_write_frame_failure_in_refresh() {
     let http_calls = *calls.lock().unwrap();
     let reboot = *reboot_called.lock().unwrap();
 
-    // write_frame failed on 2nd call (fetched frame after black fill),
+    // write_frame failed on the first streamed frame write after the initial clear,
     // so error mode should have been entered via reboot
     assert!(
         reboot || result.is_err(),

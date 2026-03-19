@@ -17,7 +17,11 @@ let
     mkdir -p "$artifact_dir"
 
     cd "$app_dir"
-    exec cargo build -Z unstable-options --artifact-dir "$artifact_dir" --release --locked "$@"
+    export PATH="${shared.rustToolchain}/bin:$PATH"
+    export CARGO="${shared.rustToolchain}/bin/cargo"
+    export RUSTC="${shared.rustToolchain}/bin/rustc"
+    export RUSTDOC="${shared.rustToolchain}/bin/rustdoc"
+    exec "${shared.rustToolchain}/bin/cargo" build -Z unstable-options --artifact-dir "$artifact_dir" --release --locked "$@"
   '';
 
   flash = pkgs.writeShellScriptBin "flash" ''
@@ -102,7 +106,10 @@ pkgs.mkShell {
   SSL_CERT_FILE = shared.sslCertFile;
 
   shellHook = ''
-    export PATH="${shared.riscv32EspElf}/bin:${shared.idfToolsPath}:$PATH"
+    export PATH="${shared.lib.makeBinPath shared.nativeBuildInputs}:${shared.riscv32EspElf}/bin:${shared.idfToolsPath}:$PATH"
+    export CARGO="${shared.rustToolchain}/bin/cargo"
+    export RUSTC="${shared.rustToolchain}/bin/rustc"
+    export RUSTDOC="${shared.rustToolchain}/bin/rustdoc"
 
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
       printf '%s\n' 'info-panel shell must be entered from inside a git worktree' >&2

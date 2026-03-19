@@ -13,7 +13,13 @@ impl info_panel_lib::DisplayWrite for FailingDisplay {
     async fn init(&mut self) -> anyhow::Result<()> {
         Err(anyhow::anyhow!("display init failed"))
     }
-    fn write_frame(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+    fn write_frame(
+        &mut self,
+        _source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn fill_solid(&mut self, _color: u16) -> anyhow::Result<()> {
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 use info_panel_lib::{
-    fill_frame_with_color, rgb565, BootReason, Clock,
-    DeviceConfig, DisplayWrite, HttpClient, Led, Platform, TFT_HEIGHT, TFT_WIDTH,
+    rgb565, BootReason, Clock, DeviceConfig, DisplayWrite, HttpClient, Led, Platform,
+    TFT_HEIGHT, TFT_WIDTH,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -58,7 +58,14 @@ impl DisplayWrite for MockDisplay {
     async fn init(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn write_frame(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+    fn write_frame(
+        &mut self,
+        _source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn fill_solid(&mut self, _color: u16) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -66,7 +73,10 @@ impl DisplayWrite for MockDisplay {
 struct MockHttpClient;
 
 impl HttpClient for MockHttpClient {
-    async fn get(&mut self, _url: &str) -> anyhow::Result<Vec<u8>> {
+    async fn get(
+        &mut self,
+        _url: &str,
+    ) -> anyhow::Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>> {
         Err(anyhow::anyhow!("should not be called"))
     }
 }
@@ -284,7 +294,7 @@ fn test_rgb565_white() {
 
 #[test]
 fn test_fill_frame_size() {
-    let frame = fill_frame_with_color(0x0000);
+    let frame = vec![0u8; (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2];
     assert_eq!(
         frame.len(),
         (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2
