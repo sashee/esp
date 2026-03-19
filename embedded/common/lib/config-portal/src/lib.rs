@@ -171,11 +171,11 @@ pub enum AccessPointEvent {
 }
 
 pub trait ConfigStore {
-    fn read(&self, keys: &[&str]) -> Result<BTreeMap<String, String>>;
+    fn read(&self, namespace: &str, keys: &[&str]) -> Result<BTreeMap<String, String>>;
 
-    fn write(&self, values: &BTreeMap<String, String>) -> Result<()>;
+    fn write(&self, namespace: &str, values: &BTreeMap<String, String>) -> Result<()>;
 
-    fn remove(&self, keys: &[&str]) -> Result<()>;
+    fn remove(&self, namespace: &str, keys: &[&str]) -> Result<()>;
 }
 
 pub trait ConfigPlatform {
@@ -343,7 +343,7 @@ pub fn read_config<S>(spec: &ConfigSpec, store: &S) -> Result<ConfigState>
 where
     S: ConfigStore,
 {
-    let stored = store.read(&field_keys(spec))?;
+    let stored = store.read(spec.namespace, &field_keys(spec))?;
 
     let mut values = BTreeMap::new();
     for field in &spec.fields {
@@ -360,7 +360,7 @@ pub fn clear_config<S>(spec: &ConfigSpec, store: &S) -> Result<()>
 where
     S: ConfigStore,
 {
-    store.remove(&field_keys(spec))
+    store.remove(spec.namespace, &field_keys(spec))
 }
 
 pub fn save_config<S>(
@@ -403,7 +403,7 @@ where
         saved.insert(field.key.to_string(), value);
     }
 
-    store.write(&saved)?;
+    store.write(spec.namespace, &saved)?;
 
     Ok(StoredConfig { values: saved })
 }
@@ -691,7 +691,7 @@ where
 {
     Ok(stored_config_from_map(
         spec,
-        &store.read(&field_keys(spec))?,
+        &store.read(spec.namespace, &field_keys(spec))?,
     ))
 }
 

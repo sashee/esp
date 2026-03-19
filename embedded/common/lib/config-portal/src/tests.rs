@@ -106,8 +106,11 @@ struct MockStore {
 #[derive(Default)]
 struct MockStoreState {
     values: BTreeMap<String, String>,
+    read_namespaces: Vec<String>,
     reads: Vec<Vec<String>>,
+    write_namespaces: Vec<String>,
     writes: Vec<BTreeMap<String, String>>,
+    remove_namespaces: Vec<String>,
     removes: Vec<Vec<String>>,
     read_error: Option<String>,
     write_error: Option<String>,
@@ -130,8 +133,9 @@ impl MockStore {
 }
 
 impl ConfigStore for MockStore {
-    fn read(&self, keys: &[&str]) -> Result<BTreeMap<String, String>> {
+    fn read(&self, namespace: &str, keys: &[&str]) -> Result<BTreeMap<String, String>> {
         let mut state = self.state.lock().unwrap();
+        state.read_namespaces.push(namespace.to_string());
         state
             .reads
             .push(keys.iter().map(|key| key.to_string()).collect());
@@ -151,21 +155,23 @@ impl ConfigStore for MockStore {
             .collect())
     }
 
-    fn write(&self, values: &BTreeMap<String, String>) -> Result<()> {
+    fn write(&self, namespace: &str, values: &BTreeMap<String, String>) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         if let Some(message) = state.write_error.clone() {
             return Err(anyhow!(message));
         }
+        state.write_namespaces.push(namespace.to_string());
         state.writes.push(values.clone());
         state.values = values.clone();
         Ok(())
     }
 
-    fn remove(&self, keys: &[&str]) -> Result<()> {
+    fn remove(&self, namespace: &str, keys: &[&str]) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         if let Some(message) = state.remove_error.clone() {
             return Err(anyhow!(message));
         }
+        state.remove_namespaces.push(namespace.to_string());
         let removed: Vec<String> = keys.iter().map(|key| key.to_string()).collect();
         for key in keys {
             state.values.remove(*key);
@@ -403,6 +409,8 @@ fn read_config_returns_ready_when_complete() {
         }
         state => panic!("unexpected state: {state:?}"),
     }
+
+    assert_eq!(store.state.lock().unwrap().read_namespaces, vec!["config"]);
 }
 
 #[test]
@@ -433,6 +441,7 @@ fn clear_config_removes_fields() {
         store.state.lock().unwrap().removes[0],
         vec!["ssid", "pw", "brightness"]
     );
+    assert_eq!(store.state.lock().unwrap().remove_namespaces, vec!["config"]);
 }
 
 #[test]
@@ -446,8 +455,10 @@ fn save_config_writes_values() {
     .unwrap();
 
     assert_eq!(saved.get("ssid"), Some("home"));
-    let written = &store.state.lock().unwrap().writes[0];
+    let state = store.state.lock().unwrap();
+    let written = &state.writes[0];
     assert_eq!(written.get("pw"), Some(&"secret".to_string()));
+    assert_eq!(state.write_namespaces, vec!["config"]);
 }
 
 #[test]

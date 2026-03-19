@@ -123,7 +123,6 @@ where
     T: NvsPartitionId,
 {
     partition: EspNvsPartition<T>,
-    namespace: &'static str,
 }
 
 impl<T> Clone for NvsConfigStore<T>
@@ -133,7 +132,6 @@ where
     fn clone(&self) -> Self {
         Self {
             partition: self.partition.clone(),
-            namespace: self.namespace,
         }
     }
 }
@@ -142,11 +140,8 @@ impl<T> NvsConfigStore<T>
 where
     T: NvsPartitionId,
 {
-    pub fn new(partition: EspNvsPartition<T>, namespace: &'static str) -> Self {
-        Self {
-            partition,
-            namespace,
-        }
+    pub fn new(partition: EspNvsPartition<T>) -> Self {
+        Self { partition }
     }
 }
 
@@ -154,8 +149,8 @@ impl<T> ConfigStore for NvsConfigStore<T>
 where
     T: NvsPartitionId,
 {
-    fn read(&self, keys: &[&str]) -> Result<BTreeMap<String, String>> {
-        let nvs = match EspNvs::new(self.partition.clone(), self.namespace, false) {
+    fn read(&self, namespace: &str, keys: &[&str]) -> Result<BTreeMap<String, String>> {
+        let nvs = match EspNvs::new(self.partition.clone(), namespace, false) {
             Ok(nvs) => nvs,
             Err(err) if err.code() == ESP_ERR_NVS_NOT_FOUND => return Ok(BTreeMap::new()),
             Err(err) => return Err(err.into()),
@@ -171,16 +166,16 @@ where
         Ok(values)
     }
 
-    fn write(&self, values: &BTreeMap<String, String>) -> Result<()> {
-        let nvs = EspNvs::new(self.partition.clone(), self.namespace, true)?;
+    fn write(&self, namespace: &str, values: &BTreeMap<String, String>) -> Result<()> {
+        let nvs = EspNvs::new(self.partition.clone(), namespace, true)?;
         for (key, value) in values {
             nvs.set_str(key, value)?;
         }
         Ok(())
     }
 
-    fn remove(&self, keys: &[&str]) -> Result<()> {
-        let nvs = EspNvs::new(self.partition.clone(), self.namespace, true)?;
+    fn remove(&self, namespace: &str, keys: &[&str]) -> Result<()> {
+        let nvs = EspNvs::new(self.partition.clone(), namespace, true)?;
         for key in keys {
             let _ = nvs.remove(key)?;
         }

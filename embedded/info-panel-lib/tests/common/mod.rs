@@ -187,7 +187,7 @@ impl MockStore {
 }
 
 impl config_portal::ConfigStore for MockStore {
-    fn read(&self, keys: &[&str]) -> anyhow::Result<BTreeMap<String, String>> {
+    fn read(&self, _namespace: &str, keys: &[&str]) -> anyhow::Result<BTreeMap<String, String>> {
         if let Some(hook) = &self.read_hook {
             if let Some(result) = (hook.lock().unwrap())(keys) {
                 return result;
@@ -196,7 +196,7 @@ impl config_portal::ConfigStore for MockStore {
         Ok(self.values.clone())
     }
 
-    fn write(&self, values: &BTreeMap<String, String>) -> anyhow::Result<()> {
+    fn write(&self, _namespace: &str, values: &BTreeMap<String, String>) -> anyhow::Result<()> {
         if let Some(hook) = &self.write_hook {
             if let Some(result) = (hook.lock().unwrap())(values) {
                 return result;
@@ -205,7 +205,7 @@ impl config_portal::ConfigStore for MockStore {
         Ok(())
     }
 
-    fn remove(&self, keys: &[&str]) -> anyhow::Result<()> {
+    fn remove(&self, _namespace: &str, keys: &[&str]) -> anyhow::Result<()> {
         if let Some(hook) = &self.remove_hook {
             if let Some(result) = (hook.lock().unwrap())(keys) {
                 return result;

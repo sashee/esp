@@ -283,14 +283,15 @@ struct MockStore;
 impl config_portal::ConfigStore for MockStore {
     fn read(
         &self,
+        _namespace: &str,
         _keys: &[&str],
     ) -> anyhow::Result<BTreeMap<String, String>> {
         Ok(BTreeMap::new())
     }
-    fn write(&self, _values: &BTreeMap<String, String>) -> anyhow::Result<()> {
+    fn write(&self, _namespace: &str, _values: &BTreeMap<String, String>) -> anyhow::Result<()> {
         Ok(())
     }
-    fn remove(&self, _keys: &[&str]) -> anyhow::Result<()> {
+    fn remove(&self, _namespace: &str, _keys: &[&str]) -> anyhow::Result<()> {
         Ok(())
     }
 }

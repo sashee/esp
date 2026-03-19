@@ -141,7 +141,7 @@ async fn async_main() -> Result<()> {
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
-    let store = NvsConfigStore::new(nvs.clone(), info_panel_lib::CONFIG_NAMESPACE);
+    let store = NvsConfigStore::new(nvs.clone());
 
     let platform = EspPlatform;
 
