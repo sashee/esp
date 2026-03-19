@@ -177,7 +177,7 @@ fn test_portal_continues_after_client_connection_timeout() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let (led, _led_calls) = tracked_led();
     // With client_count=1, portal detects client immediately and uses connected_timeout (10min)
-    let wifi_backend = MockWifiBackend::new().with_client_count(1);
+    let wifi_backend = MockWifiBackend::new().with_access_point_client_connected();
     let store = empty_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =

@@ -31,16 +31,12 @@ type ClockSleepHook = Arc<Mutex<Box<dyn FnMut(Duration) -> HookResult<()> + Send
 type WifiStartHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
 type WifiStopHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
 type WifiDisconnectHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
-type WifiIsStartedHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<bool> + Send>>>;
 type WifiScanHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<Vec<wifi::FoundNetwork>> + Send>>>;
 type WifiConfigureHook = Arc<Mutex<Box<dyn FnMut(&wifi::WifiCredentials, Option<u8>, wifi::ClientAuth) -> HookResult<()> + Send>>>;
 type WifiConnectHook = Arc<Mutex<Box<dyn FnMut(std::time::Duration) -> HookResult<wifi::ConnectionInfo> + Send>>>;
 type WifiIsConnectedHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<bool> + Send>>>;
-type WifiConnectionInfoHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<Option<wifi::ConnectionInfo>> + Send>>>;
 type WifiStartApHook = Arc<Mutex<Box<dyn FnMut(&wifi::AccessPointConfig) -> HookResult<()> + Send>>>;
 type WifiStopApHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
-type WifiApStatusHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<wifi::AccessPointStatus> + Send>>>;
-type WifiApIpHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<wifi::IpConfig> + Send>>>;
 
 pub fn block_on<F: Future>(future: F) -> F::Output {
     fn raw_waker() -> RawWaker {
@@ -1079,21 +1075,18 @@ pub struct MockWifiBackend {
     is_connected: bool,
     scan_networks_result: Vec<wifi::FoundNetwork>,
     connection_info: wifi::ConnectionInfo,
-    access_point_status: wifi::AccessPointStatus,
     access_point_ip_config: wifi::IpConfig,
+    access_point_client_connected_signals: Arc<AtomicU32>,
+    access_point_stopped_signals: Arc<AtomicU32>,
     start_hook: Option<WifiStartHook>,
     stop_hook: Option<WifiStopHook>,
     disconnect_hook: Option<WifiDisconnectHook>,
-    is_started_hook: Option<WifiIsStartedHook>,
     scan_networks_hook: Option<WifiScanHook>,
     configure_client_hook: Option<WifiConfigureHook>,
     connect_hook: Option<WifiConnectHook>,
     is_connected_hook: Option<WifiIsConnectedHook>,
-    connection_info_hook: Option<WifiConnectionInfoHook>,
     start_access_point_hook: Option<WifiStartApHook>,
     stop_access_point_hook: Option<WifiStopApHook>,
-    access_point_status_hook: Option<WifiApStatusHook>,
-    access_point_ip_config_hook: Option<WifiApIpHook>,
 }
 
 impl Default for MockWifiBackend {
@@ -1109,34 +1102,27 @@ impl MockWifiBackend {
             is_connected: true,
             scan_networks_result: Vec::new(),
             connection_info: wifi::ConnectionInfo::new("0.0.0.0"),
-            access_point_status: wifi::AccessPointStatus {
-                is_started: false,
-                client_count: 0,
-            },
             access_point_ip_config: wifi::IpConfig::new(
                 "192.168.4.1",
                 "192.168.4.1",
                 "255.255.255.0",
             ),
+            access_point_client_connected_signals: Arc::new(AtomicU32::new(0)),
+            access_point_stopped_signals: Arc::new(AtomicU32::new(0)),
             start_hook: None,
             stop_hook: None,
             disconnect_hook: None,
-            is_started_hook: None,
             scan_networks_hook: None,
             configure_client_hook: None,
             connect_hook: None,
             is_connected_hook: None,
-            connection_info_hook: None,
             start_access_point_hook: None,
             stop_access_point_hook: None,
-            access_point_status_hook: None,
-            access_point_ip_config_hook: None,
         }
     }
 
     pub fn with_started(mut self, started: bool) -> Self {
         self.started = started;
-        self.access_point_status.is_started = started;
         self
     }
 
@@ -1150,23 +1136,9 @@ impl MockWifiBackend {
         self
     }
 
-    pub fn with_client_count(mut self, client_count: usize) -> Self {
-        self.access_point_status.client_count = client_count;
-        self
-    }
-
-    pub fn with_connection_info(mut self, connection_info: wifi::ConnectionInfo) -> Self {
-        self.connection_info = connection_info;
-        self
-    }
-
-    pub fn with_access_point_status(mut self, status: wifi::AccessPointStatus) -> Self {
-        self.access_point_status = status;
-        self
-    }
-
-    pub fn with_access_point_ip_config(mut self, ip_config: wifi::IpConfig) -> Self {
-        self.access_point_ip_config = ip_config;
+    pub fn with_access_point_client_connected(self) -> Self {
+        self.access_point_client_connected_signals
+            .store(1, Ordering::SeqCst);
         self
     }
 
@@ -1182,11 +1154,6 @@ impl MockWifiBackend {
 
     pub fn on_disconnect(mut self, hook: impl FnMut() -> HookResult<()> + Send + 'static) -> Self {
         self.disconnect_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
-        self
-    }
-
-    pub fn on_is_started(mut self, hook: impl FnMut() -> HookResult<bool> + Send + 'static) -> Self {
-        self.is_started_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
     }
 
@@ -1219,14 +1186,6 @@ impl MockWifiBackend {
         self
     }
 
-    pub fn on_connection_info(
-        mut self,
-        hook: impl FnMut() -> HookResult<Option<wifi::ConnectionInfo>> + Send + 'static,
-    ) -> Self {
-        self.connection_info_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
-        self
-    }
-
     pub fn on_start_access_point(
         mut self,
         hook: impl FnMut(&wifi::AccessPointConfig) -> HookResult<()> + Send + 'static,
@@ -1240,24 +1199,55 @@ impl MockWifiBackend {
         self
     }
 
-    pub fn on_access_point_status(
-        mut self,
-        hook: impl FnMut() -> HookResult<wifi::AccessPointStatus> + Send + 'static,
-    ) -> Self {
-        self.access_point_status_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
-        self
-    }
+}
 
-    pub fn on_access_point_ip_config(
-        mut self,
-        hook: impl FnMut() -> HookResult<wifi::IpConfig> + Send + 'static,
-    ) -> Self {
-        self.access_point_ip_config_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
-        self
+#[derive(Clone)]
+pub struct MockWifiSignalSubscription {
+    pending: Arc<AtomicU32>,
+}
+
+impl wifi::AccessPointClientConnectedSubscription for MockWifiSignalSubscription {
+    async fn next(&mut self) -> anyhow::Result<()> {
+        core::future::poll_fn(|_| {
+            let current = self.pending.load(Ordering::SeqCst);
+            if current > 0
+                && self
+                    .pending
+                    .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+impl wifi::AccessPointStoppedSubscription for MockWifiSignalSubscription {
+    async fn next(&mut self) -> anyhow::Result<()> {
+        core::future::poll_fn(|_| {
+            let current = self.pending.load(Ordering::SeqCst);
+            if current > 0
+                && self
+                    .pending
+                    .compare_exchange(current, current - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
     }
 }
 
 impl wifi::WifiBackend for MockWifiBackend {
+    type AccessPointClientConnectedSubscription = MockWifiSignalSubscription;
+    type AccessPointStoppedSubscription = MockWifiSignalSubscription;
+
     async fn start(&mut self) -> anyhow::Result<()> {
         if let Some(hook) = &self.start_hook {
             if let Some(result) = (hook.lock().unwrap())() {
@@ -1283,15 +1273,6 @@ impl wifi::WifiBackend for MockWifiBackend {
             }
         }
         Ok(())
-    }
-
-    async fn is_started(&mut self) -> anyhow::Result<bool> {
-        if let Some(hook) = &self.is_started_hook {
-            if let Some(result) = (hook.lock().unwrap())() {
-                return result;
-            }
-        }
-        Ok(self.started)
     }
 
     async fn scan_networks(&mut self) -> anyhow::Result<Vec<wifi::FoundNetwork>> {
@@ -1338,25 +1319,17 @@ impl wifi::WifiBackend for MockWifiBackend {
         Ok(self.is_connected)
     }
 
-    async fn connection_info(&mut self) -> anyhow::Result<Option<wifi::ConnectionInfo>> {
-        if let Some(hook) = &self.connection_info_hook {
-            if let Some(result) = (hook.lock().unwrap())() {
-                return result;
-            }
-        }
-        Ok(Some(self.connection_info.clone()))
-    }
-
     async fn start_access_point(
         &mut self,
         config: &wifi::AccessPointConfig,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<wifi::IpConfig> {
         if let Some(hook) = &self.start_access_point_hook {
             if let Some(result) = (hook.lock().unwrap())(config) {
-                return result;
+                result?;
+                return Ok(self.access_point_ip_config.clone());
             }
         }
-        Ok(())
+        Ok(self.access_point_ip_config.clone())
     }
 
     async fn stop_access_point(&mut self) -> anyhow::Result<()> {
@@ -1368,22 +1341,18 @@ impl wifi::WifiBackend for MockWifiBackend {
         Ok(())
     }
 
-    async fn access_point_status(&mut self) -> anyhow::Result<wifi::AccessPointStatus> {
-        if let Some(hook) = &self.access_point_status_hook {
-            if let Some(result) = (hook.lock().unwrap())() {
-                return result;
-            }
-        }
-        Ok(self.access_point_status.clone())
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> anyhow::Result<Self::AccessPointClientConnectedSubscription> {
+        Ok(MockWifiSignalSubscription {
+            pending: self.access_point_client_connected_signals.clone(),
+        })
     }
 
-    async fn access_point_ip_config(&mut self) -> anyhow::Result<wifi::IpConfig> {
-        if let Some(hook) = &self.access_point_ip_config_hook {
-            if let Some(result) = (hook.lock().unwrap())() {
-                return result;
-            }
-        }
-        Ok(self.access_point_ip_config.clone())
+    fn subscribe_access_point_stopped(&self) -> anyhow::Result<Self::AccessPointStoppedSubscription> {
+        Ok(MockWifiSignalSubscription {
+            pending: self.access_point_stopped_signals.clone(),
+        })
     }
 }
 
@@ -1423,7 +1392,6 @@ pub fn tracked_wifi_backend_with_counter(
     let access_point_ip_hook = access_point_ip.clone();
     let started_for_start = started.clone();
     let started_for_stop = started.clone();
-    let started_for_status = started.clone();
     let counter_for_connect = counter.clone();
     let counter_for_scan = counter.clone();
     let counter_for_start_ap = counter.clone();
@@ -1448,26 +1416,13 @@ pub fn tracked_wifi_backend_with_counter(
             .on_start_access_point(move |config| {
                 started_for_start.store(true, Ordering::SeqCst);
                 *start_access_point_ssid_hook.lock().unwrap() = Some(config.ssid.clone());
+                *access_point_ip_hook.lock().unwrap() = Some(config.ip_config.ip.clone());
                 *start_ap_order_hook.lock().unwrap() =
                     Some(counter_for_start_ap.fetch_add(1, Ordering::SeqCst));
                 None
             })
             .on_stop_access_point(move || {
                 started_for_stop.store(false, Ordering::SeqCst);
-                None
-            })
-            .on_is_started(move || Some(Ok(started_for_status.load(Ordering::SeqCst))))
-            .on_access_point_status({
-                let started = started.clone();
-                move || {
-                    Some(Ok(wifi::AccessPointStatus {
-                        is_started: started.load(Ordering::SeqCst),
-                        client_count: 0,
-                    }))
-                }
-            })
-            .on_access_point_ip_config(move || {
-                *access_point_ip_hook.lock().unwrap() = Some("192.168.4.1".to_string());
                 None
             }),
         TrackedWifiBackendState {

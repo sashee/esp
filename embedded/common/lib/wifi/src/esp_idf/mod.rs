@@ -1,6 +1,6 @@
 use anyhow::Result;
 use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
+    eventloop::{EspSubscription, EspSystemEventLoop, System},
     hal::modem::WifiModemPeripheral,
     handle::RawHandle,
     nvs::EspDefaultNvsPartition,
@@ -8,15 +8,21 @@ use esp_idf_svc::{
     timer::EspTaskTimerService,
     wifi::{
         AccessPointConfiguration, AsyncWifi, AuthMethod, ClientConfiguration, Configuration,
-        EspWifi,
+        EspWifi, WifiEvent,
     },
 };
-use std::time::Duration;
+use std::{
+    future::poll_fn,
+    sync::{Arc, Mutex},
+    task::Waker,
+    time::Duration,
+};
 use std::vec::Vec;
 
 use crate::{
-    AccessPointAuth, AccessPointConfig, AccessPointStatus, ClientAuth, ConnectionInfo,
-    FoundNetwork, IpConfig, WifiBackend, WifiCredentials,
+    AccessPointAuth, AccessPointClientConnectedSubscription, AccessPointConfig,
+    AccessPointStoppedSubscription, ClientAuth, ConnectionInfo, FoundNetwork, IpConfig,
+    WifiBackend, WifiCredentials,
 };
 
 fn ignore_wifi_state_error(err: esp_idf_svc::sys::EspError) -> Result<()> {
@@ -29,13 +35,95 @@ fn ignore_wifi_state_error(err: esp_idf_svc::sys::EspError) -> Result<()> {
 
 pub struct EspWifiBackend<'d> {
     wifi: AsyncWifi<EspWifi<'d>>,
+    sysloop: EspSystemEventLoop,
+}
+
+#[derive(Default)]
+struct SignalState {
+    pending: usize,
+    waker: Option<Waker>,
+}
+
+struct SignalQueue {
+    state: Arc<Mutex<SignalState>>,
+}
+
+impl SignalQueue {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SignalState::default())),
+        }
+    }
+
+    fn sender(&self) -> SignalSender {
+        SignalSender {
+            state: self.state.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SignalSender {
+    state: Arc<Mutex<SignalState>>,
+}
+
+impl SignalSender {
+    fn send(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.pending = state.pending.saturating_add(1);
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+pub struct EspSignalSubscription {
+    _subscription: EspSubscription<'static, System>,
+    state: Arc<Mutex<SignalState>>,
+}
+
+impl EspSignalSubscription {
+    fn new(subscription: EspSubscription<'static, System>, queue: SignalQueue) -> Self {
+        Self {
+            _subscription: subscription,
+            state: queue.state,
+        }
+    }
+
+    async fn next_signal(&mut self) {
+        poll_fn(|context| {
+            let mut state = self.state.lock().unwrap();
+            if state.pending > 0 {
+                state.pending -= 1;
+                return core::task::Poll::Ready(());
+            }
+
+            state.waker = Some(context.waker().clone());
+            core::task::Poll::Pending
+        })
+        .await
+    }
+}
+
+impl AccessPointClientConnectedSubscription for EspSignalSubscription {
+    async fn next(&mut self) -> Result<()> {
+        self.next_signal().await;
+        Ok(())
+    }
+}
+
+impl AccessPointStoppedSubscription for EspSignalSubscription {
+    async fn next(&mut self) -> Result<()> {
+        self.next_signal().await;
+        Ok(())
+    }
 }
 
 impl<'d> EspWifiBackend<'d> {
     pub fn new(wifi: EspWifi<'d>, sysloop: EspSystemEventLoop) -> Result<Self> {
         let timer_service = EspTaskTimerService::new()?;
-        let wifi = AsyncWifi::wrap(wifi, sysloop, timer_service)?;
-        Ok(Self { wifi })
+        let wifi = AsyncWifi::wrap(wifi, sysloop.clone(), timer_service)?;
+        Ok(Self { wifi, sysloop })
     }
 
     pub fn new_with_default_nvs(
@@ -46,9 +134,35 @@ impl<'d> EspWifiBackend<'d> {
         let wifi = EspWifi::new(modem, sysloop.clone(), nvs)?;
         Self::new(wifi, sysloop)
     }
+
+    fn connection_info(&self) -> Result<Option<ConnectionInfo>> {
+        let ip_info = match self.wifi.wifi().sta_netif().get_ip_info() {
+            Ok(ip_info) => ip_info,
+            Err(_) => return Ok(None),
+        };
+
+        let ip = ip_info.ip.to_string();
+        if ip == "0.0.0.0" {
+            return Ok(None);
+        }
+
+        Ok(Some(ConnectionInfo { ip }))
+    }
+
+    fn access_point_ip_config(&self) -> Result<IpConfig> {
+        let ip_info = self.wifi.wifi().ap_netif().get_ip_info()?;
+        Ok(IpConfig::new(
+            ip_info.ip.to_string(),
+            ip_info.subnet.gateway.to_string(),
+            ip_info.subnet.mask.to_string(),
+        ))
+    }
 }
 
 impl<'d> WifiBackend for EspWifiBackend<'d> {
+    type AccessPointClientConnectedSubscription = EspSignalSubscription;
+    type AccessPointStoppedSubscription = EspSignalSubscription;
+
     async fn start(&mut self) -> Result<()> {
         self.wifi
             .set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
@@ -68,10 +182,6 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
             Ok(()) => Ok(()),
             Err(err) => ignore_wifi_state_error(err),
         }
-    }
-
-    async fn is_started(&mut self) -> Result<bool> {
-        Ok(self.wifi.is_started().unwrap_or(false))
     }
 
     async fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>> {
@@ -123,8 +233,7 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
             .ip_wait_while(|this| this.wifi().is_up().map(|s| !s), Some(timeout))
             .await?;
 
-        self.connection_info()
-            .await?
+        self.connection_info()?
             .ok_or_else(|| anyhow::anyhow!("WiFi connected without IP configuration"))
     }
 
@@ -132,21 +241,7 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
         Ok(self.wifi.is_connected().unwrap_or(false))
     }
 
-    async fn connection_info(&mut self) -> Result<Option<ConnectionInfo>> {
-        let ip_info = match self.wifi.wifi().sta_netif().get_ip_info() {
-            Ok(ip_info) => ip_info,
-            Err(_) => return Ok(None),
-        };
-
-        let ip = ip_info.ip.to_string();
-        if ip == "0.0.0.0" {
-            return Ok(None);
-        }
-
-        Ok(Some(ConnectionInfo { ip }))
-    }
-
-    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<()> {
+    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig> {
         let mut access_point = AccessPointConfiguration::default();
         access_point.ssid =
             config.ssid.as_str().try_into().map_err(|_| {
@@ -162,7 +257,7 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
             .set_configuration(&Configuration::AccessPoint(access_point))?;
         configure_softap_netif(self.wifi.wifi_mut(), &config.ip_config)?;
         self.wifi.start().await?;
-        Ok(())
+        self.access_point_ip_config()
     }
 
     async fn stop_access_point(&mut self) -> Result<()> {
@@ -170,31 +265,28 @@ impl<'d> WifiBackend for EspWifiBackend<'d> {
         Ok(())
     }
 
-    async fn access_point_status(&mut self) -> Result<AccessPointStatus> {
-        Ok(AccessPointStatus {
-            is_started: self.wifi.is_started().unwrap_or(false),
-            client_count: softap_client_count(),
-        })
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> Result<Self::AccessPointClientConnectedSubscription> {
+        let queue = SignalQueue::new();
+        let sender = queue.sender();
+        let subscription = self.sysloop.subscribe::<WifiEvent, _>(move |event| {
+            if matches!(event, WifiEvent::ApStaConnected(_)) {
+                sender.send();
+            }
+        })?;
+        Ok(EspSignalSubscription::new(subscription, queue))
     }
 
-    async fn access_point_ip_config(&mut self) -> Result<IpConfig> {
-        let ip_info = self.wifi.wifi().ap_netif().get_ip_info()?;
-        Ok(IpConfig::new(
-            ip_info.ip.to_string(),
-            ip_info.subnet.gateway.to_string(),
-            ip_info.subnet.mask.to_string(),
-        ))
-    }
-}
-
-fn softap_client_count() -> usize {
-    let mut list = sys::wifi_sta_list_t::default();
-    unsafe {
-        if sys::esp_wifi_ap_get_sta_list(&mut list as *mut _) == 0 {
-            list.num as usize
-        } else {
-            0
-        }
+    fn subscribe_access_point_stopped(&self) -> Result<Self::AccessPointStoppedSubscription> {
+        let queue = SignalQueue::new();
+        let sender = queue.sender();
+        let subscription = self.sysloop.subscribe::<WifiEvent, _>(move |event| {
+            if matches!(event, WifiEvent::ApStopped) {
+                sender.send();
+            }
+        })?;
+        Ok(EspSignalSubscription::new(subscription, queue))
     }
 }
 

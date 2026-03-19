@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use core::fmt::Write as _;
 use core::future::Future;
 use core::sync::atomic::{AtomicBool, Ordering};
+use embassy_futures::select::{select3, Either3};
 use embassy_time::{Duration, Instant};
 use log::{error, info, warn};
 use std::{
@@ -163,11 +164,14 @@ impl AccessPointConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AccessPointEvent {
-    Started { ip_config: IpConfig },
-    ClientCountChanged { client_count: usize },
-    Stopped,
+#[allow(async_fn_in_trait)]
+pub trait AccessPointClientConnectedSubscription {
+    async fn next(&mut self) -> Result<()>;
+}
+
+#[allow(async_fn_in_trait)]
+pub trait AccessPointStoppedSubscription {
+    async fn next(&mut self) -> Result<()>;
 }
 
 pub trait ConfigStore {
@@ -193,15 +197,18 @@ pub trait ConfigClock {
 
 #[allow(async_fn_in_trait)]
 pub trait ConfigWifi {
+    type AccessPointClientConnectedSubscription: AccessPointClientConnectedSubscription;
+    type AccessPointStoppedSubscription: AccessPointStoppedSubscription;
+
     async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig>;
 
     async fn stop_access_point(&mut self) -> Result<()>;
 
-    async fn is_access_point_started(&mut self) -> Result<bool>;
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> Result<Self::AccessPointClientConnectedSubscription>;
 
-    async fn poll_access_point_events<F>(&mut self, on_event: F) -> Result<()>
-    where
-        F: FnMut(AccessPointEvent);
+    fn subscribe_access_point_stopped(&self) -> Result<Self::AccessPointStoppedSubscription>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -295,29 +302,10 @@ where
 
     let started_at = clock.now();
     let mut client_connected = false;
+    let mut client_connected_events = wifi.subscribe_access_point_client_connected()?;
+    let mut stopped_events = wifi.subscribe_access_point_stopped()?;
 
     loop {
-        wifi.poll_access_point_events(|event| match event {
-            AccessPointEvent::Started { ip_config } => {
-                info!(
-                    "config portal AP started: ssid={}, ip={}, gateway={}, subnet={}",
-                    ap_ssid, ip_config.ip, ip_config.gateway, ip_config.netmask
-                );
-            }
-            AccessPointEvent::ClientCountChanged { client_count } => {
-                if !client_connected && client_count > 0 {
-                    client_connected = true;
-                    info!("config portal station connected");
-                }
-            }
-            AccessPointEvent::Stopped => {}
-        })
-        .await?;
-
-        if activity.reboot_requested.load(Ordering::Relaxed) {
-            platform.reboot();
-        }
-
         let elapsed = clock.now() - started_at;
         let limit = if client_connected {
             timing.connected_timeout
@@ -331,11 +319,37 @@ where
             return Ok(());
         }
 
-        if !wifi.is_access_point_started().await? {
-            bail!("softap stopped unexpectedly");
+        let remaining = limit - elapsed;
+        let wait_step = if remaining > Duration::from_millis(250) {
+            Duration::from_millis(250)
+        } else {
+            remaining
+        };
+
+        match select3(
+            client_connected_events.next(),
+            stopped_events.next(),
+            clock.sleep(wait_step),
+        )
+        .await
+        {
+            Either3::First(result) => {
+                result?;
+                if !client_connected {
+                    client_connected = true;
+                    info!("config portal station connected");
+                }
+            }
+            Either3::Second(result) => {
+                result?;
+                bail!("softap stopped unexpectedly");
+            }
+            Either3::Third(_) => {}
         }
 
-        clock.sleep(Duration::from_millis(250)).await;
+        if activity.reboot_requested.load(Ordering::Relaxed) {
+            platform.reboot();
+        }
     }
 }
 

@@ -264,11 +264,10 @@ struct MockWifi {
 struct MockWifiState {
     start_configs: Vec<AccessPointConfig>,
     stop_calls: usize,
-    started_result: Result<bool, String>,
     start_result: Result<IpConfig, String>,
     stop_result: Result<(), String>,
-    poll_result: Result<(), String>,
-    poll_events: VecDeque<Vec<AccessPointEvent>>,
+    client_connected_results: VecDeque<Result<bool, String>>,
+    stopped_results: VecDeque<Result<bool, String>>,
 }
 
 impl Default for MockWifiState {
@@ -276,16 +275,50 @@ impl Default for MockWifiState {
         Self {
             start_configs: Vec::new(),
             stop_calls: 0,
-            started_result: Ok(true),
             start_result: Ok(default_ap_ip_config()),
             stop_result: Ok(()),
-            poll_result: Ok(()),
-            poll_events: VecDeque::new(),
+            client_connected_results: VecDeque::new(),
+            stopped_results: VecDeque::new(),
         }
     }
 }
 
+struct MockSignalSubscription {
+    results: Arc<Mutex<VecDeque<Result<bool, String>>>>,
+}
+
+impl AccessPointClientConnectedSubscription for MockSignalSubscription {
+    async fn next(&mut self) -> Result<()> {
+        core::future::poll_fn(|_| {
+            let mut results = self.results.lock().unwrap();
+            match results.pop_front() {
+                Some(Ok(true)) => Poll::Ready(Ok(())),
+                Some(Ok(false)) | None => Poll::Pending,
+                Some(Err(message)) => Poll::Ready(Err(anyhow!(message))),
+            }
+        })
+        .await
+    }
+}
+
+impl AccessPointStoppedSubscription for MockSignalSubscription {
+    async fn next(&mut self) -> Result<()> {
+        core::future::poll_fn(|_| {
+            let mut results = self.results.lock().unwrap();
+            match results.pop_front() {
+                Some(Ok(true)) => Poll::Ready(Ok(())),
+                Some(Ok(false)) | None => Poll::Pending,
+                Some(Err(message)) => Poll::Ready(Err(anyhow!(message))),
+            }
+        })
+        .await
+    }
+}
+
 impl ConfigWifi for MockWifi {
+    type AccessPointClientConnectedSubscription = MockSignalSubscription;
+    type AccessPointStoppedSubscription = MockSignalSubscription;
+
     async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig> {
         let mut state = self.state.lock().unwrap();
         state.start_configs.push(config.clone());
@@ -304,29 +337,20 @@ impl ConfigWifi for MockWifi {
             .map_err(|message| anyhow!(message))
     }
 
-    async fn is_access_point_started(&mut self) -> Result<bool> {
-        self.state
-            .lock()
-            .unwrap()
-            .started_result
-            .clone()
-            .map_err(|message| anyhow!(message))
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> Result<Self::AccessPointClientConnectedSubscription> {
+        Ok(MockSignalSubscription {
+            results: Arc::new(Mutex::new(
+                self.state.lock().unwrap().client_connected_results.clone(),
+            )),
+        })
     }
 
-    async fn poll_access_point_events<F>(&mut self, mut on_event: F) -> Result<()>
-    where
-        F: FnMut(AccessPointEvent),
-    {
-        let mut state = self.state.lock().unwrap();
-        let events = state.poll_events.pop_front().unwrap_or_default();
-        let result = state.poll_result.clone();
-        drop(state);
-
-        for event in events {
-            on_event(event);
-        }
-
-        result.map_err(|message| anyhow!(message))
+    fn subscribe_access_point_stopped(&self) -> Result<Self::AccessPointStoppedSubscription> {
+        Ok(MockSignalSubscription {
+            results: Arc::new(Mutex::new(self.state.lock().unwrap().stopped_results.clone())),
+        })
     }
 }
 
@@ -795,7 +819,6 @@ fn enter_config_mode_starts_ap_with_expected_settings() {
         state: Arc::new(Mutex::new(MockWifiState {
             start_result: Ok(default_ap_ip_config()),
             stop_result: Ok(()),
-            started_result: Ok(false),
             ..Default::default()
         })),
     };
@@ -830,7 +853,6 @@ fn enter_config_mode_times_out_without_client() {
         state: Arc::new(Mutex::new(MockWifiState {
             start_result: Ok(default_ap_ip_config()),
             stop_result: Ok(()),
-            started_result: Ok(true),
             ..Default::default()
         })),
     };
@@ -854,7 +876,7 @@ fn enter_config_mode_times_out_without_client() {
     assert_eq!(wifi.state.lock().unwrap().stop_calls, 1);
     assert_eq!(
         clock.state.lock().unwrap().sleeps,
-        vec![Duration::from_millis(250)]
+        vec![Duration::from_ticks(500)]
     );
 }
 
@@ -864,15 +886,11 @@ fn enter_config_mode_uses_connected_timeout_after_client_connects() {
         state: Arc::new(Mutex::new(MockWifiState {
             start_result: Ok(default_ap_ip_config()),
             stop_result: Ok(()),
-            started_result: Ok(true),
-            poll_events: VecDeque::from([
-                vec![AccessPointEvent::ClientCountChanged { client_count: 1 }],
-                vec![],
-            ]),
+            client_connected_results: VecDeque::from([Ok(true)]),
             ..Default::default()
         })),
     };
-    let clock = MockClock::from_ticks(&[0, 600, 1100]);
+    let clock = MockClock::from_ticks(&[0, 0, 600, 1100]);
 
     block_on(enter_config_mode(
         make_test_spec(),
@@ -899,7 +917,6 @@ fn enter_config_mode_reboots_after_http_request_marks_activity() {
         state: Arc::new(Mutex::new(MockWifiState {
             start_result: Ok(default_ap_ip_config()),
             stop_result: Ok(()),
-            started_result: Ok(true),
             ..Default::default()
         })),
     };
@@ -938,7 +955,7 @@ fn enter_config_mode_errors_when_ap_stops_unexpectedly() {
     let mut wifi = MockWifi {
         state: Arc::new(Mutex::new(MockWifiState {
             start_result: Ok(default_ap_ip_config()),
-            started_result: Ok(false),
+            stopped_results: VecDeque::from([Ok(true)]),
             ..Default::default()
         })),
     };
@@ -994,7 +1011,6 @@ fn enter_config_mode_propagates_ap_stop_failure() {
         state: Arc::new(Mutex::new(MockWifiState {
             start_result: Ok(default_ap_ip_config()),
             stop_result: Err("stop failed".into()),
-            started_result: Ok(true),
             ..Default::default()
         })),
     };
@@ -1015,62 +1031,6 @@ fn enter_config_mode_propagates_ap_stop_failure() {
     .unwrap_err();
 
     assert!(err.to_string().contains("stop failed"));
-}
-
-#[test]
-fn enter_config_mode_propagates_wifi_poll_failure() {
-    let mut wifi = MockWifi {
-        state: Arc::new(Mutex::new(MockWifiState {
-            start_result: Ok(default_ap_ip_config()),
-            poll_result: Err("poll failed".into()),
-            ..Default::default()
-        })),
-    };
-
-    let err = block_on(enter_config_mode(
-        make_test_spec(),
-        "configure",
-        &mut wifi,
-        MockStore::default(),
-        MockHttpBackend::default(),
-        MockPlatform::new([0, 0, 0, 0, 0, 1]),
-        MockClock::from_ticks(&[0]),
-        ConfigTiming {
-            idle_timeout: Duration::from_ticks(500),
-            connected_timeout: Duration::from_ticks(1000),
-        },
-    ))
-    .unwrap_err();
-
-    assert!(err.to_string().contains("poll failed"));
-}
-
-#[test]
-fn enter_config_mode_propagates_started_check_failure() {
-    let mut wifi = MockWifi {
-        state: Arc::new(Mutex::new(MockWifiState {
-            start_result: Ok(default_ap_ip_config()),
-            started_result: Err("started failed".into()),
-            ..Default::default()
-        })),
-    };
-
-    let err = block_on(enter_config_mode(
-        make_test_spec(),
-        "configure",
-        &mut wifi,
-        MockStore::default(),
-        MockHttpBackend::default(),
-        MockPlatform::new([0, 0, 0, 0, 0, 1]),
-        MockClock::from_ticks(&[0, 0]),
-        ConfigTiming {
-            idle_timeout: Duration::from_ticks(500),
-            connected_timeout: Duration::from_ticks(1000),
-        },
-    ))
-    .unwrap_err();
-
-    assert!(err.to_string().contains("started failed"));
 }
 
 #[test]

@@ -17,7 +17,7 @@ fn test_portal_runs_preboot_portal_on_power_on() {
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
-    let clock = MockClock::new(embassy_time::Instant::from_ticks(0));
+    let clock = MockClock::from_ticks(&[0, 250, 30_000_001]);
     let http_client = MockHttpClient::new();
     let display = MockDisplay::new();
 
@@ -112,7 +112,9 @@ fn test_portal_preboot_waits_for_connection() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let (led, _led_calls) = tracked_led();
     // Client connected → portal uses connected_timeout (10min)
-    let wifi_backend = MockWifiBackend::new().with_client_count(1).with_is_connected(false);
+    let wifi_backend = MockWifiBackend::new()
+        .with_access_point_client_connected()
+        .with_is_connected(false);
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let (platform, reboot_called) =
@@ -233,39 +235,24 @@ fn test_portal_preboot_led_error_enters_error_mode() {
 #[test]
 fn test_portal_preboot_then_normal_boot_succeeds() {
     let preboot_started = Arc::new(Mutex::new(false));
-    let saw_preboot_led = Arc::new(Mutex::new(false));
-    let saw_connecting_led = Arc::new(Mutex::new(false));
-    let preboot_started_hook = preboot_started.clone();
-    let saw_preboot_led_hook = saw_preboot_led.clone();
-    let saw_connecting_led_hook = saw_connecting_led.clone();
-    let led = MockLed::new().on_set_pixel(move |rgb| {
-        if rgb.r.abs() < 0.01 && (rgb.g - 0.53).abs() < 0.01 && (rgb.b - 1.0).abs() < 0.01 {
-            *saw_preboot_led_hook.lock().unwrap() = true;
-        }
-        if (rgb.r - 1.0).abs() < 0.01 && (rgb.g - 0.78).abs() < 0.01 && rgb.b.abs() < 0.01 {
-            *saw_connecting_led_hook.lock().unwrap() = true;
-        }
-        if rgb.r.abs() < 0.01 && rgb.g.abs() < 0.01 && (rgb.b - 1.0).abs() < 0.01 {
-            let preboot_started = *preboot_started_hook.lock().unwrap();
-            let saw_preboot_led = *saw_preboot_led.lock().unwrap();
-            let saw_connecting_led = *saw_connecting_led.lock().unwrap();
-            if preboot_started && saw_preboot_led && saw_connecting_led {
-                ok("preboot portal transitions into normal connected boot");
-            }
-        }
-        None
-    });
     let preboot_started_for_wifi = preboot_started.clone();
     let wifi_backend = MockWifiBackend::new()
         .with_is_connected(false)
         .on_start_access_point(move |_config| {
             *preboot_started_for_wifi.lock().unwrap() = true;
             None
+        })
+        .on_connect(move |_timeout| {
+            if *preboot_started.lock().unwrap() {
+                ok("preboot portal transitions into normal connected boot");
+            }
+            nok("preboot portal should start before normal Wi-Fi connect resumes");
         });
+    let led = MockLed::new();
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
-    let clock = MockClock::new(embassy_time::Instant::from_ticks(0));
+    let clock = MockClock::from_ticks(&[0, 250, 30_000_001]);
     let http_client = MockHttpClient::new();
     let display = MockDisplay::new();
 

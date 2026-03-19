@@ -39,6 +39,21 @@ struct MockLed {
     colors: Vec<(f32, f32, f32)>,
 }
 
+#[derive(Clone, Default)]
+struct NeverSubscription;
+
+impl wifi::AccessPointClientConnectedSubscription for NeverSubscription {
+    async fn next(&mut self) -> anyhow::Result<()> {
+        core::future::poll_fn(|_| Poll::Pending).await
+    }
+}
+
+impl wifi::AccessPointStoppedSubscription for NeverSubscription {
+    async fn next(&mut self) -> anyhow::Result<()> {
+        core::future::poll_fn(|_| Poll::Pending).await
+    }
+}
+
 impl MockLed {
     fn new() -> Self {
         Self { colors: Vec::new() }
@@ -194,6 +209,9 @@ impl Default for MockWifiBackendState {
 }
 
 impl wifi::WifiBackend for MockWifiBackend {
+    type AccessPointClientConnectedSubscription = NeverSubscription;
+    type AccessPointStoppedSubscription = NeverSubscription;
+
     async fn start(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -202,9 +220,6 @@ impl wifi::WifiBackend for MockWifiBackend {
     }
     async fn disconnect(&mut self) -> anyhow::Result<()> {
         Ok(())
-    }
-    async fn is_started(&mut self) -> anyhow::Result<bool> {
-        Ok(self.state.lock().unwrap().started)
     }
     async fn scan_networks(&mut self) -> anyhow::Result<Vec<wifi::FoundNetwork>> {
         Ok(Vec::new())
@@ -226,33 +241,30 @@ impl wifi::WifiBackend for MockWifiBackend {
     async fn is_connected(&mut self) -> anyhow::Result<bool> {
         Ok(false)
     }
-    async fn connection_info(&mut self) -> anyhow::Result<Option<wifi::ConnectionInfo>> {
-        Ok(None)
-    }
     async fn start_access_point(
         &mut self,
         config: &wifi::AccessPointConfig,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<wifi::IpConfig> {
         self.state.lock().unwrap().start_configs.push(config.clone());
         self.state.lock().unwrap().started = true;
-        Ok(())
-    }
-    async fn stop_access_point(&mut self) -> anyhow::Result<()> {
-        self.state.lock().unwrap().started = false;
-        Ok(())
-    }
-    async fn access_point_status(&mut self) -> anyhow::Result<wifi::AccessPointStatus> {
-        Ok(wifi::AccessPointStatus {
-            is_started: self.state.lock().unwrap().started,
-            client_count: 0,
-        })
-    }
-    async fn access_point_ip_config(&mut self) -> anyhow::Result<wifi::IpConfig> {
         Ok(wifi::IpConfig::new(
             "192.168.4.1",
             "192.168.4.1",
             "255.255.255.0",
         ))
+    }
+    async fn stop_access_point(&mut self) -> anyhow::Result<()> {
+        self.state.lock().unwrap().started = false;
+        Ok(())
+    }
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> anyhow::Result<Self::AccessPointClientConnectedSubscription> {
+        Ok(NeverSubscription)
+    }
+
+    fn subscribe_access_point_stopped(&self) -> anyhow::Result<Self::AccessPointStoppedSubscription> {
+        Ok(NeverSubscription)
     }
 }
 

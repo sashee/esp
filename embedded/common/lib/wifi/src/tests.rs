@@ -3,13 +3,15 @@ use std::{
     collections::VecDeque,
     future::Future,
     pin::pin,
+    sync::{Arc, Mutex},
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
     time::Duration,
 };
 
 use crate::{
-    AccessPointConfig, AccessPointEvent, AccessPointStatus, ClientAuth, ConnectOptions,
-    ConnectState, ConnectionInfo, FoundNetwork, IpConfig, Wifi, WifiBackend, WifiCredentials,
+    AccessPointClientConnectedSubscription, AccessPointConfig, AccessPointStoppedSubscription,
+    ClientAuth, ConnectOptions, ConnectState, ConnectionInfo, FoundNetwork, IpConfig, Wifi,
+    WifiBackend, WifiCredentials,
 };
 
 fn portal_ip_config() -> IpConfig {
@@ -46,14 +48,18 @@ where
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MockBackend {
+    state: Arc<Mutex<MockBackendState>>,
+}
+
+#[derive(Default)]
+struct MockBackendState {
     actions: Vec<String>,
     scanned_networks: Vec<FoundNetwork>,
     connected_checks: VecDeque<bool>,
     connection_info: Option<ConnectionInfo>,
     started: bool,
-    access_point_statuses: VecDeque<AccessPointStatus>,
     access_point_ip_config: Option<IpConfig>,
     start_error: Option<String>,
     disconnect_error: Option<String>,
@@ -62,120 +68,179 @@ struct MockBackend {
     configure_error: Option<String>,
     connect_error: Option<String>,
     start_access_point_error: Option<String>,
-    access_point_status_error: Option<String>,
     access_point_ip_config_error: Option<String>,
+    subscribe_client_connected_error: Option<String>,
+    subscribe_stopped_error: Option<String>,
+    client_connected_subscribers: Vec<Arc<Mutex<MockSignalState>>>,
+    stopped_subscribers: Vec<Arc<Mutex<MockSignalState>>>,
+}
+
+#[derive(Debug, Default)]
+struct MockSignalState {
+    pending: usize,
 }
 
 impl MockBackend {
-    fn with_scan(mut self, scanned_networks: Vec<FoundNetwork>) -> Self {
-        self.scanned_networks = scanned_networks;
+    fn actions(&self) -> Vec<String> {
+        self.state.lock().unwrap().actions.clone()
+    }
+
+    fn with_scan(self, scanned_networks: Vec<FoundNetwork>) -> Self {
+        self.state.lock().unwrap().scanned_networks = scanned_networks;
         self
     }
 
-    fn with_connected_checks(mut self, connected_checks: Vec<bool>) -> Self {
-        self.connected_checks = connected_checks.into();
+    fn with_connected_checks(self, connected_checks: Vec<bool>) -> Self {
+        self.state.lock().unwrap().connected_checks = connected_checks.into();
         self
     }
 
-    fn with_connection_info(mut self, connection_info: Option<ConnectionInfo>) -> Self {
-        self.connection_info = connection_info;
+    fn with_connection_info(self, connection_info: Option<ConnectionInfo>) -> Self {
+        self.state.lock().unwrap().connection_info = connection_info;
         self
     }
 
-    fn with_access_point_statuses(mut self, statuses: Vec<AccessPointStatus>) -> Self {
-        self.access_point_statuses = statuses.into();
+    fn with_access_point_ip_config(self, config: IpConfig) -> Self {
+        self.state.lock().unwrap().access_point_ip_config = Some(config);
         self
     }
 
-    fn with_access_point_ip_config(mut self, config: IpConfig) -> Self {
-        self.access_point_ip_config = Some(config);
+    fn with_disconnect_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().disconnect_error = Some(error.to_string());
         self
     }
 
-    fn with_disconnect_error(mut self, error: &str) -> Self {
-        self.disconnect_error = Some(error.to_string());
+    fn with_start_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().start_error = Some(error.to_string());
         self
     }
 
-    fn with_start_error(mut self, error: &str) -> Self {
-        self.start_error = Some(error.to_string());
+    fn with_stop_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().stop_error = Some(error.to_string());
         self
     }
 
-    fn with_stop_error(mut self, error: &str) -> Self {
-        self.stop_error = Some(error.to_string());
+    fn with_scan_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().scan_error = Some(error.to_string());
         self
     }
 
-    fn with_scan_error(mut self, error: &str) -> Self {
-        self.scan_error = Some(error.to_string());
+    fn with_configure_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().configure_error = Some(error.to_string());
         self
     }
 
-    fn with_configure_error(mut self, error: &str) -> Self {
-        self.configure_error = Some(error.to_string());
+    fn with_connect_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().connect_error = Some(error.to_string());
         self
     }
 
-    fn with_connect_error(mut self, error: &str) -> Self {
-        self.connect_error = Some(error.to_string());
+    fn with_start_access_point_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().start_access_point_error = Some(error.to_string());
         self
     }
 
-    fn with_access_point_status_error(mut self, error: &str) -> Self {
-        self.access_point_status_error = Some(error.to_string());
+    fn with_access_point_ip_config_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().access_point_ip_config_error = Some(error.to_string());
         self
     }
 
-    fn with_start_access_point_error(mut self, error: &str) -> Self {
-        self.start_access_point_error = Some(error.to_string());
+    fn with_subscribe_client_connected_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().subscribe_client_connected_error = Some(error.to_string());
         self
     }
 
-    fn with_access_point_ip_config_error(mut self, error: &str) -> Self {
-        self.access_point_ip_config_error = Some(error.to_string());
+    fn with_subscribe_stopped_error(self, error: &str) -> Self {
+        self.state.lock().unwrap().subscribe_stopped_error = Some(error.to_string());
         self
+    }
+
+    fn emit_client_connected(&self) {
+        for subscriber in &self.state.lock().unwrap().client_connected_subscribers {
+            subscriber.lock().unwrap().pending += 1;
+        }
+    }
+
+    fn emit_stopped(&self) {
+        for subscriber in &self.state.lock().unwrap().stopped_subscribers {
+            subscriber.lock().unwrap().pending += 1;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MockSignalSubscription {
+    state: Arc<Mutex<MockSignalState>>,
+}
+
+impl AccessPointClientConnectedSubscription for MockSignalSubscription {
+    async fn next(&mut self) -> Result<()> {
+        loop {
+            let mut state = self.state.lock().unwrap();
+            if state.pending > 0 {
+                state.pending -= 1;
+                return Ok(());
+            }
+            drop(state);
+            std::thread::yield_now();
+        }
+    }
+}
+
+impl AccessPointStoppedSubscription for MockSignalSubscription {
+    async fn next(&mut self) -> Result<()> {
+        loop {
+            let mut state = self.state.lock().unwrap();
+            if state.pending > 0 {
+                state.pending -= 1;
+                return Ok(());
+            }
+            drop(state);
+            std::thread::yield_now();
+        }
     }
 }
 
 impl WifiBackend for MockBackend {
+    type AccessPointClientConnectedSubscription = MockSignalSubscription;
+    type AccessPointStoppedSubscription = MockSignalSubscription;
+
     async fn start(&mut self) -> Result<()> {
-        self.actions.push("start".to_string());
-        if let Some(error) = &self.start_error {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("start".to_string());
+        if let Some(error) = &state.start_error {
             return Err(anyhow!(error.clone()));
         }
-        self.started = true;
+        state.started = true;
         Ok(())
     }
 
     async fn stop(&mut self) -> Result<()> {
-        self.actions.push("stop".to_string());
-        if let Some(error) = &self.stop_error {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("stop".to_string());
+        if let Some(error) = &state.stop_error {
             return Err(anyhow!(error.clone()));
         }
-        self.started = false;
+        state.started = false;
         Ok(())
     }
 
     async fn disconnect(&mut self) -> Result<()> {
-        self.actions.push("disconnect".to_string());
-        if let Some(error) = &self.disconnect_error {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("disconnect".to_string());
+        if let Some(error) = &state.disconnect_error {
             return Err(anyhow!(error.clone()));
         }
         Ok(())
     }
 
-    async fn is_started(&mut self) -> Result<bool> {
-        self.actions.push("is_started".to_string());
-        Ok(self.started)
-    }
-
     async fn scan_networks(&mut self) -> Result<Vec<FoundNetwork>> {
-        self.actions.push("scan".to_string());
-        if let Some(error) = &self.scan_error {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("scan".to_string());
+        if let Some(error) = &state.scan_error {
             return Err(anyhow!(error.clone()));
         }
-        Ok(self.scanned_networks.clone())
+        Ok(state.scanned_networks.clone())
     }
 
     async fn configure_client(
@@ -184,84 +249,84 @@ impl WifiBackend for MockBackend {
         channel: Option<u8>,
         auth: ClientAuth,
     ) -> Result<()> {
-        self.actions.push(format!(
+        let mut state = self.state.lock().unwrap();
+        state.actions.push(format!(
             "configure:{}:{:?}:{:?}",
             credentials.ssid, channel, auth
         ));
-        if let Some(error) = &self.configure_error {
+        if let Some(error) = &state.configure_error {
             return Err(anyhow!(error.clone()));
         }
         Ok(())
     }
 
     async fn connect(&mut self, timeout: Duration) -> Result<ConnectionInfo> {
-        self.actions.push(format!("connect:{timeout:?}"));
-        if let Some(error) = &self.connect_error {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push(format!("connect:{timeout:?}"));
+        if let Some(error) = &state.connect_error {
             return Err(anyhow!(error.clone()));
         }
-        while !self.connected_checks.front().copied().unwrap_or(false) {
-            let _ = self.connected_checks.pop_front();
+        while !state.connected_checks.front().copied().unwrap_or(false) {
+            let _ = state.connected_checks.pop_front();
         }
 
-        self.connection_info
+        state
+            .connection_info
             .clone()
             .ok_or_else(|| anyhow!("missing connection info"))
     }
 
     async fn is_connected(&mut self) -> Result<bool> {
-        self.actions.push("is_connected".to_string());
-        Ok(self.connected_checks.front().copied().unwrap_or(false))
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("is_connected".to_string());
+        Ok(state.connected_checks.front().copied().unwrap_or(false))
     }
 
-    async fn connection_info(&mut self) -> Result<Option<ConnectionInfo>> {
-        self.actions.push("connection_info".to_string());
-        if self.connected_checks.front().copied().unwrap_or(false) {
-            Ok(self.connection_info.clone())
-        } else {
-            let _ = self.connected_checks.pop_front();
-            Ok(None)
-        }
-    }
-
-    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<()> {
-        self.actions.push(format!("start_ap:{}", config.ssid));
-        if let Some(error) = &self.start_access_point_error {
+    async fn start_access_point(&mut self, config: &AccessPointConfig) -> Result<IpConfig> {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push(format!("start_ap:{}", config.ssid));
+        if let Some(error) = &state.start_access_point_error {
             return Err(anyhow!(error.clone()));
         }
-        self.started = true;
-        Ok(())
+        if let Some(error) = &state.access_point_ip_config_error {
+            return Err(anyhow!(error.clone()));
+        }
+        state.started = true;
+        state
+            .access_point_ip_config
+            .clone()
+            .ok_or_else(|| anyhow!("missing AP IP config"))
     }
 
     async fn stop_access_point(&mut self) -> Result<()> {
-        self.actions.push("stop_ap".to_string());
-        self.started = false;
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("stop_ap".to_string());
+        state.started = false;
         Ok(())
     }
 
-    async fn access_point_status(&mut self) -> Result<AccessPointStatus> {
-        self.actions.push("ap_status".to_string());
-        if let Some(error) = &self.access_point_status_error {
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> Result<Self::AccessPointClientConnectedSubscription> {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("subscribe_ap_client_connected".to_string());
+        if let Some(error) = &state.subscribe_client_connected_error {
             return Err(anyhow!(error.clone()));
         }
-        if let Some(status) = self.access_point_statuses.pop_front() {
-            self.started = status.is_started;
-            Ok(status)
-        } else {
-            Ok(AccessPointStatus {
-                is_started: self.started,
-                client_count: 0,
-            })
-        }
+        let signal = Arc::new(Mutex::new(MockSignalState::default()));
+        state.client_connected_subscribers.push(signal.clone());
+        Ok(MockSignalSubscription { state: signal })
     }
 
-    async fn access_point_ip_config(&mut self) -> Result<IpConfig> {
-        self.actions.push("ap_ip_config".to_string());
-        if let Some(error) = &self.access_point_ip_config_error {
+    fn subscribe_access_point_stopped(&self) -> Result<Self::AccessPointStoppedSubscription> {
+        let mut state = self.state.lock().unwrap();
+        state.actions.push("subscribe_ap_stopped".to_string());
+        if let Some(error) = &state.subscribe_stopped_error {
             return Err(anyhow!(error.clone()));
         }
-        self.access_point_ip_config
-            .clone()
-            .ok_or_else(|| anyhow!("missing AP IP config"))
+        let signal = Arc::new(Mutex::new(MockSignalState::default()));
+        state.stopped_subscribers.push(signal.clone());
+        Ok(MockSignalSubscription { state: signal })
     }
 }
 
@@ -305,7 +370,7 @@ fn connect_uses_matching_channel_and_reports_states() {
     );
 
     assert_eq!(
-        wifi.backend().actions,
+        wifi.backend().actions(),
         vec![
             "disconnect",
             "stop",
@@ -329,7 +394,7 @@ fn connect_uses_open_auth_for_empty_password() {
 
     assert!(wifi
         .backend()
-        .actions
+        .actions()
         .contains(&"configure:guest:Some(6):Open".to_string()));
 }
 
@@ -345,7 +410,7 @@ fn connect_without_matching_network_uses_unknown_channel() {
 
     assert!(wifi
         .backend()
-        .actions
+        .actions()
         .contains(&"configure:home:None:Wpa2Personal".to_string()));
 }
 
@@ -372,7 +437,7 @@ fn connect_propagates_start_error() {
 
     assert_eq!(err.to_string(), "start failed");
     assert_eq!(states, vec![ConnectState::Starting]);
-    assert_eq!(wifi.backend().actions, vec!["disconnect", "stop", "start"]);
+    assert_eq!(wifi.backend().actions(), vec!["disconnect", "stop", "start"]);
 }
 
 #[test]
@@ -382,7 +447,7 @@ fn reset_propagates_disconnect_error() {
     let err = block_on(wifi.reset()).unwrap_err();
 
     assert_eq!(err.to_string(), "disconnect failed");
-    assert_eq!(wifi.backend().actions, vec!["disconnect"]);
+    assert_eq!(wifi.backend().actions(), vec!["disconnect"]);
 }
 
 #[test]
@@ -392,7 +457,7 @@ fn reset_propagates_stop_error() {
     let err = block_on(wifi.reset()).unwrap_err();
 
     assert_eq!(err.to_string(), "stop failed");
-    assert_eq!(wifi.backend().actions, vec!["disconnect", "stop"]);
+    assert_eq!(wifi.backend().actions(), vec!["disconnect", "stop"]);
 }
 
 #[test]
@@ -404,7 +469,7 @@ fn scan_networks_resets_and_stops_backend() {
 
     assert_eq!(networks, vec![FoundNetwork::new("home", Some(3), None)]);
     assert_eq!(
-        wifi.backend().actions,
+        wifi.backend().actions(),
         vec!["disconnect", "stop", "start", "scan", "stop"]
     );
 }
@@ -425,7 +490,7 @@ fn connect_propagates_scan_error_and_stops_state_progression() {
     assert_eq!(err.to_string(), "scan failed");
     assert_eq!(states, vec![ConnectState::Starting, ConnectState::Scanning]);
     assert_eq!(
-        wifi.backend().actions,
+        wifi.backend().actions(),
         vec!["disconnect", "stop", "start", "scan"]
     );
 }
@@ -460,7 +525,7 @@ fn connect_propagates_configure_error() {
         ]
     );
     assert_eq!(
-        wifi.backend().actions,
+        wifi.backend().actions(),
         vec![
             "disconnect",
             "stop",
@@ -479,7 +544,7 @@ fn scan_networks_propagates_start_error() {
     let err = block_on(wifi.scan_networks()).unwrap_err();
 
     assert_eq!(err.to_string(), "start failed");
-    assert_eq!(wifi.backend().actions, vec!["disconnect", "stop", "start"]);
+    assert_eq!(wifi.backend().actions(), vec!["disconnect", "stop", "start"]);
 }
 
 #[test]
@@ -516,7 +581,7 @@ fn connect_propagates_backend_connect_error_and_stops_before_connected_state() {
         ]
     );
     assert_eq!(
-        wifi.backend().actions,
+        wifi.backend().actions(),
         vec![
             "disconnect",
             "stop",
@@ -545,17 +610,12 @@ fn connect_passes_timeout_to_backend() {
     ))
     .unwrap();
 
-    assert!(wifi.backend().actions.contains(&"connect:3s".to_string()));
+    assert!(wifi.backend().actions().contains(&"connect:3s".to_string()));
 }
 
 #[test]
-fn start_access_point_returns_ip_config_and_tracks_status() {
-    let backend = MockBackend::default()
-        .with_access_point_statuses(vec![AccessPointStatus {
-            is_started: true,
-            client_count: 0,
-        }])
-        .with_access_point_ip_config(portal_ip_config());
+fn start_access_point_returns_ip_config() {
+    let backend = MockBackend::default().with_access_point_ip_config(portal_ip_config());
     let mut wifi = Wifi::new(backend);
     let config = AccessPointConfig::new("InfoPanel-1234", portal_ip_config());
 
@@ -563,14 +623,8 @@ fn start_access_point_returns_ip_config_and_tracks_status() {
 
     assert_eq!(ip_config, portal_ip_config());
     assert_eq!(
-        wifi.backend().actions,
-        vec![
-            "disconnect",
-            "stop",
-            "start_ap:InfoPanel-1234",
-            "ap_status",
-            "ap_ip_config",
-        ]
+        wifi.backend().actions(),
+        vec!["disconnect", "stop", "start_ap:InfoPanel-1234"]
     );
 }
 
@@ -589,39 +643,14 @@ fn start_access_point_propagates_backend_start_error() {
 
     assert_eq!(err.to_string(), "ap start failed");
     assert_eq!(
-        wifi.backend().actions,
+        wifi.backend().actions(),
         vec!["disconnect", "stop", "start_ap:InfoPanel-1234"]
     );
 }
 
 #[test]
-fn start_access_point_propagates_status_error() {
-    let backend = MockBackend::default()
-        .with_access_point_status_error("ap status failed")
-        .with_access_point_ip_config(portal_ip_config());
-    let mut wifi = Wifi::new(backend);
-
-    let err = block_on(wifi.start_access_point(&AccessPointConfig::new(
-        "InfoPanel-1234",
-        portal_ip_config(),
-    )))
-    .unwrap_err();
-
-    assert_eq!(err.to_string(), "ap status failed");
-    assert_eq!(
-        wifi.backend().actions,
-        vec!["disconnect", "stop", "start_ap:InfoPanel-1234", "ap_status"]
-    );
-}
-
-#[test]
 fn start_access_point_propagates_ip_config_error() {
-    let backend = MockBackend::default()
-        .with_access_point_statuses(vec![AccessPointStatus {
-            is_started: true,
-            client_count: 0,
-        }])
-        .with_access_point_ip_config_error("ap ip failed");
+    let backend = MockBackend::default().with_access_point_ip_config_error("ap ip failed");
     let mut wifi = Wifi::new(backend);
 
     let err = block_on(wifi.start_access_point(&AccessPointConfig::new(
@@ -632,150 +661,69 @@ fn start_access_point_propagates_ip_config_error() {
 
     assert_eq!(err.to_string(), "ap ip failed");
     assert_eq!(
-        wifi.backend().actions,
-        vec![
-            "disconnect",
-            "stop",
-            "start_ap:InfoPanel-1234",
-            "ap_status",
-            "ap_ip_config",
-        ]
+        wifi.backend().actions(),
+        vec!["disconnect", "stop", "start_ap:InfoPanel-1234"]
     );
 }
 
 #[test]
-fn poll_access_point_events_reports_start_and_client_changes() {
-    let backend = MockBackend::default()
-        .with_access_point_statuses(vec![
-            AccessPointStatus {
-                is_started: true,
-                client_count: 0,
-            },
-            AccessPointStatus {
-                is_started: true,
-                client_count: 1,
-            },
-            AccessPointStatus {
-                is_started: false,
-                client_count: 0,
-            },
-        ])
-        .with_access_point_ip_config(portal_ip_config());
-    let mut wifi = Wifi::new(backend);
-    let mut events = Vec::new();
+fn access_point_client_connected_subscription_receives_signals() {
+    let backend = MockBackend::default();
+    let wifi = Wifi::new(backend.clone());
+    let mut subscription = wifi.subscribe_access_point_client_connected().unwrap();
 
-    block_on(wifi.poll_access_point_events(|event| events.push(event))).unwrap();
-    block_on(wifi.poll_access_point_events(|event| events.push(event))).unwrap();
-    block_on(wifi.poll_access_point_events(|event| events.push(event))).unwrap();
+    backend.emit_client_connected();
 
+    block_on(AccessPointClientConnectedSubscription::next(&mut subscription)).unwrap();
     assert_eq!(
-        events,
-        vec![
-            AccessPointEvent::Started {
-                ip_config: portal_ip_config(),
-            },
-            AccessPointEvent::ClientCountChanged { client_count: 0 },
-            AccessPointEvent::ClientCountChanged { client_count: 1 },
-            AccessPointEvent::ClientCountChanged { client_count: 0 },
-            AccessPointEvent::Stopped,
-        ]
+        backend.actions(),
+        vec!["subscribe_ap_client_connected"]
     );
 }
 
 #[test]
-fn poll_access_point_events_ignores_unchanged_status() {
-    let backend = MockBackend::default()
-        .with_access_point_statuses(vec![
-            AccessPointStatus {
-                is_started: true,
-                client_count: 0,
-            },
-            AccessPointStatus {
-                is_started: true,
-                client_count: 0,
-            },
-        ])
-        .with_access_point_ip_config(portal_ip_config());
-    let mut wifi = Wifi::new(backend);
-    let mut events = Vec::new();
+fn access_point_stopped_subscription_receives_signals() {
+    let backend = MockBackend::default();
+    let wifi = Wifi::new(backend.clone());
+    let mut subscription = wifi.subscribe_access_point_stopped().unwrap();
 
-    block_on(wifi.poll_access_point_events(|event| events.push(event))).unwrap();
-    block_on(wifi.poll_access_point_events(|event| events.push(event))).unwrap();
+    backend.emit_stopped();
 
-    assert_eq!(
-        events,
-        vec![
-            AccessPointEvent::Started {
-                ip_config: portal_ip_config(),
-            },
-            AccessPointEvent::ClientCountChanged { client_count: 0 },
-        ]
-    );
+    block_on(AccessPointStoppedSubscription::next(&mut subscription)).unwrap();
+    assert_eq!(backend.actions(), vec!["subscribe_ap_stopped"]);
 }
 
 #[test]
-fn poll_access_point_events_propagates_status_error() {
-    let backend = MockBackend::default().with_access_point_status_error("ap status failed");
-    let mut wifi = Wifi::new(backend);
+fn access_point_client_connected_supports_multiple_subscribers() {
+    let backend = MockBackend::default();
+    let wifi = Wifi::new(backend.clone());
+    let mut first = wifi.subscribe_access_point_client_connected().unwrap();
+    let mut second = wifi.subscribe_access_point_client_connected().unwrap();
 
-    let err = block_on(wifi.poll_access_point_events(|_| {})).unwrap_err();
+    backend.emit_client_connected();
 
-    assert_eq!(err.to_string(), "ap status failed");
-    assert_eq!(wifi.backend().actions, vec!["ap_status"]);
+    block_on(AccessPointClientConnectedSubscription::next(&mut first)).unwrap();
+    block_on(AccessPointClientConnectedSubscription::next(&mut second)).unwrap();
 }
 
 #[test]
-fn poll_access_point_events_propagates_started_ip_error() {
-    let backend = MockBackend::default()
-        .with_access_point_statuses(vec![AccessPointStatus {
-            is_started: true,
-            client_count: 0,
-        }])
-        .with_access_point_ip_config_error("ap ip failed");
-    let mut wifi = Wifi::new(backend);
+fn subscribe_access_point_client_connected_propagates_error() {
+    let wifi = Wifi::new(
+        MockBackend::default().with_subscribe_client_connected_error("subscribe failed"),
+    );
 
-    let err = block_on(wifi.poll_access_point_events(|_| {})).unwrap_err();
+    let err = wifi.subscribe_access_point_client_connected().unwrap_err();
 
-    assert_eq!(err.to_string(), "ap ip failed");
-    assert_eq!(wifi.backend().actions, vec!["ap_status", "ap_ip_config"]);
+    assert_eq!(err.to_string(), "subscribe failed");
 }
 
 #[test]
-fn access_point_status_does_not_consume_event_baseline() {
-    let backend = MockBackend::default()
-        .with_access_point_statuses(vec![
-            AccessPointStatus {
-                is_started: true,
-                client_count: 0,
-            },
-            AccessPointStatus {
-                is_started: true,
-                client_count: 0,
-            },
-        ])
-        .with_access_point_ip_config(portal_ip_config());
-    let mut wifi = Wifi::new(backend);
+fn subscribe_access_point_stopped_propagates_error() {
+    let wifi = Wifi::new(MockBackend::default().with_subscribe_stopped_error("subscribe failed"));
 
-    let status = block_on(wifi.access_point_status()).unwrap();
-    let mut events = Vec::new();
-    block_on(wifi.poll_access_point_events(|event| events.push(event))).unwrap();
+    let err = wifi.subscribe_access_point_stopped().unwrap_err();
 
-    assert_eq!(
-        status,
-        AccessPointStatus {
-            is_started: true,
-            client_count: 0,
-        }
-    );
-    assert_eq!(
-        events,
-        vec![
-            AccessPointEvent::Started {
-                ip_config: portal_ip_config(),
-            },
-            AccessPointEvent::ClientCountChanged { client_count: 0 },
-        ]
-    );
+    assert_eq!(err.to_string(), "subscribe failed");
 }
 
 #[test]
@@ -821,5 +769,5 @@ fn stop_access_point_calls_backend() {
 
     block_on(wifi.stop_access_point()).unwrap();
 
-    assert_eq!(wifi.backend().actions, vec!["stop_ap"]);
+    assert_eq!(wifi.backend().actions(), vec!["stop_ap"]);
 }

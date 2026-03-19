@@ -2,9 +2,10 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use config_portal::{
     enter_config_mode, AccessPointConfig as PortalAccessPointConfig,
-    AccessPointEvent as PortalAccessPointEvent, ConfigClock, ConfigHttpBackend, ConfigPlatform,
-    ConfigSpec, ConfigState, ConfigStore, ConfigWifi, IpConfig as PortalIpConfig, SelectOption,
-    SelectOptions, StoredConfig, FieldSpec,
+    AccessPointClientConnectedSubscription as PortalAccessPointClientConnectedSubscriptionTrait,
+    AccessPointStoppedSubscription as PortalAccessPointStoppedSubscriptionTrait, ConfigClock,
+    ConfigHttpBackend, ConfigPlatform, ConfigSpec, ConfigState, ConfigStore, ConfigWifi,
+    FieldSpec, IpConfig as PortalIpConfig, SelectOption, SelectOptions, StoredConfig,
 };
 use core::convert::Infallible;
 use embassy_time::Duration;
@@ -12,8 +13,10 @@ use log::{error, info};
 use rgb_led::Rgb;
 use std::sync::{Arc, Mutex};
 use wifi::{
-    AccessPointConfig as WifiAccessPointConfig, AccessPointEvent as WifiAccessPointEvent,
-    IpConfig as WifiIpConfig, Wifi, WifiBackend, WifiCredentials, ConnectState,
+    AccessPointClientConnectedSubscription as WifiAccessPointClientConnectedSubscriptionTrait,
+    AccessPointConfig as WifiAccessPointConfig,
+    AccessPointStoppedSubscription as WifiAccessPointStoppedSubscriptionTrait,
+    ConnectState, IpConfig as WifiIpConfig, Wifi, WifiBackend, WifiCredentials,
 };
 
 pub use config_portal::ConfigTiming;
@@ -199,9 +202,36 @@ pub struct PortalWifi<'a, W> {
     inner: &'a mut Wifi<W>,
 }
 
+pub struct PortalAccessPointClientConnectedSubscription<S> {
+    inner: S,
+}
+
+pub struct PortalAccessPointStoppedSubscription<S> {
+    inner: S,
+}
+
 impl<'a, W> PortalWifi<'a, W> {
     pub fn new(inner: &'a mut Wifi<W>) -> Self {
         Self { inner }
+    }
+}
+
+impl<S> PortalAccessPointClientConnectedSubscriptionTrait
+    for PortalAccessPointClientConnectedSubscription<S>
+where
+    S: WifiAccessPointClientConnectedSubscriptionTrait,
+{
+    async fn next(&mut self) -> Result<()> {
+        self.inner.next().await
+    }
+}
+
+impl<S> PortalAccessPointStoppedSubscriptionTrait for PortalAccessPointStoppedSubscription<S>
+where
+    S: WifiAccessPointStoppedSubscriptionTrait,
+{
+    async fn next(&mut self) -> Result<()> {
+        self.inner.next().await
     }
 }
 
@@ -209,6 +239,11 @@ impl<W> ConfigWifi for PortalWifi<'_, W>
 where
     W: WifiBackend,
 {
+    type AccessPointClientConnectedSubscription =
+        PortalAccessPointClientConnectedSubscription<W::AccessPointClientConnectedSubscription>;
+    type AccessPointStoppedSubscription =
+        PortalAccessPointStoppedSubscription<W::AccessPointStoppedSubscription>;
+
     async fn start_access_point(
         &mut self,
         config: &PortalAccessPointConfig,
@@ -236,31 +271,18 @@ where
         self.inner.stop_access_point().await
     }
 
-    async fn is_access_point_started(&mut self) -> Result<bool> {
-        self.inner.is_started().await
+    fn subscribe_access_point_client_connected(
+        &self,
+    ) -> Result<Self::AccessPointClientConnectedSubscription> {
+        Ok(PortalAccessPointClientConnectedSubscription {
+            inner: self.inner.subscribe_access_point_client_connected()?,
+        })
     }
 
-    async fn poll_access_point_events<F>(&mut self, mut on_event: F) -> Result<()>
-    where
-        F: FnMut(PortalAccessPointEvent),
-    {
-        self.inner
-            .poll_access_point_events(|event| match event {
-                WifiAccessPointEvent::Started { ip_config } => {
-                    on_event(PortalAccessPointEvent::Started {
-                        ip_config: PortalIpConfig::new(
-                            ip_config.ip,
-                            ip_config.gateway,
-                            ip_config.netmask,
-                        ),
-                    });
-                }
-                WifiAccessPointEvent::ClientCountChanged { client_count } => {
-                    on_event(PortalAccessPointEvent::ClientCountChanged { client_count });
-                }
-                WifiAccessPointEvent::Stopped => on_event(PortalAccessPointEvent::Stopped),
-            })
-            .await
+    fn subscribe_access_point_stopped(&self) -> Result<Self::AccessPointStoppedSubscription> {
+        Ok(PortalAccessPointStoppedSubscription {
+            inner: self.inner.subscribe_access_point_stopped()?,
+        })
     }
 }
 
