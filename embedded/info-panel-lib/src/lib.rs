@@ -54,28 +54,36 @@ pub trait HttpClient {
     ) -> Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>>;
 }
 
-pub struct MemoryFrameSource {
-    data: Vec<u8>,
-    offset: usize,
+struct SolidColorFrameSource {
+    color: [u8; 2],
+    remaining_bytes: usize,
 }
 
-impl MemoryFrameSource {
-    pub fn new(data: Vec<u8>) -> Self {
-        Self { data, offset: 0 }
+impl SolidColorFrameSource {
+    fn new(color: u16, width: u16, height: u16) -> Self {
+        Self {
+            color: color.to_be_bytes(),
+            remaining_bytes: (width as usize) * (height as usize) * 2,
+        }
     }
 }
 
-impl tft_display::FrameSource for MemoryFrameSource {
+impl tft_display::FrameSource for SolidColorFrameSource {
     type Error = anyhow::Error;
 
     fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
-        if self.offset >= self.data.len() {
+        let read = self.remaining_bytes.min(buf.len());
+        if read == 0 {
             return Ok(0);
         }
 
-        let read = (self.data.len() - self.offset).min(buf.len());
-        buf[..read].copy_from_slice(&self.data[self.offset..self.offset + read]);
-        self.offset += read;
+        for chunk in buf[..read].chunks_exact_mut(2) {
+            chunk.copy_from_slice(&self.color);
+        }
+        if read % 2 != 0 {
+            buf[read - 1] = self.color[0];
+        }
+        self.remaining_bytes -= read;
         Ok(read)
     }
 }
@@ -434,6 +442,8 @@ where
     TC: tft_display::Clock,
 {
     display.init().await?;
+    let mut clear = SolidColorFrameSource::new(rgb565(0, 0, 0), TFT_WIDTH, TFT_HEIGHT);
+    display.write_frame(&mut clear)?;
 
     let boot_reason = platform.boot_reason();
     let run_preboot_portal = matches!(boot_reason, BootReason::PowerOn);
@@ -494,8 +504,6 @@ where
 
     led.set_pixel(CONNECTED_LED, config.led_brightness())?;
     info!("Wi-Fi connected");
-
-    display.fill_solid(rgb565(0, 0, 0))?;
 
     Clock::sleep(&clock, Duration::from_millis(500)).await;
 

@@ -122,40 +122,6 @@ where
         Ok(())
     }
 
-    pub fn fill_solid(&mut self, color: u16) -> Result<(), B::Error>
-    where
-        B::Error: From<anyhow::Error>,
-    {
-        self.write_cmd(0x2A)?;
-        self.write_data16(0, self.width - 1)?;
-
-        self.write_cmd(0x2B)?;
-        self.write_data16(0, self.height - 1)?;
-
-        self.write_cmd(0x2C)?;
-
-        self.backend.set_dc_high()?;
-
-        let mut buf = [0u8; 512];
-        let hi = (color >> 8) as u8;
-        let lo = (color & 0xFF) as u8;
-        for chunk in buf.chunks_exact_mut(2) {
-            chunk[0] = hi;
-            chunk[1] = lo;
-        }
-
-        let total = (self.width as usize) * (self.height as usize) * 2;
-        let mut written = 0usize;
-        while written < total {
-            let remaining = total - written;
-            let to_write = remaining.min(buf.len());
-            self.backend.write(&buf[..to_write])?;
-            written += to_write;
-        }
-
-        Ok(())
-    }
-
     fn write_cmd(&mut self, cmd: u8) -> Result<(), B::Error> {
         self.backend.set_dc_low()?;
         self.backend.write(&[cmd])

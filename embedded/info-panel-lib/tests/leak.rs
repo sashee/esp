@@ -4,7 +4,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 mod common;
 
 use common::*;
-use info_panel_lib::{BootReason, HttpClient, MemoryFrameSource};
+use info_panel_lib::{BootReason, HttpClient};
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 

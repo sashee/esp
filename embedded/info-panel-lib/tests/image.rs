@@ -167,7 +167,7 @@ fn test_image_succeeds_on_first_retry() {
 
     assert!(
         *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
-        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        "initial clear must happen once and display.write_frame() must render fetched frame. Got fill={}, write={}",
         *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
@@ -211,7 +211,7 @@ fn test_image_succeeds_on_second_retry() {
 
     assert!(
         *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
-        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        "initial clear must happen once and display.write_frame() must render fetched frame. Got fill={}, write={}",
         *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
@@ -346,7 +346,7 @@ fn test_image_succeeds_on_third_retry() {
 
     assert!(
         *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
-        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        "initial clear must happen once and display.write_frame() must render fetched frame. Got fill={}, write={}",
         *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
@@ -382,7 +382,7 @@ fn test_image_displays_frame_on_tft_when_fetch_succeeds() {
 
     assert!(
         *fill_solid_calls.lock().unwrap() == 1 && *write_frame_calls.lock().unwrap() >= 1,
-        "display.fill_solid() must clear once and display.write_frame() must render fetched frame. Got fill={}, write={}",
+        "initial clear must happen once and display.write_frame() must render fetched frame. Got fill={}, write={}",
         *fill_solid_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
@@ -446,7 +446,7 @@ fn test_image_enters_error_mode_on_initial_fill_failure() {
     let clock = MockClock::from_ticks(&[0, 250]);
     let (http_client, http_state) = tracked_http_client();
     let get_calls = http_state.get_calls.clone();
-    let (display, _display_state) = display_with_fill_solid_fail_nth(global_counter, 1);
+    let (display, _display_state) = display_with_initial_clear_fail_nth(global_counter, 1);
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(

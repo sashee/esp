@@ -20,7 +20,10 @@ fn test_init_clears_tft_on_startup() {
 
     let init_called = display_state.init_called.clone();
     let init_order = display_state.init_order.clone();
+    let initial_clear_order = display_state.initial_clear_order.clone();
+    let initial_clear_calls = display_state.fill_solid_calls.clone();
     let connect_order = wifi_state.connect_order.clone();
+    let start_ap_order = wifi_state.start_ap_order.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(
@@ -38,15 +41,94 @@ fn test_init_clears_tft_on_startup() {
     assert!(*init_called.lock().unwrap(), "display.init() must be called");
 
     let init = init_order.lock().unwrap();
+    let clear = initial_clear_order.lock().unwrap();
+    let clear_calls = initial_clear_calls.lock().unwrap();
     let connect = connect_order.lock().unwrap();
+    let start_ap = start_ap_order.lock().unwrap();
 
     assert!(init.is_some(), "display.init() must be called");
+    assert_eq!(*clear_calls, 1, "initial clear must happen exactly once");
+    assert!(clear.is_some(), "initial clear must be called");
     assert!(connect.is_some(), "wifi.connect() must be called");
     assert!(
-        init.unwrap() < connect.unwrap(),
-        "display.init() (order {:?}) must be called BEFORE wifi.connect() (order {:?})",
+        init.unwrap() < clear.unwrap(),
+        "display.init() (order {:?}) must be called BEFORE initial clear (order {:?})",
         init,
+        clear,
+    );
+    assert!(
+        clear.unwrap() < connect.unwrap(),
+        "initial clear (order {:?}) must be called BEFORE wifi.connect() (order {:?})",
+        clear,
         connect
+    );
+    if let Some(start_ap) = *start_ap {
+        assert!(
+            clear.unwrap() < start_ap,
+            "initial clear (order {:?}) must be called BEFORE portal AP start (order {:?})",
+            clear,
+            start_ap
+        );
+    }
+}
+
+#[test]
+fn test_init_clears_tft_before_required_portal() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let (led, _led_calls) = tracked_led();
+    let start_ap_order = Arc::new(Mutex::new(None));
+    let start_ap_order_hook = start_ap_order.clone();
+    let counter_for_start_ap = global_counter.clone();
+    let wifi_backend = MockWifiBackend::new().on_start_access_point(move |_config| {
+        *start_ap_order_hook.lock().unwrap() =
+            Some(counter_for_start_ap.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+        ok("required portal started");
+    });
+    let store = empty_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let http_client = MockHttpClient::new();
+    let (display, display_state) = tracked_display(global_counter);
+
+    let init_order = display_state.init_order.clone();
+    let initial_clear_order = display_state.initial_clear_order.clone();
+    let initial_clear_calls = display_state.fill_solid_calls.clone();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            led,
+            )))
+    }));
+    assert_ok_signal(result, "required portal started");
+
+    let init = init_order.lock().unwrap();
+    let clear = initial_clear_order.lock().unwrap();
+    let clear_calls = initial_clear_calls.lock().unwrap();
+    let start_ap = start_ap_order.lock().unwrap();
+
+    assert!(init.is_some(), "display.init() must be called");
+    assert_eq!(*clear_calls, 1, "initial clear must happen exactly once");
+    assert!(clear.is_some(), "initial clear must be called");
+    assert!(start_ap.is_some(), "required portal must start AP");
+    assert!(
+        init.unwrap() < clear.unwrap(),
+        "display.init() (order {:?}) must be called BEFORE initial clear (order {:?})",
+        init,
+        clear,
+    );
+    assert!(
+        clear.unwrap() < start_ap.unwrap(),
+        "initial clear (order {:?}) must be called BEFORE portal AP start (order {:?})",
+        clear,
+        start_ap,
     );
 }
 

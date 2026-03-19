@@ -103,6 +103,32 @@ pub fn valid_frame_bytes() -> Vec<u8> {
     vec![0u8; 128 * 160 * 2]
 }
 
+pub struct MemoryFrameSource {
+    data: Vec<u8>,
+    offset: usize,
+}
+
+impl MemoryFrameSource {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data, offset: 0 }
+    }
+}
+
+impl tft_display::FrameSource for MemoryFrameSource {
+    type Error = anyhow::Error;
+
+    fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
+        if self.offset >= self.data.len() {
+            return Ok(0);
+        }
+
+        let read = (self.data.len() - self.offset).min(buf.len());
+        buf[..read].copy_from_slice(&self.data[self.offset..self.offset + read]);
+        self.offset += read;
+        Ok(read)
+    }
+}
+
 fn read_source_to_vec(
     source: &mut dyn tft_display::FrameSource<Error = anyhow::Error>,
 ) -> anyhow::Result<Vec<u8>> {
@@ -460,6 +486,7 @@ impl Drop for MockDisplay {
 pub struct TrackedDisplayState {
     pub init_called: Arc<Mutex<bool>>,
     pub init_order: Arc<Mutex<Option<u32>>>,
+    pub initial_clear_order: Arc<Mutex<Option<u32>>>,
     pub write_frame_calls: Arc<Mutex<usize>>,
     pub fill_solid_calls: Arc<Mutex<usize>>,
 }
@@ -467,12 +494,15 @@ pub struct TrackedDisplayState {
 pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedDisplayState) {
     let init_called = Arc::new(Mutex::new(false));
     let init_order = Arc::new(Mutex::new(None));
+    let initial_clear_order = Arc::new(Mutex::new(None));
     let write_frame_calls = Arc::new(Mutex::new(0));
     let fill_solid_calls = Arc::new(Mutex::new(0));
 
     let init_called_hook = init_called.clone();
     let init_order_hook = init_order.clone();
     let counter_for_init = global_counter.clone();
+    let initial_clear_order_hook = initial_clear_order.clone();
+    let counter_for_clear = global_counter.clone();
     let write_calls_hook = write_frame_calls.clone();
     let fill_calls_hook = fill_solid_calls.clone();
 
@@ -489,12 +519,17 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
                 None
             })
             .on_fill_solid(move |_color| {
+                let mut order = initial_clear_order_hook.lock().unwrap();
+                if order.is_none() {
+                    *order = Some(counter_for_clear.fetch_add(1, Ordering::SeqCst));
+                }
                 *fill_calls_hook.lock().unwrap() += 1;
                 None
             }),
         TrackedDisplayState {
             init_called,
             init_order,
+            initial_clear_order,
             write_frame_calls,
             fill_solid_calls,
         },
@@ -521,7 +556,7 @@ pub fn display_with_write_frame_fail_nth(
     )
 }
 
-pub fn display_with_fill_solid_fail_nth(
+pub fn display_with_initial_clear_fail_nth(
     global_counter: Arc<AtomicU32>,
     fail_nth: usize,
 ) -> (MockDisplay, TrackedDisplayState) {
@@ -531,7 +566,7 @@ pub fn display_with_fill_solid_fail_nth(
         display.on_fill_solid(move |_color| {
             let current = *fill_calls.lock().unwrap() + 1;
             if current == fail_nth {
-                Some(Err(anyhow::anyhow!("mock fill_solid error")))
+                Some(Err(anyhow::anyhow!("mock initial clear error")))
             } else {
                 *fill_calls.lock().unwrap() = current;
                 Some(Ok(()))
@@ -650,10 +685,10 @@ impl HttpClient for MockHttpClient {
     ) -> anyhow::Result<Box<dyn tft_display::FrameSource<Error = anyhow::Error>>> {
         if let Some(hook) = &self.get_hook {
             if let Some(result) = (hook.lock().unwrap())(url) {
-                return result.map(|data| Box::new(info_panel_lib::MemoryFrameSource::new(data)) as _);
+                return result.map(|data| Box::new(MemoryFrameSource::new(data)) as _);
             }
         }
-        Ok(Box::new(info_panel_lib::MemoryFrameSource::new(
+        Ok(Box::new(MemoryFrameSource::new(
             self.response.clone(),
         )))
     }

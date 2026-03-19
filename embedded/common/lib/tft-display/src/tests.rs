@@ -273,21 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_solid_writes_full_frame_without_allocation() {
-        let backend = MockTftBackend::new();
-        let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
-
-        display.fill_solid(0x1234).unwrap();
-
-        let writes = display.backend.take_writes();
-        let payload: Vec<u8> = frame_writes(writes).into_iter().flatten().collect();
-        let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize);
-        assert_eq!(payload.len(), pixel_count * 2);
-        assert!(payload.chunks_exact(2).all(|chunk| chunk == [0x12, 0x34]));
-    }
-
-    #[test]
     fn test_write_frame_propagates_backend_errors() {
         let backend = MockTftBackend::new().with_error();
         let clock = MockClock::new();
