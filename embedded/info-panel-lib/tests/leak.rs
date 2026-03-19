@@ -55,7 +55,7 @@ impl HttpClient for LeakTestHttpClient {
             *self.after.lock().unwrap() = Some(dhat::HeapStats::get().curr_bytes);
         }
         if n >= TOTAL_CALLS {
-            panic!("mock: http_client.get() call #{} reached", n);
+            ok("leak iteration budget reached");
         }
 
         Ok(vec![0u8; 128 * 160 * 2])
@@ -92,7 +92,7 @@ fn test_refresh_cycle_no_memory_leak() {
 
     let (display, _display_state) = tracked_display(global_counter);
 
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(
             &mut wifi,
             store,
@@ -104,6 +104,8 @@ fn test_refresh_cycle_no_memory_leak() {
             &mut led,
         ))
     }));
+
+    assert_ok_signal(result, "leak iteration budget reached");
 
     let before = before.lock().unwrap().unwrap();
     let after = after.lock().unwrap().unwrap();
