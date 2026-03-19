@@ -21,7 +21,7 @@ fn test_init_clears_tft_on_startup() {
     let init_called = display_state.init_called.clone();
     let init_order = display_state.init_order.clone();
     let initial_clear_order = display_state.initial_clear_order.clone();
-    let initial_clear_calls = display_state.fill_solid_calls.clone();
+    let initial_clear_calls = display_state.initial_clear_calls.clone();
     let connect_order = wifi_state.connect_order.clone();
     let start_ap_order = wifi_state.start_ap_order.clone();
 
@@ -93,7 +93,7 @@ fn test_init_clears_tft_before_required_portal() {
 
     let init_order = display_state.init_order.clone();
     let initial_clear_order = display_state.initial_clear_order.clone();
-    let initial_clear_calls = display_state.fill_solid_calls.clone();
+    let initial_clear_calls = display_state.initial_clear_calls.clone();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(
@@ -231,6 +231,45 @@ fn test_init_connects_wifi_when_nvs_has_complete_config() {
             .any(|c| (c.r - 0.0).abs() < 0.01 && (c.g - 0.0).abs() < 0.01 && (c.b - 1.0).abs() < 0.01),
         "LED must be set to CONNECTED_LED (blue) after connection. Got: {:?}",
         *led_calls.lock().unwrap()
+    );
+}
+
+#[test]
+fn test_init_reads_config_from_app_namespace() {
+    let saw_expected_namespace = Arc::new(Mutex::new(false));
+    let saw_expected_namespace_hook = saw_expected_namespace.clone();
+    let store = valid_config_store().on_read(move |namespace, _keys| {
+        if namespace == info_panel_lib::CONFIG_NAMESPACE {
+            *saw_expected_namespace_hook.lock().unwrap() = true;
+            ok("config read uses app namespace");
+        }
+        nok("config read used the wrong namespace");
+    });
+    let led = MockLed::new();
+    let wifi_backend = MockWifiBackend::default();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::new(embassy_time::Instant::from_ticks(0));
+    let http_client = MockHttpClient::new();
+    let display = MockDisplay::new();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            led,
+            )))
+    }));
+
+    assert_ok_signal(result, "config read uses app namespace");
+    assert!(
+        *saw_expected_namespace.lock().unwrap(),
+        "config reads must use the app-owned namespace"
     );
 }
 

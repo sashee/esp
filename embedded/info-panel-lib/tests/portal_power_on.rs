@@ -145,18 +145,33 @@ fn test_portal_preboot_waits_for_connection() {
 
 #[test]
 fn test_portal_preboot_portal_uses_30_second_timeout() {
-    let global_counter = Arc::new(AtomicU32::new(1));
-    let (led, _led_calls) = tracked_led();
-    let wifi_backend = MockWifiBackend::new().with_is_connected(false);
+    let led = MockLed::new();
+    let saw_preboot_start = Arc::new(Mutex::new(false));
+    let saw_preboot_start_for_wifi = saw_preboot_start.clone();
+    let wifi_backend = MockWifiBackend::new()
+        .with_is_connected(false)
+        .on_start_access_point(move |_config| {
+            *saw_preboot_start_for_wifi.lock().unwrap() = true;
+            None
+        })
+        .on_connect({
+            let saw_preboot_start = saw_preboot_start.clone();
+            move |_timeout| {
+                if !*saw_preboot_start.lock().unwrap() {
+                    nok("preboot portal must start before Wi-Fi connect resumes normal boot");
+                }
+                ok("preboot portal exits at 30-second timeout boundary");
+            }
+        });
     let store = valid_config_store();
     let http_backend = MockHttpBackend;
     let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::PowerOn);
-    // Preboot portal: idle_timeout = 30s. Use exactly 30s boundary + some margin
-    let clock = MockClock::from_ticks(&[0, 250, 30_000_001]);
+    // Preboot portal idle_timeout is 30s and should expire at the exact boundary.
+    let clock = MockClock::from_ticks(&[0, 250, 30_000_000]);
     let http_client = MockHttpClient::new();
-    let (display, _display_state) = tracked_display(global_counter);
+    let display = MockDisplay::new();
 
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(
             wifi_backend,
             store,
@@ -169,6 +184,7 @@ fn test_portal_preboot_portal_uses_30_second_timeout() {
             )))
     }));
 
+    assert_ok_signal(result, "preboot portal exits at 30-second timeout boundary");
 }
 
 #[test]

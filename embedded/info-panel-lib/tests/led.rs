@@ -45,6 +45,50 @@ fn test_led_uses_default_brightness_for_portal() {
 }
 
 #[test]
+fn test_led_respects_backend_color_order_at_app_seam() {
+    let global_counter = Arc::new(AtomicU32::new(1));
+    let (wifi_backend, _wifi_state) = tracked_wifi_backend_with_counter(global_counter.clone());
+    let wifi_backend = wifi_backend.with_is_connected(false);
+    let led_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let led_calls_hook = led_calls.clone();
+    let led = MockLed::new()
+        .with_color_order(rgb_led::ColorOrder::GRB)
+        .on_set_pixel(move |call| {
+            led_calls_hook.lock().unwrap().push(call);
+            None
+        });
+    let store = valid_config_store();
+    let http_backend = MockHttpBackend;
+    let platform = MockPlatform::new([0x12, 0x34, 0x56, 0x78, 0xAA, 0xBB], BootReason::Software);
+    let clock = MockClock::from_ticks(&[0, 250]);
+    let (http_client, _http_state) = always_failing_http_client();
+    let (display, _display_state) = tracked_display(global_counter);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        block_on(info_panel_lib::run(hal(
+            wifi_backend,
+            store,
+            http_backend,
+            platform,
+            clock,
+            http_client,
+            display,
+            led,
+            )))
+    }));
+
+    assert!(
+        led_calls.lock().unwrap().iter().any(|c| {
+            (c.r - 1.0).abs() < 0.01
+                && (c.g - 0.78).abs() < 0.01
+                && c.b.abs() < 0.01
+        }),
+        "app LED behavior must remain correct when backend color order is non-RGB. Got: {:?}",
+        *led_calls.lock().unwrap()
+    );
+}
+
+#[test]
 fn test_led_uses_config_brightness_for_connecting() {
     let global_counter = Arc::new(AtomicU32::new(1));
     let (led, led_calls) = tracked_led();

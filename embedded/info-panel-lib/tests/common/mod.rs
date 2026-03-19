@@ -13,13 +13,13 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 type HookResult<T> = Option<anyhow::Result<T>>;
 
-type StoreReadHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<BTreeMap<String, String>> + Send>>>;
-type StoreWriteHook = Arc<Mutex<Box<dyn FnMut(&BTreeMap<String, String>) -> HookResult<()> + Send>>>;
-type StoreRemoveHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<()> + Send>>>;
+type StoreReadHook = Arc<Mutex<Box<dyn FnMut(&str, &[&str]) -> HookResult<BTreeMap<String, String>> + Send>>>;
+type StoreWriteHook = Arc<Mutex<Box<dyn FnMut(&str, &BTreeMap<String, String>) -> HookResult<()> + Send>>>;
+type StoreRemoveHook = Arc<Mutex<Box<dyn FnMut(&str, &[&str]) -> HookResult<()> + Send>>>;
 type LedHook = Arc<Mutex<Box<dyn FnMut(LedCall) -> HookResult<()> + Send>>>;
 type DisplayInitHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
 type DisplayWriteHook = Arc<Mutex<Box<dyn FnMut(&[u8]) -> HookResult<()> + Send>>>;
-type DisplayFillHook = Arc<Mutex<Box<dyn FnMut(u16) -> HookResult<()> + Send>>>;
+type DisplayInitialClearHook = Arc<Mutex<Box<dyn FnMut(u16) -> HookResult<()> + Send>>>;
 type HttpGetHook = Arc<Mutex<Box<dyn FnMut(&str) -> HookResult<Vec<u8>> + Send>>>;
 type PlatformBootHook = Arc<Mutex<Box<dyn FnMut() -> Option<BootReason> + Send>>>;
 type PlatformMacHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<[u8; 6]> + Send>>>;
@@ -189,7 +189,7 @@ impl MockStore {
 
     pub fn on_read(
         mut self,
-        hook: impl FnMut(&[&str]) -> HookResult<BTreeMap<String, String>> + Send + 'static,
+        hook: impl FnMut(&str, &[&str]) -> HookResult<BTreeMap<String, String>> + Send + 'static,
     ) -> Self {
         self.read_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -197,7 +197,7 @@ impl MockStore {
 
     pub fn on_write(
         mut self,
-        hook: impl FnMut(&BTreeMap<String, String>) -> HookResult<()> + Send + 'static,
+        hook: impl FnMut(&str, &BTreeMap<String, String>) -> HookResult<()> + Send + 'static,
     ) -> Self {
         self.write_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -205,7 +205,7 @@ impl MockStore {
 
     pub fn on_remove(
         mut self,
-        hook: impl FnMut(&[&str]) -> HookResult<()> + Send + 'static,
+        hook: impl FnMut(&str, &[&str]) -> HookResult<()> + Send + 'static,
     ) -> Self {
         self.remove_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -213,27 +213,27 @@ impl MockStore {
 }
 
 impl config_portal::ConfigStore for MockStore {
-    fn read(&self, _namespace: &str, keys: &[&str]) -> anyhow::Result<BTreeMap<String, String>> {
+    fn read(&self, namespace: &str, keys: &[&str]) -> anyhow::Result<BTreeMap<String, String>> {
         if let Some(hook) = &self.read_hook {
-            if let Some(result) = (hook.lock().unwrap())(keys) {
+            if let Some(result) = (hook.lock().unwrap())(namespace, keys) {
                 return result;
             }
         }
         Ok(self.values.clone())
     }
 
-    fn write(&self, _namespace: &str, values: &BTreeMap<String, String>) -> anyhow::Result<()> {
+    fn write(&self, namespace: &str, values: &BTreeMap<String, String>) -> anyhow::Result<()> {
         if let Some(hook) = &self.write_hook {
-            if let Some(result) = (hook.lock().unwrap())(values) {
+            if let Some(result) = (hook.lock().unwrap())(namespace, values) {
                 return result;
             }
         }
         Ok(())
     }
 
-    fn remove(&self, _namespace: &str, keys: &[&str]) -> anyhow::Result<()> {
+    fn remove(&self, namespace: &str, keys: &[&str]) -> anyhow::Result<()> {
         if let Some(hook) = &self.remove_hook {
-            if let Some(result) = (hook.lock().unwrap())(keys) {
+            if let Some(result) = (hook.lock().unwrap())(namespace, keys) {
                 return result;
             }
         }
@@ -272,11 +272,20 @@ pub struct LedCall {
 
 pub struct MockLed {
     set_pixel_hook: Option<LedHook>,
+    color_order: rgb_led::ColorOrder,
 }
 
 impl MockLed {
     pub fn new() -> Self {
-        Self { set_pixel_hook: None }
+        Self {
+            set_pixel_hook: None,
+            color_order: rgb_led::ColorOrder::RGB,
+        }
+    }
+
+    pub fn with_color_order(mut self, color_order: rgb_led::ColorOrder) -> Self {
+        self.color_order = color_order;
+        self
     }
 
     pub fn on_set_pixel(
@@ -298,17 +307,25 @@ impl rgb_led::RgbLedBackend for MockLed {
     type Error = anyhow::Error;
 
     fn color_order(&self) -> rgb_led::ColorOrder {
-        rgb_led::ColorOrder::RGB
+        self.color_order
     }
 
     fn set_pixel_bytes(&mut self, bytes: [u8; 3]) -> anyhow::Result<()> {
-        let max = bytes.into_iter().max().unwrap_or(0) as f32;
+        let logical = match self.color_order {
+            rgb_led::ColorOrder::RGB => bytes,
+            rgb_led::ColorOrder::RBG => [bytes[0], bytes[2], bytes[1]],
+            rgb_led::ColorOrder::GRB => [bytes[1], bytes[0], bytes[2]],
+            rgb_led::ColorOrder::GBR => [bytes[2], bytes[0], bytes[1]],
+            rgb_led::ColorOrder::BRG => [bytes[1], bytes[2], bytes[0]],
+            rgb_led::ColorOrder::BGR => [bytes[2], bytes[1], bytes[0]],
+        };
+        let max = logical.into_iter().max().unwrap_or(0) as f32;
         let brightness = ((max / 255.0) * 100.0).round() / 100.0;
         let scale = if max == 0.0 { 0.0 } else { 1.0 / max };
         let call = LedCall {
-            r: bytes[0] as f32 * scale,
-            g: bytes[1] as f32 * scale,
-            b: bytes[2] as f32 * scale,
+            r: logical[0] as f32 * scale,
+            g: logical[1] as f32 * scale,
+            b: logical[2] as f32 * scale,
             brightness,
         };
         if let Some(hook) = &self.set_pixel_hook {
@@ -351,10 +368,10 @@ pub fn led_bytes(rgb: rgb_led::Rgb, brightness: f32) -> [u8; 3] {
 pub struct MockDisplay {
     init_hook: Option<DisplayInitHook>,
     write_frame_hook: Option<DisplayWriteHook>,
-    fill_solid_hook: Option<DisplayFillHook>,
+    initial_clear_hook: Option<DisplayInitialClearHook>,
     dc_high: bool,
     current_transfer: Option<Vec<u8>>,
-    saw_fill_solid: bool,
+    saw_initial_clear: bool,
 }
 
 impl MockDisplay {
@@ -362,10 +379,10 @@ impl MockDisplay {
         Self {
             init_hook: None,
             write_frame_hook: None,
-            fill_solid_hook: None,
+            initial_clear_hook: None,
             dc_high: false,
             current_transfer: None,
-            saw_fill_solid: false,
+            saw_initial_clear: false,
         }
     }
 
@@ -385,11 +402,11 @@ impl MockDisplay {
         self
     }
 
-    pub fn on_fill_solid(
+    pub fn on_initial_clear(
         mut self,
         hook: impl FnMut(u16) -> HookResult<()> + Send + 'static,
     ) -> Self {
-        self.fill_solid_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self.initial_clear_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
     }
 }
@@ -410,9 +427,9 @@ impl MockDisplay {
         let is_uniform_solid = data.len() == full_frame_bytes
             && data.chunks_exact(2).all(|chunk| chunk == &data[..2]);
 
-        if is_uniform_solid && !self.saw_fill_solid {
-            self.saw_fill_solid = true;
-            if let Some(hook) = &self.fill_solid_hook {
+        if is_uniform_solid && !self.saw_initial_clear {
+            self.saw_initial_clear = true;
+            if let Some(hook) = &self.initial_clear_hook {
                 let color = u16::from_be_bytes([data[0], data[1]]);
                 if let Some(result) = (hook.lock().unwrap())(color) {
                     return result;
@@ -488,7 +505,7 @@ pub struct TrackedDisplayState {
     pub init_order: Arc<Mutex<Option<u32>>>,
     pub initial_clear_order: Arc<Mutex<Option<u32>>>,
     pub write_frame_calls: Arc<Mutex<usize>>,
-    pub fill_solid_calls: Arc<Mutex<usize>>,
+    pub initial_clear_calls: Arc<Mutex<usize>>,
 }
 
 pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedDisplayState) {
@@ -496,7 +513,7 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
     let init_order = Arc::new(Mutex::new(None));
     let initial_clear_order = Arc::new(Mutex::new(None));
     let write_frame_calls = Arc::new(Mutex::new(0));
-    let fill_solid_calls = Arc::new(Mutex::new(0));
+    let initial_clear_calls = Arc::new(Mutex::new(0));
 
     let init_called_hook = init_called.clone();
     let init_order_hook = init_order.clone();
@@ -504,7 +521,7 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
     let initial_clear_order_hook = initial_clear_order.clone();
     let counter_for_clear = global_counter.clone();
     let write_calls_hook = write_frame_calls.clone();
-    let fill_calls_hook = fill_solid_calls.clone();
+    let initial_clear_calls_hook = initial_clear_calls.clone();
 
     (
         MockDisplay::new()
@@ -518,12 +535,12 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
                 *write_calls_hook.lock().unwrap() += 1;
                 None
             })
-            .on_fill_solid(move |_color| {
+            .on_initial_clear(move |_color| {
                 let mut order = initial_clear_order_hook.lock().unwrap();
                 if order.is_none() {
                     *order = Some(counter_for_clear.fetch_add(1, Ordering::SeqCst));
                 }
-                *fill_calls_hook.lock().unwrap() += 1;
+                *initial_clear_calls_hook.lock().unwrap() += 1;
                 None
             }),
         TrackedDisplayState {
@@ -531,7 +548,7 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
             init_order,
             initial_clear_order,
             write_frame_calls,
-            fill_solid_calls,
+            initial_clear_calls,
         },
     )
 }
@@ -561,14 +578,14 @@ pub fn display_with_initial_clear_fail_nth(
     fail_nth: usize,
 ) -> (MockDisplay, TrackedDisplayState) {
     let (display, state) = tracked_display(global_counter);
-    let fill_calls = state.fill_solid_calls.clone();
+    let initial_clear_calls = state.initial_clear_calls.clone();
     (
-        display.on_fill_solid(move |_color| {
-            let current = *fill_calls.lock().unwrap() + 1;
+        display.on_initial_clear(move |_color| {
+            let current = *initial_clear_calls.lock().unwrap() + 1;
             if current == fail_nth {
                 Some(Err(anyhow::anyhow!("mock initial clear error")))
             } else {
-                *fill_calls.lock().unwrap() = current;
+                *initial_clear_calls.lock().unwrap() = current;
                 Some(Ok(()))
             }
         }),
