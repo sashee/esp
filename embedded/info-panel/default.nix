@@ -2,12 +2,12 @@ let
   sources = {
     nixpkgs = builtins.fetchTarball {
       url = "https://github.com/NixOS/nixpkgs/archive/0590cd39f728e129122770c029970378a79d076a.tar.gz";
-      sha256 = "1ia5kjykm9xmrpwbzhbaf4cpwi3yaxr7shl6amj8dajvgbyh2yh4";
+      sha256 = "sha256-BHoB/XpbqoZkVYZCfXJXfkR+GXFqwb/4zbWnOr2cRcU=";
     };
 
     rust-overlay = builtins.fetchTarball {
       url = "https://github.com/oxalica/rust-overlay/archive/2b18fe48d9a8a4ff3850d56b67cfe72f2a589237.tar.gz";
-      sha256 = "055bx052hdawh0hp62v68mzsvgfrfz9i0y5s0l19capvvimkx8nj";
+      sha256 = "sha256-0qI+a9z7KpYCBbp4ENN32b2tf0VmC3MhgFw1KAroqxQ=";
     };
   };
 
@@ -149,7 +149,7 @@ let
 
     outputHashMode = "flat";
     outputHashAlgo = "sha256";
-    outputHash = "65eef2c89fe096684bb0fda5b7246515e702478a91347d0fbe2985c81e8f0dfd";
+    outputHash = "sha256-Ze7yyJ/glmhLsP2ltyRlFecCR4qRNH0PvimFyB6PDf0=";
 
     dontUnpack = true;
     dontConfigure = true;
@@ -207,7 +207,7 @@ let
   # version that supports `pip download --uploaded-prior-to` (monitor python3Packages.pip).
   pipBootstrapWheel = pkgs.fetchurl {
     url = "https://files.pythonhosted.org/packages/de/f0/c81e05b613866b76d2d1066490adf1a3dbc4ee9d9c839961c3fc8a6997af/pip-26.0.1-py3-none-any.whl";
-    sha256 = "bdb1b08f4274833d62c1aa29e20907365a2ceb950410df15fc9521bad440122b";
+    sha256 = "sha256-vbGwj0J0gz1iwaop4gkHNlos65UEEN8V/JUhutRAEis=";
   };
 
   espIdfTools = (builtins.fromJSON (builtins.readFile "${espIdfSrc}/tools/tools.json")).tools;
