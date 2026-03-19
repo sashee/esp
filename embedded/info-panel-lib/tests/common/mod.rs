@@ -1,13 +1,43 @@
 #![allow(dead_code, unused_imports)]
 
+use anyhow::Result;
 use embassy_time::Duration;
 use info_panel_lib::{BootReason, Clock, DisplayWrite, HttpClient, Led, Platform};
+use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+type HookResult<T> = Option<anyhow::Result<T>>;
+
+type StoreReadHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<BTreeMap<String, String>> + Send>>>;
+type StoreWriteHook = Arc<Mutex<Box<dyn FnMut(&BTreeMap<String, String>) -> HookResult<()> + Send>>>;
+type StoreRemoveHook = Arc<Mutex<Box<dyn FnMut(&[&str]) -> HookResult<()> + Send>>>;
+type LedHook = Arc<Mutex<Box<dyn FnMut(rgb_led::Rgb, f32) -> HookResult<()> + Send>>>;
+type DisplayInitHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
+type DisplayWriteHook = Arc<Mutex<Box<dyn FnMut(&[u8]) -> HookResult<()> + Send>>>;
+type HttpGetHook = Arc<Mutex<Box<dyn FnMut(&str) -> HookResult<Vec<u8>> + Send>>>;
+type PlatformBootHook = Arc<Mutex<Box<dyn FnMut() -> Option<BootReason> + Send>>>;
+type PlatformMacHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<[u8; 6]> + Send>>>;
+type PlatformRebootHook = Arc<Mutex<Box<dyn FnMut() + Send>>>;
+type ClockNowHook = Arc<Mutex<Box<dyn FnMut() -> Option<embassy_time::Instant> + Send>>>;
+type ClockSleepHook = Arc<Mutex<Box<dyn FnMut(Duration) -> HookResult<()> + Send>>>;
+type WifiStartHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
+type WifiStopHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
+type WifiDisconnectHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
+type WifiIsStartedHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<bool> + Send>>>;
+type WifiScanHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<Vec<wifi::FoundNetwork>> + Send>>>;
+type WifiConfigureHook = Arc<Mutex<Box<dyn FnMut(&wifi::WifiCredentials, Option<u8>, wifi::ClientAuth) -> HookResult<()> + Send>>>;
+type WifiConnectHook = Arc<Mutex<Box<dyn FnMut(std::time::Duration) -> HookResult<wifi::ConnectionInfo> + Send>>>;
+type WifiIsConnectedHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<bool> + Send>>>;
+type WifiConnectionInfoHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<Option<wifi::ConnectionInfo>> + Send>>>;
+type WifiStartApHook = Arc<Mutex<Box<dyn FnMut(&wifi::AccessPointConfig) -> HookResult<()> + Send>>>;
+type WifiStopApHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
+type WifiApStatusHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<wifi::AccessPointStatus> + Send>>>;
+type WifiApIpHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<wifi::IpConfig> + Send>>>;
 
 pub fn block_on<F: Future>(future: F) -> F::Output {
     fn raw_waker() -> RawWaker {
@@ -36,7 +66,41 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-// ---- MockStore ----
+pub fn ok(msg: &'static str) -> ! {
+    panic!("OK: {msg}")
+}
+
+pub fn nok(msg: &'static str) -> ! {
+    panic!("NOK: {msg}")
+}
+
+pub fn panic_message(err: Box<dyn Any + Send>) -> String {
+    match err.downcast::<String>() {
+        Ok(msg) => *msg,
+        Err(err) => match err.downcast::<&'static str>() {
+            Ok(msg) => (*msg).to_string(),
+            Err(_) => "<non-string panic>".to_string(),
+        },
+    }
+}
+
+pub fn assert_ok_signal<T>(result: std::thread::Result<T>, expected: &str) {
+    match result {
+        Ok(_) => panic!("expected OK panic containing `{expected}`, but run returned normally"),
+        Err(err) => {
+            let msg = panic_message(err);
+            assert!(msg.starts_with("OK: "), "expected OK panic, got `{msg}`");
+            assert!(
+                msg.contains(expected),
+                "expected OK panic containing `{expected}`, got `{msg}`"
+            );
+        }
+    }
+}
+
+pub fn valid_frame_bytes() -> Vec<u8> {
+    vec![0u8; 128 * 160 * 2]
+}
 
 pub fn valid_config_store() -> MockStore {
     let mut values = BTreeMap::new();
@@ -44,45 +108,94 @@ pub fn valid_config_store() -> MockStore {
     values.insert("pw".to_string(), "test_pw".to_string());
     values.insert("url".to_string(), "http://example.com".to_string());
     values.insert("led_brightness".to_string(), "128".to_string());
-    MockStore { values }
+    MockStore::new(values)
 }
 
 pub fn empty_config_store() -> MockStore {
-    MockStore {
-        values: BTreeMap::new(),
-    }
+    MockStore::new(BTreeMap::new())
 }
 
 pub fn config_store_with_values(values: BTreeMap<String, String>) -> MockStore {
-    MockStore { values }
+    MockStore::new(values)
 }
 
 #[derive(Clone)]
 pub struct MockStore {
     values: BTreeMap<String, String>,
+    read_hook: Option<StoreReadHook>,
+    write_hook: Option<StoreWriteHook>,
+    remove_hook: Option<StoreRemoveHook>,
 }
 
 impl Default for MockStore {
     fn default() -> Self {
+        Self::new(BTreeMap::new())
+    }
+}
+
+impl MockStore {
+    pub fn new(values: BTreeMap<String, String>) -> Self {
         Self {
-            values: BTreeMap::new(),
+            values,
+            read_hook: None,
+            write_hook: None,
+            remove_hook: None,
         }
+    }
+
+    pub fn on_read(
+        mut self,
+        hook: impl FnMut(&[&str]) -> HookResult<BTreeMap<String, String>> + Send + 'static,
+    ) -> Self {
+        self.read_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_write(
+        mut self,
+        hook: impl FnMut(&BTreeMap<String, String>) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.write_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_remove(
+        mut self,
+        hook: impl FnMut(&[&str]) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.remove_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
     }
 }
 
 impl config_portal::ConfigStore for MockStore {
-    fn read(&self, _keys: &[&str]) -> anyhow::Result<BTreeMap<String, String>> {
+    fn read(&self, keys: &[&str]) -> anyhow::Result<BTreeMap<String, String>> {
+        if let Some(hook) = &self.read_hook {
+            if let Some(result) = (hook.lock().unwrap())(keys) {
+                return result;
+            }
+        }
         Ok(self.values.clone())
     }
-    fn write(&self, _values: &BTreeMap<String, String>) -> anyhow::Result<()> {
+
+    fn write(&self, values: &BTreeMap<String, String>) -> anyhow::Result<()> {
+        if let Some(hook) = &self.write_hook {
+            if let Some(result) = (hook.lock().unwrap())(values) {
+                return result;
+            }
+        }
         Ok(())
     }
-    fn remove(&self, _keys: &[&str]) -> anyhow::Result<()> {
+
+    fn remove(&self, keys: &[&str]) -> anyhow::Result<()> {
+        if let Some(hook) = &self.remove_hook {
+            if let Some(result) = (hook.lock().unwrap())(keys) {
+                return result;
+            }
+        }
         Ok(())
     }
 }
-
-// ---- MockHttpBackend ----
 
 #[derive(Clone, Default)]
 pub struct MockHttpBackend;
@@ -105,13 +218,6 @@ impl config_portal::ConfigHttpBackend for MockHttpBackend {
 
 pub struct MockServer;
 
-// ---- MockLed ----
-
-pub struct MockLed {
-    calls: Vec<LedCall>,
-    return_error: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct LedCall {
     pub r: f32,
@@ -120,456 +226,931 @@ pub struct LedCall {
     pub brightness: f32,
 }
 
+pub struct MockLed {
+    set_pixel_hook: Option<LedHook>,
+}
+
 impl MockLed {
     pub fn new() -> Self {
-        Self {
-            calls: Vec::new(),
-            return_error: false,
-        }
+        Self { set_pixel_hook: None }
     }
 
-    pub fn failing() -> Self {
-        Self {
-            calls: Vec::new(),
-            return_error: true,
-        }
+    pub fn on_set_pixel(
+        mut self,
+        hook: impl FnMut(rgb_led::Rgb, f32) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.set_pixel_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
     }
+}
 
-    pub fn calls(&self) -> &[LedCall] {
-        &self.calls
-    }
-
-    pub fn last_call(&self) -> Option<&LedCall> {
-        self.calls.last()
+impl Default for MockLed {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Led for MockLed {
     fn set_pixel(&mut self, rgb: rgb_led::Rgb, brightness: f32) -> anyhow::Result<()> {
-        self.calls.push(LedCall {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-            brightness,
-        });
-        if self.return_error {
-            Err(anyhow::anyhow!("mock LED error"))
-        } else {
-            Ok(())
+        if let Some(hook) = &self.set_pixel_hook {
+            if let Some(result) = (hook.lock().unwrap())(rgb, brightness) {
+                return result;
+            }
         }
+        Ok(())
     }
 }
 
-// ---- MockDisplay ----
+pub fn tracked_led() -> (MockLed, Arc<Mutex<Vec<LedCall>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let tracked = calls.clone();
+    (
+        MockLed::new().on_set_pixel(move |rgb, brightness| {
+            tracked.lock().unwrap().push(LedCall {
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
+                brightness,
+            });
+            None
+        }),
+        calls,
+    )
+}
+
+pub fn failing_led() -> (MockLed, Arc<Mutex<Vec<LedCall>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let tracked = calls.clone();
+    (
+        MockLed::new().on_set_pixel(move |rgb, brightness| {
+            tracked.lock().unwrap().push(LedCall {
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
+                brightness,
+            });
+            Some(Err(anyhow::anyhow!("mock LED error")))
+        }),
+        calls,
+    )
+}
 
 pub struct MockDisplay {
-    pub init_called: Arc<Mutex<bool>>,
-    pub init_order: Arc<Mutex<Option<u32>>>,
-    pub write_frame_calls: Arc<Mutex<usize>>,
-    pub write_frame_fail_nth: Arc<Mutex<Option<usize>>>,
-    global_counter: Arc<AtomicU32>,
+    init_hook: Option<DisplayInitHook>,
+    write_frame_hook: Option<DisplayWriteHook>,
 }
 
 impl MockDisplay {
-    pub fn new(global_counter: Arc<AtomicU32>) -> Self {
+    pub fn new() -> Self {
         Self {
-            init_called: Arc::new(Mutex::new(false)),
-            init_order: Arc::new(Mutex::new(None)),
-            write_frame_calls: Arc::new(Mutex::new(0)),
-            write_frame_fail_nth: Arc::new(Mutex::new(None)),
-            global_counter,
+            init_hook: None,
+            write_frame_hook: None,
         }
     }
 
-    pub fn with_write_frame_fail_nth(
-        global_counter: Arc<AtomicU32>,
-        fail_nth: usize,
+    pub fn on_init(
+        mut self,
+        hook: impl FnMut() -> HookResult<()> + Send + 'static,
     ) -> Self {
-        Self {
-            init_called: Arc::new(Mutex::new(false)),
-            init_order: Arc::new(Mutex::new(None)),
-            write_frame_calls: Arc::new(Mutex::new(0)),
-            write_frame_fail_nth: Arc::new(Mutex::new(Some(fail_nth))),
-            global_counter,
-        }
+        self.init_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_write_frame(
+        mut self,
+        hook: impl FnMut(&[u8]) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.write_frame_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+}
+
+impl Default for MockDisplay {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl DisplayWrite for MockDisplay {
     async fn init(&mut self) -> anyhow::Result<()> {
-        *self.init_called.lock().unwrap() = true;
-        *self.init_order.lock().unwrap() =
-            Some(self.global_counter.fetch_add(1, Ordering::SeqCst));
+        if let Some(hook) = &self.init_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
         Ok(())
     }
-    fn write_frame(&mut self, _data: &[u8]) -> anyhow::Result<()> {
-        let mut count = self.write_frame_calls.lock().unwrap();
-        *count += 1;
-        if let Some(fail_nth) = *self.write_frame_fail_nth.lock().unwrap() {
-            if *count == fail_nth {
-                return Err(anyhow::anyhow!("mock write_frame error"));
+
+    fn write_frame(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        if let Some(hook) = &self.write_frame_hook {
+            if let Some(result) = (hook.lock().unwrap())(data) {
+                return result;
             }
         }
         Ok(())
     }
 }
 
-// ---- MockHttpClient ----
+pub struct TrackedDisplayState {
+    pub init_called: Arc<Mutex<bool>>,
+    pub init_order: Arc<Mutex<Option<u32>>>,
+    pub write_frame_calls: Arc<Mutex<usize>>,
+}
+
+pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedDisplayState) {
+    let init_called = Arc::new(Mutex::new(false));
+    let init_order = Arc::new(Mutex::new(None));
+    let write_frame_calls = Arc::new(Mutex::new(0));
+
+    let init_called_hook = init_called.clone();
+    let init_order_hook = init_order.clone();
+    let counter_for_init = global_counter.clone();
+    let write_calls_hook = write_frame_calls.clone();
+
+    (
+        MockDisplay::new()
+            .on_init(move || {
+                *init_called_hook.lock().unwrap() = true;
+                *init_order_hook.lock().unwrap() =
+                    Some(counter_for_init.fetch_add(1, Ordering::SeqCst));
+                None
+            })
+            .on_write_frame(move |_data| {
+                *write_calls_hook.lock().unwrap() += 1;
+                None
+            }),
+        TrackedDisplayState {
+            init_called,
+            init_order,
+            write_frame_calls,
+        },
+    )
+}
+
+pub fn display_with_write_frame_fail_nth(
+    global_counter: Arc<AtomicU32>,
+    fail_nth: usize,
+) -> (MockDisplay, TrackedDisplayState) {
+    let (display, state) = tracked_display(global_counter);
+    let write_calls = state.write_frame_calls.clone();
+    (
+        display.on_write_frame(move |_data| {
+            let current = *write_calls.lock().unwrap() + 1;
+            if current == fail_nth {
+                Some(Err(anyhow::anyhow!("mock write_frame error")))
+            } else {
+                *write_calls.lock().unwrap() = current;
+                Some(Ok(()))
+            }
+        }),
+        state,
+    )
+}
 
 pub struct MockHttpClient {
-    pub get_calls: Arc<Mutex<usize>>,
-    pub get_urls: Arc<Mutex<Vec<String>>>,
-    pub get_fail_nth: Arc<Mutex<Option<usize>>>,
-    pub get_always_fail: bool,
-    pub get_panic_on_nth: Arc<Mutex<Option<usize>>>,
-    pub get_custom_response: Arc<Mutex<Option<Vec<u8>>>>,
+    response: Vec<u8>,
+    get_hook: Option<HttpGetHook>,
 }
 
 impl MockHttpClient {
     pub fn new() -> Self {
+        Self::with_response(valid_frame_bytes())
+    }
+
+    pub fn with_response(response: Vec<u8>) -> Self {
         Self {
-            get_calls: Arc::new(Mutex::new(0)),
-            get_urls: Arc::new(Mutex::new(Vec::new())),
-            get_fail_nth: Arc::new(Mutex::new(None)),
-            get_always_fail: false,
-            get_panic_on_nth: Arc::new(Mutex::new(None)),
-            get_custom_response: Arc::new(Mutex::new(None)),
+            response,
+            get_hook: None,
         }
     }
 
-    pub fn always_failing() -> Self {
-        Self {
-            get_calls: Arc::new(Mutex::new(0)),
-            get_urls: Arc::new(Mutex::new(Vec::new())),
-            get_fail_nth: Arc::new(Mutex::new(None)),
-            get_always_fail: true,
-            get_panic_on_nth: Arc::new(Mutex::new(None)),
-            get_custom_response: Arc::new(Mutex::new(None)),
-        }
+    pub fn with_valid_frame() -> Self {
+        Self::new()
     }
 
-    pub fn fail_up_to(n: usize) -> Self {
-        Self {
-            get_calls: Arc::new(Mutex::new(0)),
-            get_urls: Arc::new(Mutex::new(Vec::new())),
-            get_fail_nth: Arc::new(Mutex::new(Some(n))),
-            get_always_fail: false,
-            get_panic_on_nth: Arc::new(Mutex::new(None)),
-            get_custom_response: Arc::new(Mutex::new(None)),
-        }
+    pub fn on_get(
+        mut self,
+        hook: impl FnMut(&str) -> HookResult<Vec<u8>> + Send + 'static,
+    ) -> Self {
+        self.get_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
     }
+}
 
-    pub fn panic_on_nth(n: usize) -> Self {
-        Self {
-            get_calls: Arc::new(Mutex::new(0)),
-            get_urls: Arc::new(Mutex::new(Vec::new())),
-            get_fail_nth: Arc::new(Mutex::new(None)),
-            get_always_fail: false,
-            get_panic_on_nth: Arc::new(Mutex::new(Some(n))),
-            get_custom_response: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub fn with_custom_response(data: Vec<u8>) -> Self {
-        Self {
-            get_calls: Arc::new(Mutex::new(0)),
-            get_urls: Arc::new(Mutex::new(Vec::new())),
-            get_fail_nth: Arc::new(Mutex::new(None)),
-            get_always_fail: false,
-            get_panic_on_nth: Arc::new(Mutex::new(None)),
-            get_custom_response: Arc::new(Mutex::new(Some(data))),
-        }
+impl Default for MockHttpClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl HttpClient for MockHttpClient {
     async fn get(&mut self, url: &str) -> anyhow::Result<Vec<u8>> {
-        let current;
-        let should_panic;
-        {
-            let mut count = self.get_calls.lock().unwrap();
-            *count += 1;
-            current = *count;
-            self.get_urls.lock().unwrap().push(url.to_string());
-            should_panic = self
-                .get_panic_on_nth
-                .lock()
-                .unwrap()
-                .map_or(false, |n| current == n);
-        }
-        if should_panic {
-            panic!("mock: http_client.get() call #{} reached", current);
-        }
-        if self.get_always_fail {
-            return Err(anyhow::anyhow!("mock HTTP error"));
-        }
-        if let Some(fail_up_to) = *self.get_fail_nth.lock().unwrap() {
-            if current <= fail_up_to {
-                return Err(anyhow::anyhow!("mock HTTP error"));
+        if let Some(hook) = &self.get_hook {
+            if let Some(result) = (hook.lock().unwrap())(url) {
+                return result;
             }
         }
-        if let Some(ref data) = *self.get_custom_response.lock().unwrap() {
-            return Ok(data.clone());
-        }
-        Ok(vec![0u8; 128 * 160 * 2])
+        Ok(self.response.clone())
     }
 }
 
-// ---- MockPlatform ----
+pub struct TrackedHttpClientState {
+    pub get_calls: Arc<Mutex<usize>>,
+    pub get_urls: Arc<Mutex<Vec<String>>>,
+}
+
+pub fn tracked_http_client() -> (MockHttpClient, TrackedHttpClientState) {
+    tracked_http_client_with_response(valid_frame_bytes())
+}
+
+pub fn tracked_http_client_with_response(data: Vec<u8>) -> (MockHttpClient, TrackedHttpClientState) {
+    let get_calls = Arc::new(Mutex::new(0));
+    let get_urls = Arc::new(Mutex::new(Vec::new()));
+    let calls = get_calls.clone();
+    let urls = get_urls.clone();
+    (
+        MockHttpClient::with_response(data).on_get(move |url| {
+            *calls.lock().unwrap() += 1;
+            urls.lock().unwrap().push(url.to_string());
+            None
+        }),
+        TrackedHttpClientState { get_calls, get_urls },
+    )
+}
+
+pub fn always_failing_http_client() -> (MockHttpClient, TrackedHttpClientState) {
+    let get_calls = Arc::new(Mutex::new(0));
+    let get_urls = Arc::new(Mutex::new(Vec::new()));
+    let calls = get_calls.clone();
+    let urls = get_urls.clone();
+    (
+        MockHttpClient::new().on_get(move |url| {
+            *calls.lock().unwrap() += 1;
+            urls.lock().unwrap().push(url.to_string());
+            Some(Err(anyhow::anyhow!("mock HTTP error")))
+        }),
+        TrackedHttpClientState { get_calls, get_urls },
+    )
+}
+
+pub fn fail_up_to_http_client(n: usize) -> (MockHttpClient, TrackedHttpClientState) {
+    let get_calls = Arc::new(Mutex::new(0));
+    let get_urls = Arc::new(Mutex::new(Vec::new()));
+    let calls = get_calls.clone();
+    let urls = get_urls.clone();
+    (
+        MockHttpClient::new().on_get(move |url| {
+            let mut count = calls.lock().unwrap();
+            *count += 1;
+            let current = *count;
+            drop(count);
+            urls.lock().unwrap().push(url.to_string());
+            if current <= n {
+                Some(Err(anyhow::anyhow!("mock HTTP error")))
+            } else {
+                None
+            }
+        }),
+        TrackedHttpClientState { get_calls, get_urls },
+    )
+}
+
+pub fn panic_on_nth_http_client(n: usize) -> (MockHttpClient, TrackedHttpClientState) {
+    let get_calls = Arc::new(Mutex::new(0));
+    let get_urls = Arc::new(Mutex::new(Vec::new()));
+    let calls = get_calls.clone();
+    let urls = get_urls.clone();
+    (
+        MockHttpClient::new().on_get(move |url| {
+            let mut count = calls.lock().unwrap();
+            *count += 1;
+            let current = *count;
+            drop(count);
+            urls.lock().unwrap().push(url.to_string());
+            if current == n {
+                panic!("mock: http_client.get() call #{} reached", current);
+            }
+            None
+        }),
+        TrackedHttpClientState { get_calls, get_urls },
+    )
+}
 
 #[derive(Clone)]
 pub struct MockPlatform {
-    pub state: Arc<Mutex<MockPlatformState>>,
-    pub reboot_called: Arc<Mutex<bool>>,
-}
-
-pub struct MockPlatformState {
-    pub mac: [u8; 6],
-    pub boot_reason: BootReason,
+    mac: [u8; 6],
+    boot_reason: BootReason,
+    boot_reason_hook: Option<PlatformBootHook>,
+    mac_address_hook: Option<PlatformMacHook>,
+    reboot_hook: Option<PlatformRebootHook>,
 }
 
 impl MockPlatform {
     pub fn new(mac: [u8; 6], boot_reason: BootReason) -> Self {
         Self {
-            state: Arc::new(Mutex::new(MockPlatformState { mac, boot_reason })),
-            reboot_called: Arc::new(Mutex::new(false)),
+            mac,
+            boot_reason,
+            boot_reason_hook: None,
+            mac_address_hook: None,
+            reboot_hook: None,
         }
+    }
+
+    pub fn on_boot_reason(mut self, hook: impl FnMut() -> Option<BootReason> + Send + 'static) -> Self {
+        self.boot_reason_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_mac_address(
+        mut self,
+        hook: impl FnMut() -> HookResult<[u8; 6]> + Send + 'static,
+    ) -> Self {
+        self.mac_address_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_reboot(mut self, hook: impl FnMut() + Send + 'static) -> Self {
+        self.reboot_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
     }
 }
 
 impl Platform for MockPlatform {
     fn boot_reason(&self) -> BootReason {
-        self.state.lock().unwrap().boot_reason
+        if let Some(hook) = &self.boot_reason_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        self.boot_reason
     }
+
     fn mac_address(&self) -> anyhow::Result<[u8; 6]> {
-        Ok(self.state.lock().unwrap().mac)
+        if let Some(hook) = &self.mac_address_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(self.mac)
     }
+
     fn reboot(&self) -> ! {
-        *self.reboot_called.lock().unwrap() = true;
+        if let Some(hook) = &self.reboot_hook {
+            (hook.lock().unwrap())();
+        }
         panic!("mock reboot")
     }
 }
 
-// ---- MockClock ----
+pub fn tracked_platform(mac: [u8; 6], boot_reason: BootReason) -> (MockPlatform, Arc<Mutex<bool>>) {
+    let reboot_called = Arc::new(Mutex::new(false));
+    let tracked = reboot_called.clone();
+    (
+        MockPlatform::new(mac, boot_reason).on_reboot(move || {
+            *tracked.lock().unwrap() = true;
+        }),
+        reboot_called,
+    )
+}
 
 #[derive(Clone)]
 pub struct MockClock {
-    state: Arc<Mutex<MockClockState>>,
-    pub sleep_durations: Arc<Mutex<Vec<Duration>>>,
-}
-
-pub struct MockClockState {
-    ticks: VecDeque<embassy_time::Instant>,
+    now: embassy_time::Instant,
+    now_hook: Option<ClockNowHook>,
+    sleep_hook: Option<ClockSleepHook>,
 }
 
 impl MockClock {
-    pub fn from_ticks(ticks: &[u64]) -> Self {
+    pub fn new(now: embassy_time::Instant) -> Self {
         Self {
-            state: Arc::new(Mutex::new(MockClockState {
-                ticks: ticks
-                    .iter()
-                    .copied()
-                    .map(embassy_time::Instant::from_ticks)
-                    .collect(),
-            })),
-            sleep_durations: Arc::new(Mutex::new(Vec::new())),
+            now,
+            now_hook: None,
+            sleep_hook: None,
         }
+    }
+
+    pub fn from_ticks(ticks: &[u64]) -> Self {
+        sequenced_clock(ticks).0
+    }
+
+    pub fn from_ticks_silent(ticks: &[u64]) -> Self {
+        sequenced_clock_silent(ticks)
+    }
+
+    pub fn on_now(mut self, hook: impl FnMut() -> Option<embassy_time::Instant> + Send + 'static) -> Self {
+        self.now_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_sleep(
+        mut self,
+        hook: impl FnMut(Duration) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.sleep_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
     }
 }
 
 impl Clock for MockClock {
     fn now(&self) -> embassy_time::Instant {
-        let mut state = self.state.lock().unwrap();
-        if state.ticks.len() > 1 {
-            state.ticks.pop_front().unwrap()
-        } else {
-            *state
-                .ticks
-                .front()
-                .unwrap_or(&embassy_time::Instant::from_ticks(0))
+        if let Some(hook) = &self.now_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
         }
+        self.now
     }
+
     async fn sleep(&self, duration: Duration) {
-        self.sleep_durations.lock().unwrap().push(duration);
+        if let Some(hook) = &self.sleep_hook {
+            if let Some(result) = (hook.lock().unwrap())(duration) {
+                result.unwrap();
+                return;
+            }
+        }
     }
 }
 
-// ---- MockWifiBackend ----
+pub fn tracked_clock(now_ticks: u64) -> (MockClock, Arc<Mutex<Vec<Duration>>>) {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let tracked = sleeps.clone();
+    (
+        MockClock::new(embassy_time::Instant::from_ticks(now_ticks)).on_sleep(move |duration| {
+            tracked.lock().unwrap().push(duration);
+            None
+        }),
+        sleeps,
+    )
+}
+
+pub fn sequenced_clock(ticks: &[u64]) -> (MockClock, Arc<Mutex<Vec<Duration>>>) {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let tracked_sleeps = sleeps.clone();
+    let queue = Arc::new(Mutex::new(
+        ticks
+            .iter()
+            .copied()
+            .map(embassy_time::Instant::from_ticks)
+            .collect::<VecDeque<_>>(),
+    ));
+    let now_value = queue
+        .lock()
+        .unwrap()
+        .front()
+        .copied()
+        .unwrap_or_else(|| embassy_time::Instant::from_ticks(0));
+    let tracked_queue = queue.clone();
+
+    (
+        MockClock::new(now_value)
+            .on_now(move || {
+                let mut guard = tracked_queue.lock().unwrap();
+                if guard.len() > 1 {
+                    guard.pop_front()
+                } else {
+                    guard.front().copied()
+                }
+            })
+            .on_sleep(move |duration| {
+                tracked_sleeps.lock().unwrap().push(duration);
+                None
+            }),
+        sleeps,
+    )
+}
+
+pub fn sequenced_clock_silent(ticks: &[u64]) -> MockClock {
+    let queue = Arc::new(Mutex::new(
+        ticks
+            .iter()
+            .copied()
+            .map(embassy_time::Instant::from_ticks)
+            .collect::<VecDeque<_>>(),
+    ));
+    let now_value = queue
+        .lock()
+        .unwrap()
+        .front()
+        .copied()
+        .unwrap_or_else(|| embassy_time::Instant::from_ticks(0));
+    let tracked_queue = queue.clone();
+
+    MockClock::new(now_value).on_now(move || {
+        let mut guard = tracked_queue.lock().unwrap();
+        if guard.len() > 1 {
+            guard.pop_front()
+        } else {
+            guard.front().copied()
+        }
+    })
+}
 
 #[derive(Clone)]
 pub struct MockWifiBackend {
-    pub connect_order: Arc<Mutex<Option<u32>>>,
-    pub scan_order: Arc<Mutex<Option<u32>>>,
-    pub start_ap_order: Arc<Mutex<Option<u32>>>,
-    pub global_counter: Arc<AtomicU32>,
-    pub state: Arc<Mutex<MockWifiBackendState>>,
-}
-
-pub struct MockWifiBackendState {
-    pub started: bool,
-    pub is_connected: bool,
-    pub client_count: usize,
-    pub scan_networks_result: Vec<wifi::FoundNetwork>,
-    pub configured_ssid: Option<String>,
-    pub configured_password: Option<String>,
-    pub start_access_point_ssid: Option<String>,
-    pub fail_configure_client: bool,
-    pub fail_connect: bool,
-    pub fail_scan_networks: bool,
-    pub access_point_ip: Option<String>,
-}
-
-impl Default for MockWifiBackendState {
-    fn default() -> Self {
-        Self {
-            started: false,
-            is_connected: true,
-            client_count: 0,
-            scan_networks_result: Vec::new(),
-            configured_ssid: None,
-            configured_password: None,
-            start_access_point_ssid: None,
-            fail_configure_client: false,
-            fail_connect: false,
-            fail_scan_networks: false,
-            access_point_ip: None,
-        }
-    }
+    started: bool,
+    is_connected: bool,
+    scan_networks_result: Vec<wifi::FoundNetwork>,
+    connection_info: wifi::ConnectionInfo,
+    access_point_status: wifi::AccessPointStatus,
+    access_point_ip_config: wifi::IpConfig,
+    start_hook: Option<WifiStartHook>,
+    stop_hook: Option<WifiStopHook>,
+    disconnect_hook: Option<WifiDisconnectHook>,
+    is_started_hook: Option<WifiIsStartedHook>,
+    scan_networks_hook: Option<WifiScanHook>,
+    configure_client_hook: Option<WifiConfigureHook>,
+    connect_hook: Option<WifiConnectHook>,
+    is_connected_hook: Option<WifiIsConnectedHook>,
+    connection_info_hook: Option<WifiConnectionInfoHook>,
+    start_access_point_hook: Option<WifiStartApHook>,
+    stop_access_point_hook: Option<WifiStopApHook>,
+    access_point_status_hook: Option<WifiApStatusHook>,
+    access_point_ip_config_hook: Option<WifiApIpHook>,
 }
 
 impl Default for MockWifiBackend {
     fn default() -> Self {
-        Self {
-            connect_order: Arc::new(Mutex::new(None)),
-            scan_order: Arc::new(Mutex::new(None)),
-            start_ap_order: Arc::new(Mutex::new(None)),
-            global_counter: Arc::new(AtomicU32::new(1)),
-            state: Arc::new(Mutex::new(MockWifiBackendState::default())),
-        }
+        Self::new()
     }
 }
 
 impl MockWifiBackend {
-    pub fn with_counter(counter: Arc<AtomicU32>) -> Self {
+    pub fn new() -> Self {
         Self {
-            connect_order: Arc::new(Mutex::new(None)),
-            scan_order: Arc::new(Mutex::new(None)),
-            start_ap_order: Arc::new(Mutex::new(None)),
-            global_counter: counter,
-            state: Arc::new(Mutex::new(MockWifiBackendState::default())),
+            started: false,
+            is_connected: true,
+            scan_networks_result: Vec::new(),
+            connection_info: wifi::ConnectionInfo::new("0.0.0.0"),
+            access_point_status: wifi::AccessPointStatus {
+                is_started: false,
+                client_count: 0,
+            },
+            access_point_ip_config: wifi::IpConfig::new(
+                "192.168.4.1",
+                "192.168.4.1",
+                "255.255.255.0",
+            ),
+            start_hook: None,
+            stop_hook: None,
+            disconnect_hook: None,
+            is_started_hook: None,
+            scan_networks_hook: None,
+            configure_client_hook: None,
+            connect_hook: None,
+            is_connected_hook: None,
+            connection_info_hook: None,
+            start_access_point_hook: None,
+            stop_access_point_hook: None,
+            access_point_status_hook: None,
+            access_point_ip_config_hook: None,
         }
     }
 
-    pub fn with_client_count(client_count: usize) -> Self {
-        Self {
-            connect_order: Arc::new(Mutex::new(None)),
-            scan_order: Arc::new(Mutex::new(None)),
-            start_ap_order: Arc::new(Mutex::new(None)),
-            global_counter: Arc::new(AtomicU32::new(1)),
-            state: Arc::new(Mutex::new(MockWifiBackendState {
-                client_count,
-                ..Default::default()
-            })),
-        }
+    pub fn with_started(mut self, started: bool) -> Self {
+        self.started = started;
+        self.access_point_status.is_started = started;
+        self
     }
 
-    pub fn set_is_connected(&mut self, connected: bool) {
-        self.state.lock().unwrap().is_connected = connected;
+    pub fn with_is_connected(mut self, is_connected: bool) -> Self {
+        self.is_connected = is_connected;
+        self
     }
 
-    pub fn set_fail_configure_client(&mut self, fail: bool) {
-        self.state.lock().unwrap().fail_configure_client = fail;
+    pub fn with_scan_networks_result(mut self, scan_networks_result: Vec<wifi::FoundNetwork>) -> Self {
+        self.scan_networks_result = scan_networks_result;
+        self
     }
 
-    pub fn set_fail_connect(&mut self, fail: bool) {
-        self.state.lock().unwrap().fail_connect = fail;
+    pub fn with_client_count(mut self, client_count: usize) -> Self {
+        self.access_point_status.client_count = client_count;
+        self
     }
 
-    pub fn set_fail_scan_networks(&mut self, fail: bool) {
-        self.state.lock().unwrap().fail_scan_networks = fail;
+    pub fn with_connection_info(mut self, connection_info: wifi::ConnectionInfo) -> Self {
+        self.connection_info = connection_info;
+        self
+    }
+
+    pub fn with_access_point_status(mut self, status: wifi::AccessPointStatus) -> Self {
+        self.access_point_status = status;
+        self
+    }
+
+    pub fn with_access_point_ip_config(mut self, ip_config: wifi::IpConfig) -> Self {
+        self.access_point_ip_config = ip_config;
+        self
+    }
+
+    pub fn on_start(mut self, hook: impl FnMut() -> HookResult<()> + Send + 'static) -> Self {
+        self.start_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_stop(mut self, hook: impl FnMut() -> HookResult<()> + Send + 'static) -> Self {
+        self.stop_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_disconnect(mut self, hook: impl FnMut() -> HookResult<()> + Send + 'static) -> Self {
+        self.disconnect_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_is_started(mut self, hook: impl FnMut() -> HookResult<bool> + Send + 'static) -> Self {
+        self.is_started_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_scan_networks(
+        mut self,
+        hook: impl FnMut() -> HookResult<Vec<wifi::FoundNetwork>> + Send + 'static,
+    ) -> Self {
+        self.scan_networks_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_configure_client(
+        mut self,
+        hook: impl FnMut(&wifi::WifiCredentials, Option<u8>, wifi::ClientAuth) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.configure_client_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_connect(
+        mut self,
+        hook: impl FnMut(std::time::Duration) -> HookResult<wifi::ConnectionInfo> + Send + 'static,
+    ) -> Self {
+        self.connect_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_is_connected(mut self, hook: impl FnMut() -> HookResult<bool> + Send + 'static) -> Self {
+        self.is_connected_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_connection_info(
+        mut self,
+        hook: impl FnMut() -> HookResult<Option<wifi::ConnectionInfo>> + Send + 'static,
+    ) -> Self {
+        self.connection_info_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_start_access_point(
+        mut self,
+        hook: impl FnMut(&wifi::AccessPointConfig) -> HookResult<()> + Send + 'static,
+    ) -> Self {
+        self.start_access_point_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_stop_access_point(mut self, hook: impl FnMut() -> HookResult<()> + Send + 'static) -> Self {
+        self.stop_access_point_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_access_point_status(
+        mut self,
+        hook: impl FnMut() -> HookResult<wifi::AccessPointStatus> + Send + 'static,
+    ) -> Self {
+        self.access_point_status_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
+    }
+
+    pub fn on_access_point_ip_config(
+        mut self,
+        hook: impl FnMut() -> HookResult<wifi::IpConfig> + Send + 'static,
+    ) -> Self {
+        self.access_point_ip_config_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
+        self
     }
 }
 
 impl wifi::WifiBackend for MockWifiBackend {
     async fn start(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn stop(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn disconnect(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn is_started(&mut self) -> anyhow::Result<bool> {
-        Ok(self.state.lock().unwrap().started)
-    }
-    async fn scan_networks(&mut self) -> anyhow::Result<Vec<wifi::FoundNetwork>> {
-        if self.state.lock().unwrap().fail_scan_networks {
-            return Err(anyhow::anyhow!("mock scan_networks error"));
+        if let Some(hook) = &self.start_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
         }
-        *self.scan_order.lock().unwrap() =
-            Some(self.global_counter.fetch_add(1, Ordering::SeqCst));
-        Ok(self.state.lock().unwrap().scan_networks_result.clone())
+        Ok(())
     }
+
+    async fn stop(&mut self) -> anyhow::Result<()> {
+        if let Some(hook) = &self.stop_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if let Some(hook) = &self.disconnect_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(())
+    }
+
+    async fn is_started(&mut self) -> anyhow::Result<bool> {
+        if let Some(hook) = &self.is_started_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(self.started)
+    }
+
+    async fn scan_networks(&mut self) -> anyhow::Result<Vec<wifi::FoundNetwork>> {
+        if let Some(hook) = &self.scan_networks_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(self.scan_networks_result.clone())
+    }
+
     async fn configure_client(
         &mut self,
         credentials: &wifi::WifiCredentials,
-        _channel: Option<u8>,
-        _auth: wifi::ClientAuth,
+        channel: Option<u8>,
+        auth: wifi::ClientAuth,
     ) -> anyhow::Result<()> {
-        if self.state.lock().unwrap().fail_configure_client {
-            return Err(anyhow::anyhow!("mock configure_client error"));
+        if let Some(hook) = &self.configure_client_hook {
+            if let Some(result) = (hook.lock().unwrap())(credentials, channel, auth) {
+                return result;
+            }
         }
-        let mut state = self.state.lock().unwrap();
-        state.configured_ssid = Some(credentials.ssid.clone());
-        state.configured_password = Some(credentials.password.clone());
         Ok(())
     }
+
     async fn connect(
         &mut self,
-        _timeout: std::time::Duration,
+        timeout: std::time::Duration,
     ) -> anyhow::Result<wifi::ConnectionInfo> {
-        if self.state.lock().unwrap().fail_connect {
-            return Err(anyhow::anyhow!("mock connect error"));
+        if let Some(hook) = &self.connect_hook {
+            if let Some(result) = (hook.lock().unwrap())(timeout) {
+                return result;
+            }
         }
-        *self.connect_order.lock().unwrap() =
-            Some(self.global_counter.fetch_add(1, Ordering::SeqCst));
-        Ok(wifi::ConnectionInfo::new("0.0.0.0"))
+        Ok(self.connection_info.clone())
     }
+
     async fn is_connected(&mut self) -> anyhow::Result<bool> {
-        Ok(self.state.lock().unwrap().is_connected)
+        if let Some(hook) = &self.is_connected_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(self.is_connected)
     }
+
     async fn connection_info(&mut self) -> anyhow::Result<Option<wifi::ConnectionInfo>> {
-        Ok(Some(wifi::ConnectionInfo::new("0.0.0.0")))
+        if let Some(hook) = &self.connection_info_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(Some(self.connection_info.clone()))
     }
+
     async fn start_access_point(
         &mut self,
         config: &wifi::AccessPointConfig,
     ) -> anyhow::Result<()> {
-        let mut state = self.state.lock().unwrap();
-        state.started = true;
-        state.start_access_point_ssid = Some(config.ssid.clone());
-        *self.start_ap_order.lock().unwrap() =
-            Some(self.global_counter.fetch_add(1, Ordering::SeqCst));
+        if let Some(hook) = &self.start_access_point_hook {
+            if let Some(result) = (hook.lock().unwrap())(config) {
+                return result;
+            }
+        }
         Ok(())
     }
+
     async fn stop_access_point(&mut self) -> anyhow::Result<()> {
-        self.state.lock().unwrap().started = false;
+        if let Some(hook) = &self.stop_access_point_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
         Ok(())
     }
+
     async fn access_point_status(&mut self) -> anyhow::Result<wifi::AccessPointStatus> {
-        let state = self.state.lock().unwrap();
-        Ok(wifi::AccessPointStatus {
-            is_started: state.started,
-            client_count: state.client_count,
-        })
+        if let Some(hook) = &self.access_point_status_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(self.access_point_status.clone())
     }
+
     async fn access_point_ip_config(&mut self) -> anyhow::Result<wifi::IpConfig> {
-        self.state.lock().unwrap().access_point_ip = Some("192.168.4.1".to_string());
-        Ok(wifi::IpConfig::new(
-            "192.168.4.1",
-            "192.168.4.1",
-            "255.255.255.0",
-        ))
+        if let Some(hook) = &self.access_point_ip_config_hook {
+            if let Some(result) = (hook.lock().unwrap())() {
+                return result;
+            }
+        }
+        Ok(self.access_point_ip_config.clone())
     }
+}
+
+pub struct TrackedWifiBackendState {
+    pub configured_ssid: Arc<Mutex<Option<String>>>,
+    pub configured_password: Arc<Mutex<Option<String>>>,
+    pub start_access_point_ssid: Arc<Mutex<Option<String>>>,
+    pub access_point_ip: Arc<Mutex<Option<String>>>,
+    pub connect_order: Arc<Mutex<Option<u32>>>,
+    pub scan_order: Arc<Mutex<Option<u32>>>,
+    pub start_ap_order: Arc<Mutex<Option<u32>>>,
+    pub started: Arc<AtomicBool>,
+}
+
+pub fn tracked_wifi_backend() -> (MockWifiBackend, TrackedWifiBackendState) {
+    tracked_wifi_backend_with_counter(Arc::new(AtomicU32::new(1)))
+}
+
+pub fn tracked_wifi_backend_with_counter(
+    counter: Arc<AtomicU32>,
+) -> (MockWifiBackend, TrackedWifiBackendState) {
+    let configured_ssid = Arc::new(Mutex::new(None));
+    let configured_password = Arc::new(Mutex::new(None));
+    let start_access_point_ssid = Arc::new(Mutex::new(None));
+    let access_point_ip = Arc::new(Mutex::new(None));
+    let connect_order = Arc::new(Mutex::new(None));
+    let scan_order = Arc::new(Mutex::new(None));
+    let start_ap_order = Arc::new(Mutex::new(None));
+    let started = Arc::new(AtomicBool::new(false));
+
+    let configured_ssid_hook = configured_ssid.clone();
+    let configured_password_hook = configured_password.clone();
+    let connect_order_hook = connect_order.clone();
+    let scan_order_hook = scan_order.clone();
+    let start_ap_order_hook = start_ap_order.clone();
+    let start_access_point_ssid_hook = start_access_point_ssid.clone();
+    let access_point_ip_hook = access_point_ip.clone();
+    let started_for_start = started.clone();
+    let started_for_stop = started.clone();
+    let started_for_status = started.clone();
+    let counter_for_connect = counter.clone();
+    let counter_for_scan = counter.clone();
+    let counter_for_start_ap = counter.clone();
+
+    (
+        MockWifiBackend::new()
+            .on_scan_networks(move || {
+                *scan_order_hook.lock().unwrap() =
+                    Some(counter_for_scan.fetch_add(1, Ordering::SeqCst));
+                None
+            })
+            .on_configure_client(move |credentials, _channel, _auth| {
+                *configured_ssid_hook.lock().unwrap() = Some(credentials.ssid.clone());
+                *configured_password_hook.lock().unwrap() = Some(credentials.password.clone());
+                None
+            })
+            .on_connect(move |_timeout| {
+                *connect_order_hook.lock().unwrap() =
+                    Some(counter_for_connect.fetch_add(1, Ordering::SeqCst));
+                None
+            })
+            .on_start_access_point(move |config| {
+                started_for_start.store(true, Ordering::SeqCst);
+                *start_access_point_ssid_hook.lock().unwrap() = Some(config.ssid.clone());
+                *start_ap_order_hook.lock().unwrap() =
+                    Some(counter_for_start_ap.fetch_add(1, Ordering::SeqCst));
+                None
+            })
+            .on_stop_access_point(move || {
+                started_for_stop.store(false, Ordering::SeqCst);
+                None
+            })
+            .on_is_started(move || Some(Ok(started_for_status.load(Ordering::SeqCst))))
+            .on_access_point_status({
+                let started = started.clone();
+                move || {
+                    Some(Ok(wifi::AccessPointStatus {
+                        is_started: started.load(Ordering::SeqCst),
+                        client_count: 0,
+                    }))
+                }
+            })
+            .on_access_point_ip_config(move || {
+                *access_point_ip_hook.lock().unwrap() = Some("192.168.4.1".to_string());
+                None
+            }),
+        TrackedWifiBackendState {
+            configured_ssid,
+            configured_password,
+            start_access_point_ssid,
+            access_point_ip,
+            connect_order,
+            scan_order,
+            start_ap_order,
+            started,
+        },
+    )
 }

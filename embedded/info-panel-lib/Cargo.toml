@@ -15,3 +15,6 @@ config-portal = { path = "../common/lib/config-portal" }
 wifi = { path = "../common/lib/wifi" }
 rgb-led = { path = "../common/lib/rgb-led" }
 tft-display = { path = "../common/lib/tft-display" }
+
+[dev-dependencies]
+dhat = "0.3"
