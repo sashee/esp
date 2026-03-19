@@ -397,7 +397,7 @@ where
 
     let mut wifi = Wifi::new(wifi_backend);
     let display_clock = TftClockAdapter::new(clock.clone());
-    let display = tft_display::TftDisplay::new(tft_backend, display_clock, TFT_WIDTH, TFT_HEIGHT);
+    let display = tft_display::TftDisplay::new(tft_backend, display_clock);
     let mut led = rgb_led::RgbLed::new(led_backend);
 
     match run_inner(
@@ -443,7 +443,15 @@ where
 {
     display.init().await?;
     let mut clear = SolidColorFrameSource::new(rgb565(0, 0, 0), TFT_WIDTH, TFT_HEIGHT);
-    display.write_frame(&mut clear)?;
+    display.write_frame(
+        &mut clear,
+        tft_display::Rect {
+            x: 0,
+            y: 0,
+            width: TFT_WIDTH,
+            height: TFT_HEIGHT,
+        },
+    )?;
 
     let boot_reason = platform.boot_reason();
     let run_preboot_portal = matches!(boot_reason, BootReason::PowerOn);
@@ -662,7 +670,15 @@ where
     for _ in 0..3 {
         match http_client.get(url).await {
             Ok(mut frame_source) => {
-                display.write_frame(frame_source.as_mut())?;
+                display.write_frame(
+                    frame_source.as_mut(),
+                    tft_display::Rect {
+                        x: 0,
+                        y: 0,
+                        width: TFT_WIDTH,
+                        height: TFT_HEIGHT,
+                    },
+                )?;
                 info!("RGB565 frame rendered on TFT");
                 return Ok(());
             }

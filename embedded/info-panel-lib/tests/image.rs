@@ -1,10 +1,19 @@
 mod common;
 
 use common::*;
-use info_panel_lib::BootReason;
+use info_panel_lib::{BootReason, TFT_HEIGHT, TFT_WIDTH};
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
+
+fn full_tft_rect() -> tft_display::Rect {
+    tft_display::Rect {
+        x: 0,
+        y: 0,
+        width: TFT_WIDTH,
+        height: TFT_HEIGHT,
+    }
+}
 
 // ---- HTTP fetch tests (error-path: retries + error mode) ----
 
@@ -145,6 +154,8 @@ fn test_image_succeeds_on_first_retry() {
     let (display, display_state) = tracked_display(global_counter);
     let write_frame_calls = display_state.write_frame_calls.clone();
     let initial_clear_calls = display_state.initial_clear_calls.clone();
+    let initial_clear_rects = display_state.initial_clear_rects.clone();
+    let write_frame_rects = display_state.write_frame_rects.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(
@@ -171,6 +182,8 @@ fn test_image_succeeds_on_first_retry() {
         *initial_clear_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
+    assert_eq!(initial_clear_rects.lock().unwrap().as_slice(), &[full_tft_rect()]);
+    assert_eq!(write_frame_rects.lock().unwrap().as_slice(), &[full_tft_rect()]);
 }
 
 #[test]
@@ -189,6 +202,7 @@ fn test_image_succeeds_on_second_retry() {
     let (display, display_state) = tracked_display(global_counter);
     let write_frame_calls = display_state.write_frame_calls.clone();
     let initial_clear_calls = display_state.initial_clear_calls.clone();
+    let write_frame_rects = display_state.write_frame_rects.clone();
 
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(
@@ -215,6 +229,7 @@ fn test_image_succeeds_on_second_retry() {
         *initial_clear_calls.lock().unwrap(),
         *write_frame_calls.lock().unwrap()
     );
+    assert_eq!(write_frame_rects.lock().unwrap().as_slice(), &[full_tft_rect()]);
 }
 
 #[test]

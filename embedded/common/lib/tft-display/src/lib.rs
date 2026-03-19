@@ -27,11 +27,17 @@ pub trait FrameSource {
     fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
 pub struct TftDisplay<B, C> {
     backend: B,
     clock: C,
-    width: u16,
-    height: u16,
 }
 
 impl<B, C> TftDisplay<B, C>
@@ -39,13 +45,8 @@ where
     B: TftBackend,
     C: Clock,
 {
-    pub fn new(backend: B, clock: C, width: u16, height: u16) -> Self {
-        Self {
-            backend,
-            clock,
-            width,
-            height,
-        }
+    pub fn new(backend: B, clock: C) -> Self {
+        Self { backend, clock }
     }
 
     pub async fn init(&mut self) -> Result<(), B::Error> {
@@ -74,19 +75,33 @@ where
         Ok(())
     }
 
-    pub fn write_frame<S>(&mut self, source: &mut S) -> Result<(), B::Error>
+    pub fn write_frame<S>(&mut self, source: &mut S, rect: Rect) -> Result<(), B::Error>
     where
         B::Error: From<anyhow::Error>,
         S: FrameSource + ?Sized,
         B::Error: From<S::Error>,
     {
-        let expected = (self.width as usize) * (self.height as usize) * 2;
+        if rect.width == 0 || rect.height == 0 {
+            return Err(B::Error::from(anyhow::anyhow!(
+                "frame rect must have non-zero width and height"
+            )));
+        }
+
+        let end_x = rect
+            .x
+            .checked_add(rect.width - 1)
+            .ok_or_else(|| anyhow::anyhow!("frame rect x range overflow"))?;
+        let end_y = rect
+            .y
+            .checked_add(rect.height - 1)
+            .ok_or_else(|| anyhow::anyhow!("frame rect y range overflow"))?;
+        let expected = (rect.width as usize) * (rect.height as usize) * 2;
 
         self.write_cmd(0x2A)?;
-        self.write_data16(0, self.width - 1)?;
+        self.write_data16(rect.x, end_x)?;
 
         self.write_cmd(0x2B)?;
-        self.write_data16(0, self.height - 1)?;
+        self.write_data16(rect.y, end_y)?;
 
         self.write_cmd(0x2C)?;
 

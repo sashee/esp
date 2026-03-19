@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use info_panel_lib::BootReason;
+use info_panel_lib::{BootReason, TFT_HEIGHT, TFT_WIDTH};
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
@@ -22,6 +22,7 @@ fn test_init_clears_tft_on_startup() {
     let init_order = display_state.init_order.clone();
     let initial_clear_order = display_state.initial_clear_order.clone();
     let initial_clear_calls = display_state.initial_clear_calls.clone();
+    let initial_clear_rects = display_state.initial_clear_rects.clone();
     let connect_order = wifi_state.connect_order.clone();
     let start_ap_order = wifi_state.start_ap_order.clone();
 
@@ -48,6 +49,16 @@ fn test_init_clears_tft_on_startup() {
 
     assert!(init.is_some(), "display.init() must be called");
     assert_eq!(*clear_calls, 1, "initial clear must happen exactly once");
+    assert_eq!(
+        initial_clear_rects.lock().unwrap().as_slice(),
+        &[tft_display::Rect {
+            x: 0,
+            y: 0,
+            width: TFT_WIDTH,
+            height: TFT_HEIGHT,
+        }],
+        "initial clear must target the full TFT"
+    );
     assert!(clear.is_some(), "initial clear must be called");
     assert!(connect.is_some(), "wifi.connect() must be called");
     assert!(
@@ -94,6 +105,7 @@ fn test_init_clears_tft_before_required_portal() {
     let init_order = display_state.init_order.clone();
     let initial_clear_order = display_state.initial_clear_order.clone();
     let initial_clear_calls = display_state.initial_clear_calls.clone();
+    let initial_clear_rects = display_state.initial_clear_rects.clone();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         block_on(info_panel_lib::run(hal(
@@ -116,6 +128,16 @@ fn test_init_clears_tft_before_required_portal() {
 
     assert!(init.is_some(), "display.init() must be called");
     assert_eq!(*clear_calls, 1, "initial clear must happen exactly once");
+    assert_eq!(
+        initial_clear_rects.lock().unwrap().as_slice(),
+        &[tft_display::Rect {
+            x: 0,
+            y: 0,
+            width: TFT_WIDTH,
+            height: TFT_HEIGHT,
+        }],
+        "initial clear must target the full TFT"
+    );
     assert!(clear.is_some(), "initial clear must be called");
     assert!(start_ap.is_some(), "required portal must start AP");
     assert!(

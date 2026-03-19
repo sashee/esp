@@ -18,8 +18,10 @@ type StoreWriteHook = Arc<Mutex<Box<dyn FnMut(&str, &BTreeMap<String, String>) -
 type StoreRemoveHook = Arc<Mutex<Box<dyn FnMut(&str, &[&str]) -> HookResult<()> + Send>>>;
 type LedHook = Arc<Mutex<Box<dyn FnMut(LedCall) -> HookResult<()> + Send>>>;
 type DisplayInitHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<()> + Send>>>;
-type DisplayWriteHook = Arc<Mutex<Box<dyn FnMut(&[u8]) -> HookResult<()> + Send>>>;
-type DisplayInitialClearHook = Arc<Mutex<Box<dyn FnMut(u16) -> HookResult<()> + Send>>>;
+type DisplayWriteHook =
+    Arc<Mutex<Box<dyn FnMut(tft_display::Rect, &[u8]) -> HookResult<()> + Send>>>;
+type DisplayInitialClearHook =
+    Arc<Mutex<Box<dyn FnMut(tft_display::Rect, u16) -> HookResult<()> + Send>>>;
 type HttpGetHook = Arc<Mutex<Box<dyn FnMut(&str) -> HookResult<Vec<u8>> + Send>>>;
 type PlatformBootHook = Arc<Mutex<Box<dyn FnMut() -> Option<BootReason> + Send>>>;
 type PlatformMacHook = Arc<Mutex<Box<dyn FnMut() -> HookResult<[u8; 6]> + Send>>>;
@@ -101,6 +103,14 @@ pub fn assert_ok_signal<T>(result: std::thread::Result<T>, expected: &str) {
 
 pub fn valid_frame_bytes() -> Vec<u8> {
     vec![0u8; 128 * 160 * 2]
+}
+
+fn push_rect_history(rects: &Arc<Mutex<Vec<tft_display::Rect>>>, rect: tft_display::Rect) {
+    let mut rects = rects.lock().unwrap();
+    if rects.len() == 8 {
+        rects.remove(0);
+    }
+    rects.push(rect);
 }
 
 pub struct MemoryFrameSource {
@@ -370,7 +380,12 @@ pub struct MockDisplay {
     write_frame_hook: Option<DisplayWriteHook>,
     initial_clear_hook: Option<DisplayInitialClearHook>,
     dc_high: bool,
+    pending_command: Option<u8>,
+    pending_data16_start: Option<u16>,
+    pending_rect_x: Option<(u16, u16)>,
+    pending_rect_y: Option<(u16, u16)>,
     current_transfer: Option<Vec<u8>>,
+    current_rect: Option<tft_display::Rect>,
     saw_initial_clear: bool,
 }
 
@@ -381,7 +396,12 @@ impl MockDisplay {
             write_frame_hook: None,
             initial_clear_hook: None,
             dc_high: false,
+            pending_command: None,
+            pending_data16_start: None,
+            pending_rect_x: None,
+            pending_rect_y: None,
             current_transfer: None,
+            current_rect: None,
             saw_initial_clear: false,
         }
     }
@@ -396,7 +416,7 @@ impl MockDisplay {
 
     pub fn on_write_frame(
         mut self,
-        hook: impl FnMut(&[u8]) -> HookResult<()> + Send + 'static,
+        hook: impl FnMut(tft_display::Rect, &[u8]) -> HookResult<()> + Send + 'static,
     ) -> Self {
         self.write_frame_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -404,7 +424,7 @@ impl MockDisplay {
 
     pub fn on_initial_clear(
         mut self,
-        hook: impl FnMut(u16) -> HookResult<()> + Send + 'static,
+        hook: impl FnMut(tft_display::Rect, u16) -> HookResult<()> + Send + 'static,
     ) -> Self {
         self.initial_clear_hook = Some(Arc::new(Mutex::new(Box::new(hook))));
         self
@@ -422,8 +442,11 @@ impl MockDisplay {
         let Some(data) = self.current_transfer.take() else {
             return Ok(());
         };
+        let Some(rect) = self.current_rect.take() else {
+            return Err(anyhow::anyhow!("missing display rect for transfer"));
+        };
 
-        let full_frame_bytes = (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2;
+        let full_frame_bytes = (rect.width as usize) * (rect.height as usize) * 2;
         let is_uniform_solid = data.len() == full_frame_bytes
             && data.chunks_exact(2).all(|chunk| chunk == &data[..2]);
 
@@ -431,12 +454,12 @@ impl MockDisplay {
             self.saw_initial_clear = true;
             if let Some(hook) = &self.initial_clear_hook {
                 let color = u16::from_be_bytes([data[0], data[1]]);
-                if let Some(result) = (hook.lock().unwrap())(color) {
+                if let Some(result) = (hook.lock().unwrap())(rect, color) {
                     return result;
                 }
             }
         } else if let Some(hook) = &self.write_frame_hook {
-            if let Some(result) = (hook.lock().unwrap())(&data) {
+            if let Some(result) = (hook.lock().unwrap())(rect, &data) {
                 return result;
             }
         }
@@ -474,9 +497,34 @@ impl tft_display::TftBackend for MockDisplay {
 
     fn write(&mut self, data: &[u8]) -> anyhow::Result<()> {
         if self.dc_high {
+            match self.pending_command {
+                Some(0x2A) | Some(0x2B) if data.len() == 2 => {
+                    let value = u16::from_be_bytes([data[0], data[1]]);
+                    match self.pending_data16_start.take() {
+                        Some(start) => {
+                            let pair = (start, value);
+                            if self.pending_command == Some(0x2A) {
+                                self.pending_rect_x = Some(pair);
+                            } else {
+                                self.pending_rect_y = Some(pair);
+                            }
+                        }
+                        None => {
+                            self.pending_data16_start = Some(value);
+                        }
+                    }
+                    return Ok(());
+                }
+                Some(0x2C) => {}
+                _ => {}
+            }
+
             if let Some(transfer) = &mut self.current_transfer {
                 transfer.extend_from_slice(data);
-                let full_frame_bytes = (TFT_WIDTH as usize) * (TFT_HEIGHT as usize) * 2;
+                let rect = self
+                    .current_rect
+                    .ok_or_else(|| anyhow::anyhow!("missing display rect"))?;
+                let full_frame_bytes = (rect.width as usize) * (rect.height as usize) * 2;
                 if transfer.len() >= full_frame_bytes {
                     self.finish_transfer()?;
                 }
@@ -487,8 +535,21 @@ impl tft_display::TftBackend for MockDisplay {
         self.finish_transfer()?;
 
         if data == [0x2C] {
+            let ((x_start, x_end), (y_start, y_end)) = self
+                .pending_rect_x
+                .zip(self.pending_rect_y)
+                .ok_or_else(|| anyhow::anyhow!("missing display window before memory write"))?;
             self.current_transfer = Some(Vec::new());
+            self.current_rect = Some(tft_display::Rect {
+                x: x_start,
+                y: y_start,
+                width: x_end - x_start + 1,
+                height: y_end - y_start + 1,
+            });
         }
+
+        self.pending_command = data.first().copied();
+        self.pending_data16_start = None;
 
         Ok(())
     }
@@ -506,6 +567,8 @@ pub struct TrackedDisplayState {
     pub initial_clear_order: Arc<Mutex<Option<u32>>>,
     pub write_frame_calls: Arc<Mutex<usize>>,
     pub initial_clear_calls: Arc<Mutex<usize>>,
+    pub write_frame_rects: Arc<Mutex<Vec<tft_display::Rect>>>,
+    pub initial_clear_rects: Arc<Mutex<Vec<tft_display::Rect>>>,
 }
 
 pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedDisplayState) {
@@ -514,6 +577,8 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
     let initial_clear_order = Arc::new(Mutex::new(None));
     let write_frame_calls = Arc::new(Mutex::new(0));
     let initial_clear_calls = Arc::new(Mutex::new(0));
+    let write_frame_rects = Arc::new(Mutex::new(Vec::new()));
+    let initial_clear_rects = Arc::new(Mutex::new(Vec::new()));
 
     let init_called_hook = init_called.clone();
     let init_order_hook = init_order.clone();
@@ -522,6 +587,8 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
     let counter_for_clear = global_counter.clone();
     let write_calls_hook = write_frame_calls.clone();
     let initial_clear_calls_hook = initial_clear_calls.clone();
+    let write_frame_rects_hook = write_frame_rects.clone();
+    let initial_clear_rects_hook = initial_clear_rects.clone();
 
     (
         MockDisplay::new()
@@ -531,16 +598,18 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
                     Some(counter_for_init.fetch_add(1, Ordering::SeqCst));
                 None
             })
-            .on_write_frame(move |_data| {
+            .on_write_frame(move |rect, _data| {
                 *write_calls_hook.lock().unwrap() += 1;
+                push_rect_history(&write_frame_rects_hook, rect);
                 None
             })
-            .on_initial_clear(move |_color| {
+            .on_initial_clear(move |rect, _color| {
                 let mut order = initial_clear_order_hook.lock().unwrap();
                 if order.is_none() {
                     *order = Some(counter_for_clear.fetch_add(1, Ordering::SeqCst));
                 }
                 *initial_clear_calls_hook.lock().unwrap() += 1;
+                push_rect_history(&initial_clear_rects_hook, rect);
                 None
             }),
         TrackedDisplayState {
@@ -549,6 +618,8 @@ pub fn tracked_display(global_counter: Arc<AtomicU32>) -> (MockDisplay, TrackedD
             initial_clear_order,
             write_frame_calls,
             initial_clear_calls,
+            write_frame_rects,
+            initial_clear_rects,
         },
     )
 }
@@ -560,7 +631,7 @@ pub fn display_with_write_frame_fail_nth(
     let (display, state) = tracked_display(global_counter);
     let write_calls = state.write_frame_calls.clone();
     (
-        display.on_write_frame(move |_data| {
+        display.on_write_frame(move |_rect, _data| {
             let current = *write_calls.lock().unwrap() + 1;
             if current == fail_nth {
                 Some(Err(anyhow::anyhow!("mock write_frame error")))
@@ -580,7 +651,7 @@ pub fn display_with_initial_clear_fail_nth(
     let (display, state) = tracked_display(global_counter);
     let initial_clear_calls = state.initial_clear_calls.clone();
     (
-        display.on_initial_clear(move |_color| {
+        display.on_initial_clear(move |_rect, _color| {
             let current = *initial_clear_calls.lock().unwrap() + 1;
             if current == fail_nth {
                 Some(Err(anyhow::anyhow!("mock initial clear error")))

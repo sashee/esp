@@ -178,9 +178,19 @@ impl Clock for MockClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Rect;
 
     const TEST_WIDTH: u16 = 100;
     const TEST_HEIGHT: u16 = 100;
+
+    fn test_rect() -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            width: TEST_WIDTH,
+            height: TEST_HEIGHT,
+        }
+    }
 
     fn frame_writes(writes: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
         writes.into_iter().skip(7).collect()
@@ -190,7 +200,7 @@ mod tests {
     fn test_tft_display_new() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let display = crate::TftDisplay::new(backend, clock);
         let _ = display;
     }
 
@@ -198,15 +208,15 @@ mod tests {
     fn test_write_frame_size_check() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let mut source = MockFrameSource::new(Vec::new());
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         assert!(result.is_err());
 
         let wrong_size = vec![0u8; 100];
         let mut source = MockFrameSource::new(wrong_size);
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         assert!(result.is_err());
     }
 
@@ -214,12 +224,12 @@ mod tests {
     fn test_write_frame_accepts_correct_size() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let frame = vec![0u8; pixel_count];
         let mut source = MockFrameSource::new(frame);
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         assert!(result.is_ok());
     }
 
@@ -227,12 +237,12 @@ mod tests {
     fn test_write_frame_fails_on_early_eof() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count - 1]);
 
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("does not match expected"), "unexpected error: {err}");
@@ -242,13 +252,13 @@ mod tests {
     fn test_write_frame_accepts_arbitrary_chunk_boundaries() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let frame: Vec<u8> = (0..pixel_count).map(|i| (i % 251) as u8).collect();
         let mut source = MockFrameSource::new(frame.clone()).with_chunk_sizes(vec![1, 3, 7, 2, 511, 5]);
 
-        display.write_frame(&mut source).unwrap();
+        display.write_frame(&mut source, test_rect()).unwrap();
 
         let writes = display.backend.take_writes();
         let payload: Vec<u8> = frame_writes(writes).into_iter().flatten().collect();
@@ -259,14 +269,14 @@ mod tests {
     fn test_write_frame_fails_on_extra_bytes() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut frame = vec![0u8; pixel_count];
         frame.extend_from_slice(&[1, 2, 3]);
         let mut source = MockFrameSource::new(frame);
 
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("exceeds expected"), "unexpected error: {err}");
@@ -276,12 +286,12 @@ mod tests {
     fn test_write_frame_propagates_backend_errors() {
         let backend = MockTftBackend::new().with_error();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
 
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         assert!(result.is_err());
     }
 
@@ -289,7 +299,7 @@ mod tests {
     async fn test_init_sequence() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         display.init().await.unwrap();
 
@@ -323,7 +333,7 @@ mod tests {
         
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         display.init().await.unwrap();
 
@@ -339,11 +349,11 @@ mod tests {
     fn test_write_frame_column_command() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
-        display.write_frame(&mut source).unwrap();
+        display.write_frame(&mut source, test_rect()).unwrap();
 
         let commands = display.backend.take_commands();
         let writes: Vec<_> = commands.iter()
@@ -360,11 +370,11 @@ mod tests {
     fn test_write_frame_row_command() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
-        display.write_frame(&mut source).unwrap();
+        display.write_frame(&mut source, test_rect()).unwrap();
 
         let commands = display.backend.take_commands();
         let writes: Vec<_> = commands.iter()
@@ -381,12 +391,12 @@ mod tests {
     fn test_write_frame_pixel_data() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let frame = vec![0xAA; pixel_count];
         let mut source = MockFrameSource::new(frame.clone()).with_chunk_sizes(vec![257, 513, 1024]);
-        display.write_frame(&mut source).unwrap();
+        display.write_frame(&mut source, test_rect()).unwrap();
 
         let writes = display.backend.take_writes();
         
@@ -400,11 +410,11 @@ mod tests {
     fn test_write_cmd_data() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
-        display.write_frame(&mut source).unwrap();
+        display.write_frame(&mut source, test_rect()).unwrap();
 
         let commands = display.backend.take_commands();
         let writes: Vec<_> = commands.iter()
@@ -423,11 +433,21 @@ mod tests {
     fn test_write_data16_format() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, 240, 320);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = 240 * 320 * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
-        display.write_frame(&mut source).unwrap();
+        display
+            .write_frame(
+                &mut source,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 240,
+                    height: 320,
+                },
+            )
+            .unwrap();
 
         let writes = display.backend.take_writes();
         
@@ -448,7 +468,7 @@ mod tests {
     async fn test_backend_error_propagation() {
         let backend = MockTftBackend::new().with_error();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let result = display.init().await;
         assert!(result.is_err());
@@ -458,13 +478,13 @@ mod tests {
     async fn test_backend_error_during_write_frame() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, TEST_WIDTH, TEST_HEIGHT);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         display.backend.should_error = true;
         
         let pixel_count = (TEST_WIDTH as usize) * (TEST_HEIGHT as usize) * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(&mut source, test_rect());
         
         assert!(result.is_err());
     }
@@ -473,18 +493,26 @@ mod tests {
     fn test_width_height_edge_cases() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let _display = crate::TftDisplay::new(backend, clock, 240, 320);
+        let _display = crate::TftDisplay::new(backend, clock);
     }
 
     #[test]
     fn test_specific_dimensions() {
         let backend = MockTftBackend::new();
         let clock = MockClock::new();
-        let mut display = crate::TftDisplay::new(backend, clock, 240, 320);
+        let mut display = crate::TftDisplay::new(backend, clock);
 
         let pixel_count = 240 * 320 * 2;
         let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
-        let result = display.write_frame(&mut source);
+        let result = display.write_frame(
+            &mut source,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 240,
+                height: 320,
+            },
+        );
         
         assert!(result.is_ok());
         
@@ -499,5 +527,93 @@ mod tests {
         assert!(writes.iter().any(|v| v == &[0x2A]));
         assert!(writes.iter().any(|v| v == &[0x2B]));
         assert!(writes.iter().any(|v| v == &[0x2C]));
+    }
+
+    #[test]
+    fn test_write_frame_sub_rect_sets_window() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock);
+        let rect = Rect {
+            x: 5,
+            y: 7,
+            width: 11,
+            height: 13,
+        };
+
+        let pixel_count = (rect.width as usize) * (rect.height as usize) * 2;
+        let mut source = MockFrameSource::new(vec![0u8; pixel_count]);
+        display.write_frame(&mut source, rect).unwrap();
+
+        let writes = display.backend.take_writes();
+        assert!(writes.iter().any(|v| v == &[0x2A]));
+        assert!(writes.iter().any(|v| v == &[0x00, 0x05]));
+        assert!(writes.iter().any(|v| v == &[0x00, 0x0F]));
+        assert!(writes.iter().any(|v| v == &[0x2B]));
+        assert!(writes.iter().any(|v| v == &[0x00, 0x07]));
+        assert!(writes.iter().any(|v| v == &[0x00, 0x13]));
+    }
+
+    #[test]
+    fn test_write_frame_rejects_zero_sized_rect() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock);
+        let mut source = MockFrameSource::new(Vec::new());
+
+        let err = display
+            .write_frame(
+                &mut source,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 1,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("non-zero width and height"));
+    }
+
+    #[test]
+    fn test_write_frame_rejects_x_overflow() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock);
+        let mut source = MockFrameSource::new(vec![0u8; 2]);
+
+        let err = display
+            .write_frame(
+                &mut source,
+                Rect {
+                    x: u16::MAX,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("x range overflow"));
+    }
+
+    #[test]
+    fn test_write_frame_rejects_y_overflow() {
+        let backend = MockTftBackend::new();
+        let clock = MockClock::new();
+        let mut display = crate::TftDisplay::new(backend, clock);
+        let mut source = MockFrameSource::new(vec![0u8; 2]);
+
+        let err = display
+            .write_frame(
+                &mut source,
+                Rect {
+                    x: 0,
+                    y: u16::MAX,
+                    width: 1,
+                    height: 2,
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("y range overflow"));
     }
 }
