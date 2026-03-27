@@ -1,12 +1,6 @@
 let
-  sources = {
-    nixpkgs = builtins.fetchTarball {
-      url = "https://github.com/NixOS/nixpkgs/archive/0590cd39f728e129122770c029970378a79d076a.tar.gz";
-      sha256 = "sha256-BHoB/XpbqoZkVYZCfXJXfkR+GXFqwb/4zbWnOr2cRcU=";
-    };
-  };
-
-  pkgs = import sources.nixpkgs { };
+  nixpkgs = import ../nixpkgs.nix;
+  pkgs = import nixpkgs { };
   rustPlatform = pkgs.rustPlatform;
   manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 

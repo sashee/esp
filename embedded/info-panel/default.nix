@@ -1,17 +1,13 @@
 let
+  nixpkgs = import ../nixpkgs.nix;
   sources = {
-    nixpkgs = builtins.fetchTarball {
-      url = "https://github.com/NixOS/nixpkgs/archive/0590cd39f728e129122770c029970378a79d076a.tar.gz";
-      sha256 = "sha256-BHoB/XpbqoZkVYZCfXJXfkR+GXFqwb/4zbWnOr2cRcU=";
-    };
-
     rust-overlay = builtins.fetchTarball {
       url = "https://github.com/oxalica/rust-overlay/archive/2b18fe48d9a8a4ff3850d56b67cfe72f2a589237.tar.gz";
       sha256 = "sha256-0qI+a9z7KpYCBbp4ENN32b2tf0VmC3MhgFw1KAroqxQ=";
     };
   };
 
-  pkgs = import sources.nixpkgs {
+  pkgs = import nixpkgs {
     overlays = [ (import sources.rust-overlay) ];
   };
 

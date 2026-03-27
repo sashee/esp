@@ -1,5 +1,5 @@
 let
-  nixpkgs = import ../../../nixpkgs.nix;
+  nixpkgs = import ../../nixpkgs.nix;
   pkgs = import nixpkgs { };
   rustPlatform = pkgs.rustPlatform;
   manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);

@@ -10,10 +10,12 @@ use std::thread::{self, JoinHandle};
 pub type OpId = u64;
 
 pub mod next_events;
+pub mod timing;
 pub use next_events::{
     possible_next_events, AsyncTiming, NextEventsSpec, PossibleEvent, ReplayError, TimingWarning,
     TraceStep, Warning,
 };
+pub use timing::{elapsed_time, ElapsedTime};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event<S, A, SR, AR> {

@@ -149,6 +149,16 @@ fn push_step(
     TraceStep::push(inbound, outbound)
 }
 
+fn resolve_event(
+    events: &[PossibleEvent<TestSyncOp, TestAsyncOp, InboundKind>],
+    id: OpId,
+) -> &PossibleEvent<TestSyncOp, TestAsyncOp, InboundKind> {
+    events
+        .iter()
+        .find(|event| matches!(event, PossibleEvent::ResolveAsync { id: event_id, .. } if *event_id == id))
+        .unwrap()
+}
+
 #[test]
 fn empty_trace_returns_no_events() {
     let events = possible_next_events::<_, _, _, _, BaseSpec>(&[]).unwrap();
@@ -427,7 +437,7 @@ fn untimed_async_has_no_warning() {
 }
 
 #[test]
-fn later_equal_delay_gets_warning() {
+fn later_equal_delay_has_no_warning() {
     let trace = [start_step(vec![
         Event::CreateAsync {
             id: 1,
@@ -443,15 +453,12 @@ fn later_equal_delay_gets_warning() {
     assert!(events.contains(&PossibleEvent::ResolveAsync {
         id: 2,
         op: TestAsyncOp::Delay(Duration::from_millis(10)),
-        warnings: vec![Warning::Timing(TimingWarning::EarlierDelayStillPending {
-            pending_id: 1,
-            pending_duration: Duration::from_millis(10),
-        })],
+        warnings: vec![],
     }));
 }
 
 #[test]
-fn later_longer_delay_gets_warning() {
+fn later_longer_delay_still_warns_while_earlier_shorter_pending() {
     let trace = [start_step(vec![
         Event::CreateAsync {
             id: 1,
@@ -514,6 +521,396 @@ fn later_shorter_delay_has_no_warning() {
             warnings: vec![],
         }
     );
+}
+
+#[test]
+fn chain_accumulation_warns_when_earlier_long_delay_must_have_finished() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(50)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(60)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert!(events.contains(&PossibleEvent::ResolveAsync {
+        id: 3,
+        op: TestAsyncOp::Delay(Duration::from_millis(60)),
+        warnings: vec![Warning::Timing(TimingWarning::EarlierDelayStillPending {
+            pending_id: 1,
+            pending_duration: Duration::from_millis(100),
+        })],
+    }));
+}
+
+#[test]
+fn repeated_chain_accumulation_warns_once_elapsed_exceeds_earlier_delay() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(200)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(50)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(50)),
+            }],
+        ),
+        push_step(
+            Event::ResolveAsync {
+                id: 3,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 4,
+                op: TestAsyncOp::Delay(Duration::from_millis(101)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert!(events.contains(&PossibleEvent::ResolveAsync {
+        id: 4,
+        op: TestAsyncOp::Delay(Duration::from_millis(101)),
+        warnings: vec![Warning::Timing(TimingWarning::EarlierDelayStillPending {
+            pending_id: 1,
+            pending_duration: Duration::from_millis(200),
+        })],
+    }));
+}
+
+#[test]
+fn accumulated_exact_tie_has_no_warning() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(40)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(60)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert_eq!(
+        resolve_event(&events, 3),
+        &PossibleEvent::ResolveAsync {
+            id: 3,
+            op: TestAsyncOp::Delay(Duration::from_millis(60)),
+            warnings: vec![],
+        }
+    );
+}
+
+#[test]
+fn created_after_elapsed_time_with_equal_deadline_has_no_warning() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(10)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(90)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert_eq!(
+        resolve_event(&events, 3),
+        &PossibleEvent::ResolveAsync {
+            id: 3,
+            op: TestAsyncOp::Delay(Duration::from_millis(90)),
+            warnings: vec![],
+        }
+    );
+}
+
+#[test]
+fn created_after_elapsed_time_with_strictly_later_deadline_warns() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(10)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(91)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert!(events.contains(&PossibleEvent::ResolveAsync {
+        id: 3,
+        op: TestAsyncOp::Delay(Duration::from_millis(91)),
+        warnings: vec![Warning::Timing(TimingWarning::EarlierDelayStillPending {
+            pending_id: 1,
+            pending_duration: Duration::from_millis(100),
+        })],
+    }));
+}
+
+#[test]
+fn overlapping_older_pending_delay_warns_when_strictly_earlier() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(90)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(10)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 3,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 4,
+                op: TestAsyncOp::Delay(Duration::from_millis(50)),
+            }],
+        ),
+        push_step(
+            Event::ResolveAsync {
+                id: 4,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert!(events.contains(&PossibleEvent::ResolveAsync {
+        id: 2,
+        op: TestAsyncOp::Delay(Duration::from_millis(100)),
+        warnings: vec![Warning::Timing(TimingWarning::EarlierDelayStillPending {
+            pending_id: 1,
+            pending_duration: Duration::from_millis(90),
+        })],
+    }));
+}
+
+#[test]
+fn overlapping_equal_deadline_has_no_warning() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(10)),
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 3,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![Event::CreateAsync {
+                id: 4,
+                op: TestAsyncOp::Delay(Duration::from_millis(50)),
+            }],
+        ),
+        push_step(
+            Event::ResolveAsync {
+                id: 4,
+                result: TestAsyncResult::DelayDone,
+            },
+            vec![],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert_eq!(
+        resolve_event(&events, 2),
+        &PossibleEvent::ResolveAsync {
+            id: 2,
+            op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            warnings: vec![],
+        }
+    );
+}
+
+#[test]
+fn untimed_completion_makes_later_equal_delay_strictly_later() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::WifiScan,
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::WifiScanDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert!(events.contains(&PossibleEvent::ResolveAsync {
+        id: 3,
+        op: TestAsyncOp::Delay(Duration::from_millis(100)),
+        warnings: vec![Warning::Timing(TimingWarning::EarlierDelayStillPending {
+            pending_id: 1,
+            pending_duration: Duration::from_millis(100),
+        })],
+    }));
+}
+
+#[test]
+fn untimed_completion_does_not_force_shorter_later_delay() {
+    let trace = [
+        start_step(vec![
+            Event::CreateAsync {
+                id: 1,
+                op: TestAsyncOp::Delay(Duration::from_millis(100)),
+            },
+            Event::CreateAsync {
+                id: 2,
+                op: TestAsyncOp::WifiScan,
+            },
+        ]),
+        push_step(
+            Event::ResolveAsync {
+                id: 2,
+                result: TestAsyncResult::WifiScanDone,
+            },
+            vec![Event::CreateAsync {
+                id: 3,
+                op: TestAsyncOp::Delay(Duration::from_millis(99)),
+            }],
+        ),
+    ];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert_eq!(
+        resolve_event(&events, 3),
+        &PossibleEvent::ResolveAsync {
+            id: 3,
+            op: TestAsyncOp::Delay(Duration::from_millis(99)),
+            warnings: vec![],
+        }
+    );
+}
+
+#[test]
+fn multiple_pending_earlier_delays_warn_on_later_resolution() {
+    let trace = [start_step(vec![
+        Event::CreateAsync {
+            id: 1,
+            op: TestAsyncOp::Delay(Duration::from_millis(30)),
+        },
+        Event::CreateAsync {
+            id: 2,
+            op: TestAsyncOp::Delay(Duration::from_millis(60)),
+        },
+        Event::CreateAsync {
+            id: 3,
+            op: TestAsyncOp::Delay(Duration::from_millis(90)),
+        },
+    ])];
+
+    let events = possible_next_events::<_, _, _, _, BaseSpec>(&trace).unwrap();
+    assert!(events.contains(&PossibleEvent::ResolveAsync {
+        id: 3,
+        op: TestAsyncOp::Delay(Duration::from_millis(90)),
+        warnings: vec![
+            Warning::Timing(TimingWarning::EarlierDelayStillPending {
+                pending_id: 1,
+                pending_duration: Duration::from_millis(30),
+            }),
+            Warning::Timing(TimingWarning::EarlierDelayStillPending {
+                pending_id: 2,
+                pending_duration: Duration::from_millis(60),
+            }),
+        ],
+    }));
 }
 
 #[test]

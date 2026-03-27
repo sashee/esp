@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use crate::timing::{elapsed_time, ElapsedTime};
 use crate::{Event, OpId};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,11 +119,10 @@ struct PendingSync<S> {
 #[derive(Clone, Debug)]
 struct PendingAsync<A> {
     op: A,
-    creation_order: u64,
+    creation_step: usize,
 }
 
 struct ReplayState<S, A> {
-    next_creation_order: u64,
     pending_sync: Option<PendingSync<S>>,
     pending_outbound_async: BTreeMap<OpId, PendingAsync<A>>,
     pending_inbound_async: BTreeMap<OpId, PendingAsync<A>>,
@@ -133,7 +133,6 @@ struct ReplayState<S, A> {
 impl<S, A> Default for ReplayState<S, A> {
     fn default() -> Self {
         Self {
-            next_creation_order: 0,
             pending_sync: None,
             pending_outbound_async: BTreeMap::new(),
             pending_inbound_async: BTreeMap::new(),
@@ -152,8 +151,8 @@ where
     Spec: NextEventsSpec<S, A, SR, AR>,
 {
     let mut state = ReplayState::default();
-    for step in trace {
-        replay_step::<S, A, SR, AR, Spec>(&mut state, step)?;
+    for (step_index, step) in trace.iter().enumerate() {
+        replay_step::<S, A, SR, AR, Spec>(&mut state, step, step_index)?;
     }
 
     if let Some(pending) = state.pending_sync {
@@ -169,7 +168,7 @@ where
         events.push(PossibleEvent::ResolveAsync {
             id,
             op: pending.op.clone(),
-            warnings: resolve_warnings::<S, A, SR, AR, Spec>(&state, id),
+            warnings: resolve_warnings::<S, A, SR, AR, Spec>(&state, trace, id),
         });
         events.push(PossibleEvent::AbortAsync {
             id,
@@ -196,21 +195,28 @@ where
     Ok(events)
 }
 
-fn resolve_warnings<S, A, SR, AR, Spec>(state: &ReplayState<S, A>, id: OpId) -> Vec<Warning>
+fn resolve_warnings<S, A, SR, AR, Spec>(
+    state: &ReplayState<S, A>,
+    trace: &[TraceStep<S, A, SR, AR>],
+    id: OpId,
+) -> Vec<Warning>
 where
+    S: Clone,
+    A: Clone,
     Spec: NextEventsSpec<S, A, SR, AR>,
 {
     let Some(current) = state.pending_outbound_async.get(&id) else {
         return Vec::new();
     };
 
-    let AsyncTiming::Delay(current_duration) = Spec::async_timing(&current.op) else {
-        return Vec::new();
-    };
+    let current_created_at = elapsed_time::<S, A, SR, AR, Spec>(&trace[..=current.creation_step]);
+    let current_earliest =
+        current_created_at + ElapsedTime::from_async_timing(Spec::async_timing(&current.op));
+    let candidate_time = current_earliest.max(elapsed_time::<S, A, SR, AR, Spec>(trace));
 
     let mut warnings = Vec::new();
     for (&other_id, other) in &state.pending_outbound_async {
-        if other_id == id || other.creation_order >= current.creation_order {
+        if other_id == id {
             continue;
         }
 
@@ -218,7 +224,10 @@ where
             continue;
         };
 
-        if other_duration <= current_duration {
+        let other_created_at = elapsed_time::<S, A, SR, AR, Spec>(&trace[..=other.creation_step]);
+        let other_earliest = other_created_at + ElapsedTime::Exact(other_duration);
+
+        if other_earliest < candidate_time {
             warnings.push(Warning::Timing(TimingWarning::EarlierDelayStillPending {
                 pending_id: other_id,
                 pending_duration: other_duration,
@@ -232,6 +241,7 @@ where
 fn replay_step<S, A, SR, AR, Spec>(
     state: &mut ReplayState<S, A>,
     step: &TraceStep<S, A, SR, AR>,
+    step_index: usize,
 ) -> Result<(), ReplayError>
 where
     S: Clone,
@@ -239,11 +249,11 @@ where
     Spec: NextEventsSpec<S, A, SR, AR>,
 {
     if let Some(inbound) = &step.inbound {
-        apply_inbound::<S, A, SR, AR, Spec>(state, inbound)?;
+        apply_inbound::<S, A, SR, AR, Spec>(state, inbound, step_index)?;
     }
 
     for (index, outbound) in step.outbound.iter().enumerate() {
-        apply_outbound::<S, A, SR, AR, Spec>(state, outbound)?;
+        apply_outbound::<S, A, SR, AR, Spec>(state, outbound, step_index)?;
         if state.pending_sync.is_some() && index + 1 < step.outbound.len() {
             return Err(ReplayError::OutboundCreateSyncWhileSyncBlocked);
         }
@@ -255,6 +265,7 @@ where
 fn apply_inbound<S, A, SR, AR, Spec>(
     state: &mut ReplayState<S, A>,
     event: &Event<S, A, SR, AR>,
+    step_index: usize,
 ) -> Result<(), ReplayError>
 where
     S: Clone,
@@ -283,7 +294,9 @@ where
     match event {
         Event::CreateSync { .. } => Err(ReplayError::InboundCreateSyncUnsupported),
         Event::ReturnSync { id, .. } => Err(ReplayError::UnknownSyncId(*id)),
-        Event::CreateAsync { id, op } => create_async(state, *id, op.clone(), AsyncOrigin::Inbound),
+        Event::CreateAsync { id, op } => {
+            create_async(state, *id, op.clone(), AsyncOrigin::Inbound, step_index)
+        }
         Event::ResolveAsync { id, result } => {
             resolve_outbound_async::<S, A, SR, AR, Spec>(state, *id, result)
         }
@@ -295,6 +308,7 @@ where
 fn apply_outbound<S, A, SR, AR, Spec>(
     state: &mut ReplayState<S, A>,
     event: &Event<S, A, SR, AR>,
+    step_index: usize,
 ) -> Result<(), ReplayError>
 where
     S: Clone,
@@ -314,7 +328,7 @@ where
         }
         Event::ReturnSync { .. } => Err(ReplayError::OutboundReturnSyncUnsupported),
         Event::CreateAsync { id, op } => {
-            create_async(state, *id, op.clone(), AsyncOrigin::Outbound)
+            create_async(state, *id, op.clone(), AsyncOrigin::Outbound, step_index)
         }
         Event::ResolveAsync { id, result } => {
             resolve_inbound_async::<S, A, SR, AR, Spec>(state, *id, result)
@@ -329,6 +343,7 @@ fn create_async<S, A>(
     id: OpId,
     op: A,
     origin: AsyncOrigin,
+    creation_step: usize,
 ) -> Result<(), ReplayError> {
     if let Some(existing) = state.async_origins.get(&id) {
         return Err(match existing {
@@ -343,11 +358,7 @@ fn create_async<S, A>(
     }
 
     state.async_origins.insert(id, origin);
-    let pending = PendingAsync {
-        op,
-        creation_order: state.next_creation_order,
-    };
-    state.next_creation_order += 1;
+    let pending = PendingAsync { op, creation_step };
     match origin {
         AsyncOrigin::Outbound => {
             state.pending_outbound_async.insert(id, pending);
