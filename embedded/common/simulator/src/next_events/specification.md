@@ -10,7 +10,7 @@ This module is separate from the wrapper runtime. The wrapper remains unchanged 
 
 Create a dedicated subdirectory:
 
-- `embedded/common/sim/src/next_events/`
+- `embedded/common/simulator/src/next_events/`
 
 This subdirectory will contain the next-events implementation and its tests so the feature is easy to discover and maintain.
 
@@ -258,10 +258,10 @@ For example:
 
 Add a new module tree:
 
-- `embedded/common/sim/src/next_events/mod.rs`
-- `embedded/common/sim/src/next_events/tests.rs`
+- `embedded/common/simulator/src/next_events/mod.rs`
+- `embedded/common/simulator/src/next_events/tests.rs`
 
-And re-export the public API from `embedded/common/sim/src/lib.rs` so downstream simulators can import it from the `sim` crate directly.
+And re-export the public API from `embedded/common/simulator/src/lib.rs` so downstream simulators can import it from the `simulator` crate directly.
 
 ## Status
 

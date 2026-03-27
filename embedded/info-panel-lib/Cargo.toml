@@ -18,4 +18,4 @@ tft-display = { path = "../common/lib/tft-display" }
 
 [dev-dependencies]
 dhat = "0.3"
-sim = { path = "../common/sim" }
+simulator = { path = "../common/simulator" }

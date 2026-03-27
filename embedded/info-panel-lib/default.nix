@@ -37,9 +37,10 @@ let
   ];
 
   src = pkgs.runCommand "info-panel-lib-src" { } ''
-    mkdir -p $out/info-panel-lib $out/common/lib
+    mkdir -p $out/info-panel-lib $out/common/lib $out/common/simulator
     cp -r ${filteredSrc}/${libDir}/* $out/info-panel-lib/
     cp -r ${filteredSrc}/embedded/common/lib/* $out/common/lib/
+    cp -r ${filteredSrc}/embedded/common/simulator/* $out/common/simulator/
   '';
 in
 rustPlatform.buildRustPackage {

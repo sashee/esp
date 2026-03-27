@@ -27,9 +27,9 @@ jobs:
     - name: Build wifi
       run: nix-build
       working-directory: embedded/common/lib/wifi/
-    - name: Build sim
+    - name: Build simulator
       run: nix-build
-      working-directory: embedded/common/sim/
+      working-directory: embedded/common/simulator/
     - name: Build info-panel-lib
       run: nix-build
       working-directory: embedded/info-panel-lib/

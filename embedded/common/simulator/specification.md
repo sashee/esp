@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build a generic, event-driven simulator wrapper core in `embedded/common/sim` that can drive a library's `run()` future through typed sync and async operations without hardcoding one concrete application into the core.
+Build a generic, event-driven simulator wrapper core in `embedded/common/simulator` that can drive a library's `run()` future through typed sync and async operations without hardcoding one concrete application into the core.
 
 The core owns the runtime mechanics only. Application-visible values such as boot reason, MAC address, store contents, wifi results, and inbound HTTP requests must stay protocol-visible and flow through events rather than through wrapper construction.
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a reusable timing-analysis helper for `sim` that can answer:
+Add a reusable timing-analysis helper for `simulator` that can answer:
 
 - what abstract elapsed time is implied by a trace slice
 

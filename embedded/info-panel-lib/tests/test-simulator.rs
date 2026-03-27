@@ -3,7 +3,7 @@ use config_portal::{ConfigStore, HttpEndpoint, HttpMethod, HttpRequest, HttpResp
 use core::future::poll_fn;
 use embassy_time::Duration as EmbassyDuration;
 use info_panel_lib::{BootReason, Clock, Hal, HttpClient, Platform, TFT_HEIGHT, TFT_WIDTH};
-use sim::{
+use simulator::{
     possible_next_events, AsyncCompletion, AsyncTiming, Event, NewRunWrapper, NextEventsSpec,
     PossibleEvent, SimBundle, SimDriver, TraceStep,
 };
