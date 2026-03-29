@@ -6,6 +6,15 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+simulator-ui = ["dep:crossterm", "dep:serde", "dep:serde_json", "dep:simulator"]
+
+[[bin]]
+name = "info-panel-simulator"
+path = "src/bin/simulator.rs"
+required-features = ["simulator-ui"]
+
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
@@ -15,7 +24,10 @@ config-portal = { path = "../common/lib/config-portal" }
 wifi = { path = "../common/lib/wifi" }
 rgb-led = { path = "../common/lib/rgb-led" }
 tft-display = { path = "../common/lib/tft-display" }
+simulator = { path = "../common/simulator", optional = true }
+crossterm = { version = "0.28", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 dhat = "0.3"
-simulator = { path = "../common/simulator" }

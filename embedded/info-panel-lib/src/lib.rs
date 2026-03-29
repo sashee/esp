@@ -21,6 +21,9 @@ use wifi::{
 
 pub use config_portal::ConfigTiming;
 
+#[cfg(feature = "simulator-ui")]
+pub mod simulator;
+
 pub const TFT_WIDTH: u16 = 128;
 pub const TFT_HEIGHT: u16 = 160;
 pub const CONFIG_NAMESPACE: &str = "config";

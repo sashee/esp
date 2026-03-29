@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use crate::timing::{elapsed_time, ElapsedTime};
+use super::timing::{elapsed_time, ElapsedTime};
 use crate::{Event, OpId};
 
 #[derive(Clone, Debug, PartialEq)]

@@ -4,7 +4,7 @@ use std::ops::Add;
 use std::ops::AddAssign;
 use std::time::Duration;
 
-use crate::next_events::{AsyncTiming, NextEventsSpec, TraceStep};
+use super::next_events::{AsyncTiming, NextEventsSpec, TraceStep};
 use crate::{Event, OpId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
