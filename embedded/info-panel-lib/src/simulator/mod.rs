@@ -11,8 +11,8 @@ use simulator::ratatui::layout::Rect;
 use simulator::ratatui::style::{Modifier, Style};
 use simulator::ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use simulator::{
-    possible_next_events, AsyncCompletion, AsyncTiming, Event, NewRunWrapper, NextEventsSpec,
-    PossibleEvent, SimBundle, SimDriver, TraceStep,
+    elapsed_time, AsyncCompletion, AsyncTiming, ElapsedTime, Event, NewRunWrapper,
+    NextEventsSpec, PossibleEvent, SimBundle, SimDriver, TraceStep, possible_next_events,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;

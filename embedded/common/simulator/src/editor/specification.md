@@ -151,14 +151,16 @@ Main timeline labels should stay concise:
 - do not show symbolic ids such as `sleep_20ms`
 - keep symbolic request/response linkage in derived metadata for future timeline and pairing visuals
 
-The cursor and visual selection live in visible-timeline space.
+The cursor lives in visible-timeline space, but navigation and visual selection operate on whole steps rather than individual rows. A step is the initial start block or one saved inbound item together with the derived outbound rows that follow from it.
 
 This allows the UI to:
 
-- move through all shown events
+- move through all shown steps
 - highlight pending requests
 - highlight the paired event for the current row
 - insert items at the visible boundary the user is looking at
+
+The main trace view should include a left timeline gutter. Requests should use directional glyphs so starts and completions are visually distinct: a request starts with a start marker, remains visible with vertical continuation while pending, and ends with a completion marker. Concurrent operations should occupy separate compact lanes so overlapping work is easy to see.
 
 ## Validity Model
 
@@ -199,21 +201,26 @@ The editor should behave like a state machine over a persistent document.
 
 Core editing operations include:
 
-- move cursor up/down/start/end
+- move cursor up/down/start/end by step
+- move by page and half-page
+- center the current step in the viewport
 - enter and exit visual selection mode
 - insert a new item below the cursor
 - edit the current item
 - delete the current item or selected range
-- move the current item or selected range up/down
 
-In the current incremental implementation, edit and delete operate on the current visible inbound script row. Saved outbound marker items may be removed or replaced together with that inbound row when they form the paired symbolic binding for the edited event.
+The editor may also surface adapter-defined trivial continuation chains at the end of the valid trace prefix. These should appear as dim preview rows and be acceptable with a single command that appends the full unambiguous trivial-success chain.
+
+In the current implementation, trivial continuation previews appear inline in the event list as grey ghost rows at the end of the valid trace. They are not selectable, and `.` accepts the full trivial chain.
+
+In the current incremental implementation, edit and delete operate on the current visible step. Saved outbound marker items may be removed or replaced together with their paired inbound row when they form the symbolic binding for the edited event.
 
 Selection is vim-like:
 
 - enter visual mode
 - keep an anchor at the start position
-- extend selection by moving the cursor
-- apply operations such as delete or move to the selected range
+- extend selection by moving the cursor step-wise
+- apply operations such as delete to the selected step range
 
 ## Insert And Edit Flow
 
@@ -222,7 +229,7 @@ When inserting below the cursor, the editor should:
 1. compute the replay position associated with that visible boundary
 2. compute the valid next event possibilities at that point
 3. present the allowed item kinds
-4. let the project adapter provide the concrete form fields for operation/result payloads
+4. let the project adapter provide the concrete form UI for operation/result payloads
 5. build the saved item and insert it into the document
 6. rerun replay and refresh derived state
 
@@ -292,6 +299,10 @@ Project crates should provide traits for:
 The generic simulator crate should own the editor state machine, replay pipeline, and generic terminal frontend.
 
 Insert and edit forms are adapter-owned. The generic frontend should provide the modal lifecycle and a popup area, while the project adapter may render directly with `ratatui` inside that area and return the exact JSON items that should be written back to the run file.
+
+Saved sync and async result payloads may represent either successful completion or failure. The generic simulator protocol does not need separate error event kinds; project adapters may encode success and error within their app-specific result JSON.
+
+`Now`/current-time reads should be modeled as normal sync request/response events. When the adapter offers a default value for a `Now` response, it should derive that value from elapsed trace time rather than hidden runtime state.
 
 ## Persistence
 

@@ -18,6 +18,15 @@ pub(super) enum InfoPanelForm {
         target: String,
         namespace: String,
         keys: Vec<String>,
+        error_mode: bool,
+        text: String,
+        outbound: Option<SavedItem>,
+    },
+    SyncUnit {
+        title: String,
+        target: String,
+        operation_label: String,
+        error_mode: bool,
         text: String,
         outbound: Option<SavedItem>,
     },
@@ -49,6 +58,7 @@ impl InfoPanelForm {
                 target,
                 namespace: _,
                 keys,
+                error_mode,
                 text,
                 outbound,
                 ..
@@ -59,9 +69,40 @@ impl InfoPanelForm {
                 }
                 items.push(SavedItem::InboundReturnSync {
                     target: target.clone(),
-                    result: SavedSyncResult::StoreRead {
-                        values: parse_store_read_text(keys, text)?,
+                    result: if *error_mode {
+                        SavedSyncResult::StoreReadErr {
+                            message: text.trim().to_string(),
+                        }
+                    } else {
+                        SavedSyncResult::StoreReadOk {
+                            values: parse_store_read_text(keys, text)?,
+                        }
                     },
+                });
+                items_to_json(items)
+            }
+            InfoPanelForm::SyncUnit {
+                target,
+                operation_label: _,
+                error_mode,
+                text,
+                outbound,
+                ..
+            } => {
+                let mut items = Vec::new();
+                if let Some(outbound) = outbound.clone() {
+                    items.push(outbound);
+                }
+                let result = if *error_mode {
+                    SavedSyncResult::UnitErr {
+                        message: text.trim().to_string(),
+                    }
+                } else {
+                    SavedSyncResult::UnitOk
+                };
+                items.push(SavedItem::InboundReturnSync {
+                    target: target.clone(),
+                    result,
                 });
                 items_to_json(items)
             }
@@ -108,14 +149,44 @@ impl FormController for InfoPanelForm {
                 title,
                 namespace,
                 keys,
+                error_mode,
                 text,
                 ..
             } => {
                 frame.render_widget(
                     Paragraph::new(format!(
-                        "namespace: {namespace}\nkeys: {}\n\n{}\n\nType key=value lines. enter: save  esc: cancel",
+                        "mode: {} (press m to toggle)\nnamespace: {namespace}\nkeys: {}\n\n{}\n\n{}\nenter: save  esc: cancel",
+                        if *error_mode { "error" } else { "success" },
                         keys.join(", "),
-                        text
+                        text,
+                        if *error_mode {
+                            "Type an error message."
+                        } else {
+                            "Type key=value lines. Press Tab for newline."
+                        }
+                    ))
+                    .block(Block::default().title(title.as_str()).borders(Borders::ALL)),
+                    area,
+                );
+            }
+            InfoPanelForm::SyncUnit {
+                title,
+                operation_label,
+                error_mode,
+                text,
+                ..
+            } => {
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "mode: {} (press m to toggle)\noperation: {}\n\n{}\n\n{}\nenter: save  esc: cancel",
+                        if *error_mode { "error" } else { "success" },
+                        operation_label,
+                        text,
+                        if *error_mode {
+                            "Type an error message."
+                        } else {
+                            "Success returns immediately. Optional text is ignored."
+                        }
                     ))
                     .block(Block::default().title(title.as_str()).borders(Borders::ALL)),
                     area,
@@ -152,11 +223,20 @@ impl FormController for InfoPanelForm {
                 KeyCode::Esc => Ok(FormResult::Cancel),
                 _ => Ok(FormResult::Continue),
             },
-            InfoPanelForm::StoreRead { text, .. } => match key.code {
+            InfoPanelForm::StoreRead {
+                text, error_mode, ..
+            }
+            | InfoPanelForm::SyncUnit {
+                text, error_mode, ..
+            } => match key.code {
                 KeyCode::Enter => Ok(FormResult::Save {
                     items: self.to_json_items()?,
                 }),
                 KeyCode::Esc => Ok(FormResult::Cancel),
+                KeyCode::Char('m') => {
+                    *error_mode = !*error_mode;
+                    Ok(FormResult::Continue)
+                }
                 KeyCode::Backspace => {
                     text.pop();
                     Ok(FormResult::Continue)
@@ -204,12 +284,60 @@ pub(super) fn current_store_read_text(document: &RunDocument, item_index: usize)
         .and_then(|items| items.get(item_index).cloned())
         .and_then(|item| match item {
             SavedItem::InboundReturnSync {
-                result: SavedSyncResult::StoreRead { values },
+                result: SavedSyncResult::StoreReadOk { values },
                 ..
             } => Some(format_store_read_text(&values)),
+            SavedItem::InboundReturnSync {
+                result: SavedSyncResult::StoreReadErr { message },
+                ..
+            } => Some(message),
             _ => None,
         })
         .unwrap_or_default()
+}
+
+pub(super) fn current_store_read_error_mode(document: &RunDocument, item_index: usize) -> bool {
+    parse_items(document)
+        .ok()
+        .and_then(|items| items.get(item_index).cloned())
+        .is_some_and(|item| {
+            matches!(
+                item,
+                SavedItem::InboundReturnSync {
+                    result: SavedSyncResult::StoreReadErr { .. },
+                    ..
+                }
+            )
+        })
+}
+
+pub(super) fn current_store_unit_text(document: &RunDocument, item_index: usize) -> String {
+    parse_items(document)
+        .ok()
+        .and_then(|items| items.get(item_index).cloned())
+        .and_then(|item| match item {
+            SavedItem::InboundReturnSync {
+                result: SavedSyncResult::UnitErr { message },
+                ..
+            } => Some(message),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+pub(super) fn current_store_unit_error_mode(document: &RunDocument, item_index: usize) -> bool {
+    parse_items(document)
+        .ok()
+        .and_then(|items| items.get(item_index).cloned())
+        .is_some_and(|item| {
+            matches!(
+                item,
+                SavedItem::InboundReturnSync {
+                    result: SavedSyncResult::UnitErr { .. },
+                    ..
+                }
+            )
+        })
 }
 
 pub(super) fn format_store_read_text(values: &BTreeMap<String, String>) -> String {
@@ -247,6 +375,9 @@ pub(super) fn form_for_items(
     items: Vec<SavedItem>,
     boot_reason_selection: Option<usize>,
     store_read_text: Option<String>,
+    store_read_error_mode: bool,
+    store_unit_text: Option<String>,
+    store_unit_error_mode: bool,
 ) -> Box<dyn FormController> {
     match items.as_slice() {
         [SavedItem::OutboundCreateSync {
@@ -273,27 +404,52 @@ pub(super) fn form_for_items(
             id,
             op: SavedSyncOp::StoreRead { namespace, keys },
         }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::StoreRead { .. },
+            result: SavedSyncResult::StoreReadOk { .. } | SavedSyncResult::StoreReadErr { .. },
             ..
         }] => Box::new(InfoPanelForm::StoreRead {
             title: title.to_string(),
             target: id.clone(),
             namespace: namespace.clone(),
             keys: keys.clone(),
+            error_mode: store_read_error_mode,
             text: store_read_text.unwrap_or_default(),
             outbound: Some(items[0].clone()),
         }),
         [SavedItem::InboundReturnSync {
             target: id,
-            result: SavedSyncResult::StoreRead { .. },
+            result: SavedSyncResult::StoreReadOk { .. } | SavedSyncResult::StoreReadErr { .. },
         }] => Box::new(InfoPanelForm::StoreRead {
             title: title.to_string(),
             target: id.clone(),
             namespace: String::new(),
             keys: Vec::new(),
+            error_mode: store_read_error_mode,
             text: store_read_text.unwrap_or_default(),
             outbound: None,
         }),
+        [SavedItem::OutboundCreateSync { id, op }, SavedItem::InboundReturnSync {
+            result: SavedSyncResult::UnitOk | SavedSyncResult::UnitErr { .. },
+            ..
+        }] if matches!(
+            op,
+            SavedSyncOp::StoreWrite { .. }
+                | SavedSyncOp::StoreRemove { .. }
+                | SavedSyncOp::TftSetDcLow
+                | SavedSyncOp::TftSetDcHigh
+                | SavedSyncOp::TftSetRstLow
+                | SavedSyncOp::TftSetRstHigh
+                | SavedSyncOp::TftWrite { .. }
+        ) =>
+        {
+            Box::new(InfoPanelForm::SyncUnit {
+                title: title.to_string(),
+                target: id.clone(),
+                operation_label: format_saved_sync_op(op),
+                error_mode: store_unit_error_mode,
+                text: store_unit_text.unwrap_or_default(),
+                outbound: Some(items[0].clone()),
+            })
+        }
         _ => Box::new(InfoPanelForm::Confirm {
             title: title.to_string(),
             items,

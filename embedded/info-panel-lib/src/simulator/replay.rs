@@ -1,6 +1,7 @@
 use super::saved::*;
 use super::types::*;
 use super::*;
+use simulator::RunWrapper;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn format_embassy_duration(duration: EmbassyDuration) -> String {
@@ -18,6 +19,7 @@ pub(super) fn format_sync_op(op: &SyncOp) -> String {
     match op {
         SyncOp::BootReason => "BootReason".to_string(),
         SyncOp::MacAddress => "MacAddress".to_string(),
+        SyncOp::Now => "Now".to_string(),
         SyncOp::TftSetDcLow => "TftSetDcLow".to_string(),
         SyncOp::TftSetDcHigh => "TftSetDcHigh".to_string(),
         SyncOp::TftSetRstLow => "TftSetRstLow".to_string(),
@@ -119,6 +121,7 @@ pub(super) fn format_saved_sync_op(op: &SavedSyncOp) -> String {
     match op {
         SavedSyncOp::BootReason => "BootReason".to_string(),
         SavedSyncOp::MacAddress => "MacAddress".to_string(),
+        SavedSyncOp::Now => "Now".to_string(),
         SavedSyncOp::TftSetDcLow => "TftSetDcLow".to_string(),
         SavedSyncOp::TftSetDcHigh => "TftSetDcHigh".to_string(),
         SavedSyncOp::TftSetRstLow => "TftSetRstLow".to_string(),
@@ -217,6 +220,7 @@ pub(super) fn runtime_sync_op_to_saved(op: &SyncOp) -> SavedSyncOp {
     match op {
         SyncOp::BootReason => SavedSyncOp::BootReason,
         SyncOp::MacAddress => SavedSyncOp::MacAddress,
+        SyncOp::Now => SavedSyncOp::Now,
         SyncOp::TftSetDcLow => SavedSyncOp::TftSetDcLow,
         SyncOp::TftSetDcHigh => SavedSyncOp::TftSetDcHigh,
         SyncOp::TftSetRstLow => SavedSyncOp::TftSetRstLow,
@@ -291,8 +295,13 @@ pub(super) fn saved_sync_result_to_runtime(result: &SavedSyncResult) -> Result<S
             Ok(SyncResult::BootReason(parse_boot_reason(value)?))
         }
         SavedSyncResult::MacAddress { value } => Ok(SyncResult::MacAddress(*value)),
-        SavedSyncResult::StoreRead { values } => Ok(SyncResult::StoreRead(values.clone())),
-        SavedSyncResult::Unit => Ok(SyncResult::Unit),
+        SavedSyncResult::Now { ticks } => Ok(SyncResult::Now(*ticks)),
+        SavedSyncResult::StoreReadOk { values } => Ok(SyncResult::StoreRead(Ok(values.clone()))),
+        SavedSyncResult::StoreReadErr { message } => {
+            Ok(SyncResult::StoreRead(Err(message.clone())))
+        }
+        SavedSyncResult::UnitOk => Ok(SyncResult::Unit(Ok(()))),
+        SavedSyncResult::UnitErr { message } => Ok(SyncResult::Unit(Err(message.clone()))),
     }
 }
 
@@ -429,7 +438,7 @@ pub(super) fn default_store_values(keys: &[String]) -> BTreeMap<String, String> 
     values
 }
 
-pub(super) fn default_sync_result(op: &SyncOp) -> SavedSyncResult {
+pub(super) fn default_sync_result(op: &SyncOp, current_ticks: u64) -> SavedSyncResult {
     match op {
         SyncOp::BootReason => SavedSyncResult::BootReason {
             value: "software".to_string(),
@@ -437,16 +446,29 @@ pub(super) fn default_sync_result(op: &SyncOp) -> SavedSyncResult {
         SyncOp::MacAddress => SavedSyncResult::MacAddress {
             value: [0x02, 0x00, 0x00, 0x00, 0x12, 0x34],
         },
+        SyncOp::Now => SavedSyncResult::Now {
+            ticks: current_ticks,
+        },
         SyncOp::TftSetDcLow
         | SyncOp::TftSetDcHigh
         | SyncOp::TftSetRstLow
         | SyncOp::TftSetRstHigh
         | SyncOp::TftWrite { .. }
         | SyncOp::StoreWrite { .. }
-        | SyncOp::StoreRemove { .. } => SavedSyncResult::Unit,
-        SyncOp::StoreRead { keys, .. } => SavedSyncResult::StoreRead {
+        | SyncOp::StoreRemove { .. } => SavedSyncResult::UnitOk,
+        SyncOp::StoreRead { keys, .. } => SavedSyncResult::StoreReadOk {
             values: default_store_values(keys),
         },
+    }
+}
+
+pub(super) fn current_ticks_from_trace(
+    trace: &[TraceStep<SyncOp, AsyncOp, SyncResult, AsyncResult>],
+) -> u64 {
+    match elapsed_time::<_, _, _, _, InfoPanelSpec>(trace) {
+        ElapsedTime::Exact(duration) | ElapsedTime::MoreThan(duration) => {
+            EmbassyDuration::from_millis(duration.as_millis() as u64).as_ticks()
+        }
     }
 }
 
@@ -512,6 +534,7 @@ pub(super) fn sync_op_name(op: &SyncOp) -> &'static str {
     match op {
         SyncOp::BootReason => "boot_reason",
         SyncOp::MacAddress => "mac_address",
+        SyncOp::Now => "now",
         SyncOp::TftSetDcLow => "tft_set_dc_low",
         SyncOp::TftSetDcHigh => "tft_set_dc_high",
         SyncOp::TftSetRstLow => "tft_set_rst_low",
@@ -613,6 +636,142 @@ pub(super) struct ReplaySnapshot {
     pub(super) runtime_to_symbolic: BTreeMap<u64, String>,
     pub(super) used_ids: BTreeSet<String>,
     pub(super) replay_error: Option<String>,
+    pub(super) current_ticks: u64,
+}
+
+#[derive(Clone)]
+enum RowTimelineEvent {
+    Start(u64),
+    End(u64),
+}
+
+#[derive(Clone)]
+struct ReplayRow {
+    text: String,
+    insertion_index: usize,
+    script_item_index: Option<usize>,
+    is_invalid: bool,
+    timeline_event: Option<RowTimelineEvent>,
+}
+
+fn visible_row(
+    text: String,
+    insertion_index: usize,
+    script_item_index: Option<usize>,
+    is_invalid: bool,
+    timeline_event: Option<RowTimelineEvent>,
+) -> ReplayRow {
+    ReplayRow {
+        text,
+        insertion_index,
+        script_item_index,
+        is_invalid,
+        timeline_event,
+    }
+}
+
+fn request_start_id(event: &Event<SyncOp, AsyncOp, SyncResult, AsyncResult>) -> Option<u64> {
+    match event {
+        Event::CreateSync { id, .. } | Event::CreateAsync { id, .. } => Some(*id),
+        _ => None,
+    }
+}
+
+fn request_end_id(event: &Event<SyncOp, AsyncOp, SyncResult, AsyncResult>) -> Option<u64> {
+    match event {
+        Event::ReturnSync { id, .. }
+        | Event::ResolveAsync { id, .. }
+        | Event::AbortAsync { id }
+        | Event::CancelAsync { id } => Some(*id),
+        _ => None,
+    }
+}
+
+fn build_timeline(rows: Vec<ReplayRow>) -> Vec<VisibleRow> {
+    let mut lane_by_request = BTreeMap::<u64, usize>::new();
+    let mut result = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        if row.is_invalid {
+            result.push(VisibleRow {
+                timeline: String::new(),
+                text: row.text,
+                insertion_index: row.insertion_index,
+                script_item_index: row.script_item_index,
+                is_invalid: true,
+            });
+            continue;
+        }
+
+        let mut active = lane_by_request.values().copied().collect::<Vec<_>>();
+        active.sort_unstable();
+        active.dedup();
+
+        let marker_lane = match row.timeline_event.as_ref() {
+            Some(RowTimelineEvent::Start(id)) => {
+                let mut lane = 0;
+                while active.contains(&lane) {
+                    lane += 1;
+                }
+                Some((lane, true, *id))
+            }
+            Some(RowTimelineEvent::End(id)) => lane_by_request
+                .get(id)
+                .copied()
+                .map(|lane| (lane, false, *id)),
+            None => None,
+        };
+
+        let max_lane = active
+            .iter()
+            .copied()
+            .chain(marker_lane.iter().map(|(lane, _, _)| *lane))
+            .max();
+        let timeline = if let Some(max_lane) = max_lane {
+            let mut chars = Vec::new();
+            for lane in 0..=max_lane {
+                let ch = if let Some((marker_lane, is_start, _)) = marker_lane.as_ref() {
+                    if *marker_lane == lane {
+                        if *is_start {
+                            '┌'
+                        } else {
+                            '└'
+                        }
+                    } else if active.contains(&lane) {
+                        '│'
+                    } else {
+                        ' '
+                    }
+                } else if active.contains(&lane) {
+                    '│'
+                } else {
+                    ' '
+                };
+                chars.push(ch);
+            }
+            chars.into_iter().collect::<String>()
+        } else {
+            String::new()
+        };
+
+        if let Some((lane, is_start, id)) = marker_lane {
+            if is_start {
+                lane_by_request.insert(id, lane);
+            } else {
+                lane_by_request.remove(&id);
+            }
+        }
+
+        result.push(VisibleRow {
+            timeline,
+            text: row.text,
+            insertion_index: row.insertion_index,
+            script_item_index: row.script_item_index,
+            is_invalid: row.is_invalid,
+        });
+    }
+
+    result
 }
 
 pub(super) fn add_pending_requests(
@@ -747,11 +906,14 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
         NewRunWrapper::new(InfoPanelBundle::new(rebooted.clone())).start();
     let mut rows = initial_outbound
         .iter()
-        .map(|event| VisibleRow {
-            text: format!("OUT {}", format_event(event)),
-            insertion_index: 0,
-            script_item_index: None,
-            is_invalid: false,
+        .map(|event| {
+            visible_row(
+                format!("OUT {}", format_event(event)),
+                0,
+                None,
+                false,
+                request_start_id(event).map(RowTimelineEvent::Start),
+            )
         })
         .collect::<Vec<_>>();
     let mut trace = vec![TraceStep::start(initial_outbound.clone())];
@@ -781,80 +943,104 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
             | SavedItem::InboundAbortAsync { .. }
             | SavedItem::InboundCancelAsync { .. }
             | SavedItem::InboundCreateAsync { .. } => {
-                let row = VisibleRow {
-                    text: format_saved_item(item),
-                    insertion_index: index + 1,
-                    script_item_index: Some(index),
-                    is_invalid: false,
-                };
-                let inbound = build_inbound_event(
+                match build_inbound_event(
                     item,
                     &mut symbolic_to_runtime,
                     &mut runtime_to_symbolic,
                     &mut next_inbound_runtime_id,
-                )?;
-                if !allows_event(&possible, &inbound) {
-                    return Err(format!(
-                        "saved inbound item is not valid at index {index}: {}",
-                        format_saved_item(item)
-                    ));
+                ) {
+                    Ok(inbound) => {
+                        if !allows_event(&possible, &inbound) {
+                            Err(format!(
+                                "saved inbound item is not valid at index {index}: {}",
+                                format_saved_item(item)
+                            ))
+                        } else {
+                            rows.push(visible_row(
+                                format_saved_item(item),
+                                index + 1,
+                                Some(index),
+                                false,
+                                request_start_id(&inbound)
+                                    .map(RowTimelineEvent::Start)
+                                    .or_else(|| {
+                                        request_end_id(&inbound).map(RowTimelineEvent::End)
+                                    }),
+                            ));
+                            let outbound = wrapper.push(inbound.clone());
+                            trace.push(TraceStep::push(inbound, outbound.clone()));
+                            add_pending_requests(&mut pending_requests, &outbound);
+                            rows.extend(outbound.iter().map(|event| {
+                                visible_row(
+                                    format!("OUT {}", format_event(event)),
+                                    index + 1,
+                                    None,
+                                    false,
+                                    request_start_id(event)
+                                        .map(RowTimelineEvent::Start)
+                                        .or_else(|| {
+                                            request_end_id(event).map(RowTimelineEvent::End)
+                                        }),
+                                )
+                            }));
+                            if wrapper.is_terminated() && rebooted.load(Ordering::SeqCst) {
+                                rows.push(visible_row(
+                                    "RUN rebooted".to_string(),
+                                    index + 1,
+                                    None,
+                                    false,
+                                    None,
+                                ));
+                            }
+                            possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&trace)
+                                .map_err(|err| {
+                                    format!("failed to replay trace at index {index}: {err:?}")
+                                })?;
+                            Ok(())
+                        }
+                    }
+                    Err(err) => Err(err),
                 }
-                rows.push(row);
-                let outbound = wrapper.push(inbound.clone());
-                trace.push(TraceStep::push(inbound, outbound.clone()));
-                add_pending_requests(&mut pending_requests, &outbound);
-                rows.extend(outbound.iter().map(|event| VisibleRow {
-                    text: format!("OUT {}", format_event(event)),
-                    insertion_index: index + 1,
-                    script_item_index: None,
-                    is_invalid: false,
-                }));
-                if wrapper.is_terminated() && rebooted.load(Ordering::SeqCst) {
-                    rows.push(VisibleRow {
-                        text: "RUN rebooted".to_string(),
-                        insertion_index: index + 1,
-                        script_item_index: None,
-                        is_invalid: false,
-                    });
-                }
-                possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&trace)
-                    .map_err(|err| format!("failed to replay trace at index {index}: {err:?}"))?;
-                Ok(())
             }
         };
 
         if let Err(err) = result {
             replay_error = Some(err);
-            rows.push(VisibleRow {
-                text: format_saved_item(item),
-                insertion_index: index,
-                script_item_index: Some(index),
-                is_invalid: true,
-            });
+            rows.push(visible_row(
+                format_saved_item(item),
+                index + 1,
+                Some(index),
+                true,
+                None,
+            ));
             for (tail_index, tail_item) in items.iter().enumerate().skip(index + 1) {
-                rows.push(VisibleRow {
-                    text: format_saved_item(tail_item),
-                    insertion_index: index,
-                    script_item_index: Some(tail_index),
-                    is_invalid: true,
-                });
+                rows.push(visible_row(
+                    format_saved_item(tail_item),
+                    tail_index + 1,
+                    Some(tail_index),
+                    true,
+                    None,
+                ));
             }
             break;
         }
     }
 
+    let current_ticks = current_ticks_from_trace(&trace);
     Ok(ReplaySnapshot {
-        rows,
+        rows: build_timeline(rows),
         possible,
         runtime_to_symbolic,
         used_ids,
         replay_error,
+        current_ticks,
     })
 }
 
 pub(super) fn choice_to_saved_items(
     used_ids: &BTreeSet<String>,
     runtime_to_symbolic: &BTreeMap<u64, String>,
+    current_ticks: u64,
     choice: &PossibleEvent<SyncOp, AsyncOp, InboundAsyncKind>,
 ) -> Result<Vec<SavedItem>, String> {
     match choice {
@@ -872,7 +1058,7 @@ pub(super) fn choice_to_saved_items(
             }
             items.push(SavedItem::InboundReturnSync {
                 target,
-                result: default_sync_result(op),
+                result: default_sync_result(op, current_ticks),
             });
             Ok(items)
         }
@@ -919,6 +1105,228 @@ pub(super) fn choice_to_saved_items(
             };
             Ok(vec![SavedItem::InboundCancelAsync { target }])
         }
+    }
+}
+
+fn is_trivial_possible_event(
+    event: &PossibleEvent<SyncOp, AsyncOp, InboundAsyncKind>,
+    current_ticks: u64,
+) -> bool {
+    match event {
+        PossibleEvent::ReturnSync { op, .. } => matches!(
+            default_sync_result(op, current_ticks),
+            SavedSyncResult::UnitOk | SavedSyncResult::Now { .. }
+        ),
+        PossibleEvent::ResolveAsync { op, .. } => {
+            matches!(
+                default_async_result(op),
+                SavedAsyncResult::SleepDone | SavedAsyncResult::Unit
+            )
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn trivial_chain_from_prefix(
+    prefix: &[SavedItem],
+) -> Result<(Vec<SavedItem>, Vec<String>), String> {
+    let mut appended = Vec::new();
+    let mut labels = Vec::new();
+    let mut context = replay_context(prefix)?;
+
+    for _ in 0..512 {
+        let current_ticks = current_ticks_from_trace(&context.trace);
+        let trivial = context
+            .possible
+            .iter()
+            .filter(|event| is_trivial_possible_event(event, current_ticks))
+            .collect::<Vec<_>>();
+        if trivial.len() != 1 {
+            break;
+        }
+        let choice = trivial[0];
+        labels.push(format_possible_event(choice));
+        let new_items = choice_to_saved_items(
+            &context.used_ids,
+            &context.runtime_to_symbolic,
+            current_ticks,
+            choice,
+        )?;
+        if new_items.is_empty() {
+            break;
+        }
+        for item in &new_items {
+            apply_saved_item(&mut context, item)?;
+        }
+        appended.extend(new_items);
+    }
+
+    Ok((appended, labels))
+}
+
+pub(super) fn preview_trivial_chain_from_prefix(
+    prefix: &[SavedItem],
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let mut context = replay_context(prefix)?;
+    let mut labels = Vec::new();
+
+    for _ in 0..limit {
+        let current_ticks = current_ticks_from_trace(&context.trace);
+        let trivial = context
+            .possible
+            .iter()
+            .filter(|event| is_trivial_possible_event(event, current_ticks))
+            .collect::<Vec<_>>();
+        if trivial.len() != 1 {
+            return Ok(labels);
+        }
+        let choice = trivial[0];
+        labels.push(format_possible_event(choice));
+        let new_items = choice_to_saved_items(
+            &context.used_ids,
+            &context.runtime_to_symbolic,
+            current_ticks,
+            choice,
+        )?;
+        if new_items.is_empty() {
+            return Ok(labels);
+        }
+        for item in &new_items {
+            apply_saved_item(&mut context, item)?;
+        }
+    }
+
+    let current_ticks = current_ticks_from_trace(&context.trace);
+    let more = context
+        .possible
+        .iter()
+        .filter(|event| is_trivial_possible_event(event, current_ticks))
+        .take(2)
+        .count();
+    if more == 1 {
+        labels.push("... more trivial events".to_string());
+    }
+    Ok(labels)
+}
+
+struct ReplayContext {
+    wrapper: RunWrapper<InfoPanelBundle>,
+    trace: Vec<TraceStep<SyncOp, AsyncOp, SyncResult, AsyncResult>>,
+    pending_requests: Vec<PendingRequest>,
+    symbolic_to_runtime: BTreeMap<String, u64>,
+    runtime_to_symbolic: BTreeMap<u64, String>,
+    used_ids: BTreeSet<String>,
+    next_inbound_runtime_id: u64,
+    possible: Vec<PossibleEvent<SyncOp, AsyncOp, InboundAsyncKind>>,
+}
+
+fn replay_context(prefix: &[SavedItem]) -> Result<ReplayContext, String> {
+    let rebooted = Arc::new(AtomicBool::new(false));
+    let (wrapper, initial_outbound) = NewRunWrapper::new(InfoPanelBundle::new(rebooted)).start();
+    let trace = vec![TraceStep::start(initial_outbound.clone())];
+    let mut pending_requests = Vec::new();
+    add_pending_requests(&mut pending_requests, &initial_outbound);
+    let possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&trace)
+        .map_err(|err| format!("failed to compute possible events: {err:?}"))?;
+    let mut context = ReplayContext {
+        wrapper,
+        trace,
+        pending_requests,
+        symbolic_to_runtime: BTreeMap::new(),
+        runtime_to_symbolic: BTreeMap::new(),
+        used_ids: BTreeSet::new(),
+        next_inbound_runtime_id: 1_000_000,
+        possible,
+    };
+
+    for item in prefix {
+        apply_saved_item(&mut context, item)?;
+    }
+
+    Ok(context)
+}
+
+fn apply_saved_item(context: &mut ReplayContext, item: &SavedItem) -> Result<(), String> {
+    match item {
+        SavedItem::OutboundCreateSync { .. } | SavedItem::OutboundCreateAsync { .. } => {
+            bind_outbound(
+                &mut context.pending_requests,
+                item,
+                &mut context.symbolic_to_runtime,
+                &mut context.runtime_to_symbolic,
+                &mut context.used_ids,
+            )
+        }
+        SavedItem::InboundReturnSync { .. }
+        | SavedItem::InboundResolveAsync { .. }
+        | SavedItem::InboundAbortAsync { .. }
+        | SavedItem::InboundCancelAsync { .. }
+        | SavedItem::InboundCreateAsync { .. } => {
+            let inbound = build_inbound_event(
+                item,
+                &mut context.symbolic_to_runtime,
+                &mut context.runtime_to_symbolic,
+                &mut context.next_inbound_runtime_id,
+            )?;
+            if !allows_event(&context.possible, &inbound) {
+                return Err(format!(
+                    "saved inbound item is not valid: {}",
+                    format_saved_item(item)
+                ));
+            }
+            let outbound = context.wrapper.push(inbound.clone());
+            context
+                .trace
+                .push(TraceStep::push(inbound, outbound.clone()));
+            add_pending_requests(&mut context.pending_requests, &outbound);
+            context.possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&context.trace)
+                .map_err(|err| format!("failed to replay trace incrementally: {err:?}"))?;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_timeline_shows_parallel_lanes_for_overlapping_requests() {
+        let rows = build_timeline(vec![
+            visible_row(
+                "start a".to_string(),
+                0,
+                None,
+                false,
+                Some(RowTimelineEvent::Start(1)),
+            ),
+            visible_row(
+                "start b".to_string(),
+                0,
+                None,
+                false,
+                Some(RowTimelineEvent::Start(2)),
+            ),
+            visible_row(
+                "end a".to_string(),
+                0,
+                None,
+                false,
+                Some(RowTimelineEvent::End(1)),
+            ),
+            visible_row("middle b".to_string(), 0, None, false, None),
+            visible_row(
+                "end b".to_string(),
+                0,
+                None,
+                false,
+                Some(RowTimelineEvent::End(2)),
+            ),
+        ]);
+
+        let timelines = rows.into_iter().map(|row| row.timeline).collect::<Vec<_>>();
+        assert_eq!(timelines, vec!["┌", "│┌", "└│", " │", " └"]);
     }
 }
 

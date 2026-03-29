@@ -23,6 +23,7 @@ pub struct TraceListState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VisibleRow {
+    pub timeline: String,
     pub text: String,
     pub insertion_index: usize,
     pub script_item_index: Option<usize>,
@@ -68,11 +69,14 @@ pub struct TraceViewState {
     pub document: RunDocument,
     pub rows: Vec<VisibleRow>,
     pub cursor: usize,
+    pub selection_anchor: Option<usize>,
     pub scroll_offset: usize,
     pub viewport_height: usize,
     pub dialog: TraceViewDialog,
     pub status: Option<String>,
     pub replay_error: Option<String>,
+    pub trivial_preview: Vec<String>,
+    pub pending_zz: bool,
 }
 
 pub enum Screen {
@@ -103,10 +107,17 @@ pub enum Command {
     MoveDown,
     MoveTop,
     MoveBottom,
+    MovePageUp,
+    MovePageDown,
+    MoveHalfPageUp,
+    MoveHalfPageDown,
+    CenterCursor,
     OpenSelected,
     StartInsert,
     StartEdit,
     DeleteCurrent,
+    AcceptTrivialChain,
+    ToggleVisual,
     Back,
     StartCreate,
     StartCopy,

@@ -5,7 +5,7 @@ use std::mem;
 use std::panic::resume_unwind;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle};
 
 pub type OpId = u64;
@@ -590,21 +590,7 @@ where
 }
 
 fn noop_waker() -> Waker {
-    unsafe fn clone(_: *const ()) -> RawWaker {
-        raw_waker()
-    }
-    unsafe fn wake(_: *const ()) {}
-    unsafe fn wake_by_ref(_: *const ()) {}
-    unsafe fn drop(_: *const ()) {}
-
-    fn raw_waker() -> RawWaker {
-        RawWaker::new(
-            std::ptr::null(),
-            &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
-        )
-    }
-
-    unsafe { Waker::from_raw(raw_waker()) }
+    Waker::noop().clone()
 }
 
 #[cfg(test)]

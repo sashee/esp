@@ -51,7 +51,10 @@ impl SimClock {
 
 impl Clock for SimClock {
     fn now(&self) -> embassy_time::Instant {
-        embassy_time::Instant::from_ticks(0)
+        match self.driver.create_sync(SyncOp::Now) {
+            SyncResult::Now(ticks) => embassy_time::Instant::from_ticks(ticks),
+            _ => panic!("unexpected now result"),
+        }
     }
 
     async fn sleep(&self, duration: EmbassyDuration) {
@@ -80,7 +83,8 @@ impl ConfigStore for SimStore {
             keys: keys.iter().map(|key| (*key).to_string()).collect(),
         };
         match self.driver.create_sync(op) {
-            SyncResult::StoreRead(values) => Ok(values),
+            SyncResult::StoreRead(Ok(values)) => Ok(values),
+            SyncResult::StoreRead(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected store read result"),
         }
     }
@@ -91,7 +95,8 @@ impl ConfigStore for SimStore {
             values: values.clone(),
         };
         match self.driver.create_sync(op) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected store write result"),
         }
     }
@@ -102,7 +107,8 @@ impl ConfigStore for SimStore {
             keys: keys.iter().map(|key| (*key).to_string()).collect(),
         };
         match self.driver.create_sync(op) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected store remove result"),
         }
     }
@@ -424,35 +430,40 @@ impl tft_display::TftBackend for SimTftBackend {
 
     fn set_dc_low(&mut self) -> Result<()> {
         match self.driver.create_sync(SyncOp::TftSetDcLow) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected tft set_dc_low result"),
         }
     }
 
     fn set_dc_high(&mut self) -> Result<()> {
         match self.driver.create_sync(SyncOp::TftSetDcHigh) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected tft set_dc_high result"),
         }
     }
 
     fn set_rst_low(&mut self) -> Result<()> {
         match self.driver.create_sync(SyncOp::TftSetRstLow) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected tft set_rst_low result"),
         }
     }
 
     fn set_rst_high(&mut self) -> Result<()> {
         match self.driver.create_sync(SyncOp::TftSetRstHigh) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected tft set_rst_high result"),
         }
     }
 
     fn write(&mut self, data: &[u8]) -> Result<()> {
         match self.driver.create_sync(SyncOp::TftWrite { bytes: data.to_vec() }) {
-            SyncResult::Unit => Ok(()),
+            SyncResult::Unit(Ok(())) => Ok(()),
+            SyncResult::Unit(Err(message)) => Err(anyhow!(message)),
             _ => panic!("unexpected tft write result"),
         }
     }

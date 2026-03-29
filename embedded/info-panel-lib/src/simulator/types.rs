@@ -19,6 +19,7 @@ impl Future for UnsafeSendFuture {
 pub(super) enum SyncOp {
     BootReason,
     MacAddress,
+    Now,
     TftSetDcLow,
     TftSetDcHigh,
     TftSetRstLow,
@@ -76,8 +77,9 @@ pub(super) enum AsyncOp {
 pub(super) enum SyncResult {
     BootReason(BootReason),
     MacAddress([u8; 6]),
-    StoreRead(BTreeMap<String, String>),
-    Unit,
+    Now(u64),
+    StoreRead(Result<BTreeMap<String, String>, String>),
+    Unit(Result<(), String>),
 }
 
 #[allow(dead_code)]
@@ -146,14 +148,15 @@ impl NextEventsSpec<SyncOp, AsyncOp, SyncResult, AsyncResult> for InfoPanelSpec 
             (op, result),
             (SyncOp::BootReason, SyncResult::BootReason(_))
                 | (SyncOp::MacAddress, SyncResult::MacAddress(_))
-                | (SyncOp::TftSetDcLow, SyncResult::Unit)
-                | (SyncOp::TftSetDcHigh, SyncResult::Unit)
-                | (SyncOp::TftSetRstLow, SyncResult::Unit)
-                | (SyncOp::TftSetRstHigh, SyncResult::Unit)
-                | (SyncOp::TftWrite { .. }, SyncResult::Unit)
+                | (SyncOp::Now, SyncResult::Now(_))
+                | (SyncOp::TftSetDcLow, SyncResult::Unit(_))
+                | (SyncOp::TftSetDcHigh, SyncResult::Unit(_))
+                | (SyncOp::TftSetRstLow, SyncResult::Unit(_))
+                | (SyncOp::TftSetRstHigh, SyncResult::Unit(_))
+                | (SyncOp::TftWrite { .. }, SyncResult::Unit(_))
                 | (SyncOp::StoreRead { .. }, SyncResult::StoreRead(_))
-                | (SyncOp::StoreWrite { .. }, SyncResult::Unit)
-                | (SyncOp::StoreRemove { .. }, SyncResult::Unit)
+                | (SyncOp::StoreWrite { .. }, SyncResult::Unit(_))
+                | (SyncOp::StoreRemove { .. }, SyncResult::Unit(_))
         )
     }
 

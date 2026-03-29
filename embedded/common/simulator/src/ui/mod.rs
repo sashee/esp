@@ -133,6 +133,14 @@ fn map_event_to_command(state: &AppState, event: Event) -> Option<Command> {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => Some(Command::MoveUp),
         KeyCode::Down | KeyCode::Char('j') => Some(Command::MoveDown),
+        KeyCode::PageUp => Some(Command::MovePageUp),
+        KeyCode::PageDown => Some(Command::MovePageDown),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Command::MoveHalfPageUp)
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Command::MoveHalfPageDown)
+        }
         KeyCode::Char('g') => Some(Command::MoveTop),
         KeyCode::Char('G') => Some(Command::MoveBottom),
         KeyCode::Enter => Some(Command::OpenSelected),
@@ -143,6 +151,13 @@ fn map_event_to_command(state: &AppState, event: Event) -> Option<Command> {
         KeyCode::Char('a') => Some(Command::StartInsert),
         KeyCode::Char('e') => Some(Command::StartEdit),
         KeyCode::Char('d') => Some(Command::DeleteCurrent),
+        KeyCode::Char('.') => Some(Command::AcceptTrivialChain),
+        KeyCode::Char('v') => Some(Command::ToggleVisual),
+        KeyCode::Char('z') => match &state.screen {
+            Screen::TraceView(view) if view.pending_zz => Some(Command::CenterCursor),
+            Screen::TraceView(_) => Some(Command::ClearStatus),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -222,19 +237,66 @@ fn render_trace_view(frame: &mut ratatui::Frame<'_>, view: &mut crate::editor::T
         .constraints([Constraint::Min(1), Constraint::Length(4)])
         .split(area);
 
+    let selection_step_range = view.selection_anchor.map(|anchor| {
+        let anchor_key = view
+            .rows
+            .get(anchor)
+            .map(|row| row.insertion_index)
+            .unwrap_or(0);
+        let cursor_key = view
+            .rows
+            .get(view.cursor)
+            .map(|row| row.insertion_index)
+            .unwrap_or(anchor_key);
+        (anchor_key.min(cursor_key), anchor_key.max(cursor_key))
+    });
+    let current_step_key = view.rows.get(view.cursor).map(|row| row.insertion_index);
     let items = if view.rows.is_empty() {
         vec![ListItem::new("(no visible events)")]
     } else {
-        view.rows
+        let gutter_width = view
+            .rows
             .iter()
-            .map(|row| {
-                let mut item = ListItem::new(row.text.clone());
+            .map(|row| row.timeline.chars().count())
+            .max()
+            .unwrap_or(0);
+        let mut items = view
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let content = if gutter_width == 0 {
+                    row.text.clone()
+                } else {
+                    format!(
+                        "{:<width$} {}",
+                        row.timeline,
+                        row.text,
+                        width = gutter_width
+                    )
+                };
+                let mut style = Style::default();
                 if row.is_invalid {
-                    item = item.style(Style::default().fg(Color::Red));
+                    style = style.fg(Color::Red);
                 }
-                item
+                if current_step_key.is_some_and(|key| key == row.insertion_index) {
+                    style = style.bg(Color::DarkGray);
+                }
+                if selection_step_range.as_ref().is_some_and(|(start, end)| {
+                    *start <= row.insertion_index && row.insertion_index <= *end
+                }) {
+                    style = style.bg(Color::DarkGray);
+                }
+                if index == view.cursor {
+                    style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+                }
+                ListItem::new(content).style(style)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        items.extend(view.trivial_preview.iter().map(|preview| {
+            ListItem::new(format!("   {preview}")).style(Style::default().fg(Color::DarkGray))
+        }));
+        items
     };
     let mut state = ListState::default();
     if !view.rows.is_empty() {
@@ -243,17 +305,15 @@ fn render_trace_view(frame: &mut ratatui::Frame<'_>, view: &mut crate::editor::T
             .with_offset(view.scroll_offset);
     }
     view.viewport_height = chunks[0].height.saturating_sub(2) as usize;
-    let widget = List::new(items)
-        .block(
-            Block::default()
-                .title(format!("Trace: {}", view.path.display()))
-                .borders(Borders::ALL),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let widget = List::new(items).block(
+        Block::default()
+            .title(format!("Trace: {}", view.path.display()))
+            .borders(Borders::ALL),
+    );
     frame.render_stateful_widget(widget, chunks[0], &mut state);
 
     let mut help = vec![Line::from(
-        "j/k: move  a: add  e: edit  d: delete  esc: back  q: quit",
+        "j/k: step move  PgUp/PgDn/C-u/C-d: scroll  zz: center  v: visual  a: add  e: edit  d: delete  .: trivial chain  esc: back  q: quit",
     )];
     if let Some(replay_error) = &view.replay_error {
         help.push(Line::from(format!("Replay error: {replay_error}")));
