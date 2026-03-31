@@ -1,14 +1,58 @@
-use crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use std::collections::BTreeMap;
 
-#[derive(Clone, Debug)]
-pub enum FormResult {
-    Continue,
-    Save { items: Vec<serde_json::Value> },
-    Cancel,
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormSpec {
+    pub title: String,
+    pub details: Vec<String>,
+    pub fields: Vec<FormField>,
+    pub auto_accept_if_complete: bool,
 }
 
-pub trait FormController {
-    fn render(&self, frame: &mut ratatui::Frame<'_>, area: Rect);
-    fn handle_key(&mut self, key: KeyEvent) -> Result<FormResult, String>;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormField {
+    pub id: String,
+    pub label: String,
+    pub kind: FormFieldKind,
+    pub help: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FormFieldKind {
+    Text {
+        multiline: bool,
+    },
+    Select {
+        options: Vec<String>,
+    },
+    Toggle {
+        false_label: String,
+        true_label: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FormValue {
+    Text(String),
+    Select(usize),
+    Toggle(bool),
+}
+
+pub type FormState = BTreeMap<String, FormValue>;
+
+pub fn missing_form_fields(spec: &FormSpec, state: &FormState) -> Vec<String> {
+    spec.fields
+        .iter()
+        .filter(|field| !state.contains_key(&field.id))
+        .map(|field| field.label.clone())
+        .collect()
+}
+
+pub fn form_is_complete(spec: &FormSpec, state: &FormState) -> bool {
+    missing_form_fields(spec, state).is_empty()
+}
+
+pub fn form_is_auto_acceptable(spec: &FormSpec, state: &FormState) -> bool {
+    spec.auto_accept_if_complete && form_is_complete(spec, state)
 }

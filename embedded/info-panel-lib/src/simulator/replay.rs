@@ -1,7 +1,6 @@
 use super::saved::*;
 use super::types::*;
 use super::*;
-use simulator::RunWrapper;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn format_embassy_duration(duration: EmbassyDuration) -> String {
@@ -188,6 +187,10 @@ pub(super) fn format_saved_item(item: &SavedItem) -> String {
             let _ = target;
             format!("INBOUND ReturnSync {result:?}")
         }
+        SavedItem::InboundErrorSync { target, error } => {
+            let _ = target;
+            format!("INBOUND ErrorSync {error:?}")
+        }
         SavedItem::InboundResolveAsync { target, result } => {
             let _ = target;
             format!("INBOUND ResolveAsync {result:?}")
@@ -207,13 +210,8 @@ pub(super) fn format_saved_item(item: &SavedItem) -> String {
     }
 }
 
-pub(super) fn parse_items(document: &RunDocument) -> Result<Vec<SavedItem>, String> {
-    document
-        .items
-        .iter()
-        .cloned()
-        .map(|value| serde_json::from_value(value).map_err(|err| err.to_string()))
-        .collect()
+pub(super) fn parse_items(document: &[SavedItem]) -> Result<Vec<SavedItem>, String> {
+    Ok(document.to_vec())
 }
 
 pub(super) fn runtime_sync_op_to_saved(op: &SyncOp) -> SavedSyncOp {
@@ -297,11 +295,14 @@ pub(super) fn saved_sync_result_to_runtime(result: &SavedSyncResult) -> Result<S
         SavedSyncResult::MacAddress { value } => Ok(SyncResult::MacAddress(*value)),
         SavedSyncResult::Now { ticks } => Ok(SyncResult::Now(*ticks)),
         SavedSyncResult::StoreReadOk { values } => Ok(SyncResult::StoreRead(Ok(values.clone()))),
-        SavedSyncResult::StoreReadErr { message } => {
-            Ok(SyncResult::StoreRead(Err(message.clone())))
-        }
         SavedSyncResult::UnitOk => Ok(SyncResult::Unit(Ok(()))),
-        SavedSyncResult::UnitErr { message } => Ok(SyncResult::Unit(Err(message.clone()))),
+    }
+}
+
+pub(super) fn saved_sync_error_to_runtime(error: &SavedSyncError) -> Result<SyncResult, String> {
+    match error {
+        SavedSyncError::StoreReadErr { message } => Ok(SyncResult::StoreRead(Err(message.clone()))),
+        SavedSyncError::UnitErr { message } => Ok(SyncResult::Unit(Err(message.clone()))),
     }
 }
 
@@ -459,6 +460,24 @@ pub(super) fn default_sync_result(op: &SyncOp, current_ticks: u64) -> SavedSyncR
         SyncOp::StoreRead { keys, .. } => SavedSyncResult::StoreReadOk {
             values: default_store_values(keys),
         },
+    }
+}
+
+pub(super) fn default_sync_error(op: &SyncOp) -> Option<SavedSyncError> {
+    match op {
+        SyncOp::StoreRead { .. } => Some(SavedSyncError::StoreReadErr {
+            message: "simulated error".to_string(),
+        }),
+        SyncOp::TftSetDcLow
+        | SyncOp::TftSetDcHigh
+        | SyncOp::TftSetRstLow
+        | SyncOp::TftSetRstHigh
+        | SyncOp::TftWrite { .. }
+        | SyncOp::StoreWrite { .. }
+        | SyncOp::StoreRemove { .. } => Some(SavedSyncError::UnitErr {
+            message: "simulated error".to_string(),
+        }),
+        SyncOp::BootReason | SyncOp::MacAddress | SyncOp::Now => None,
     }
 }
 
@@ -860,6 +879,16 @@ pub(super) fn build_inbound_event(
                 result: saved_sync_result_to_runtime(result)?,
             })
         }
+        SavedItem::InboundErrorSync { target, error } => {
+            let id = symbolic_to_runtime
+                .remove(target)
+                .ok_or_else(|| format!("unknown symbolic target {target}"))?;
+            runtime_to_symbolic.remove(&id);
+            Ok(Event::ReturnSync {
+                id,
+                result: saved_sync_error_to_runtime(error)?,
+            })
+        }
         SavedItem::InboundResolveAsync { target, result } => {
             let id = symbolic_to_runtime
                 .remove(target)
@@ -939,6 +968,7 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
                 )
             }
             SavedItem::InboundReturnSync { .. }
+            | SavedItem::InboundErrorSync { .. }
             | SavedItem::InboundResolveAsync { .. }
             | SavedItem::InboundAbortAsync { .. }
             | SavedItem::InboundCancelAsync { .. }
@@ -1108,185 +1138,6 @@ pub(super) fn choice_to_saved_items(
     }
 }
 
-fn is_trivial_possible_event(
-    event: &PossibleEvent<SyncOp, AsyncOp, InboundAsyncKind>,
-    current_ticks: u64,
-) -> bool {
-    match event {
-        PossibleEvent::ReturnSync { op, .. } => matches!(
-            default_sync_result(op, current_ticks),
-            SavedSyncResult::UnitOk | SavedSyncResult::Now { .. }
-        ),
-        PossibleEvent::ResolveAsync { op, .. } => {
-            matches!(
-                default_async_result(op),
-                SavedAsyncResult::SleepDone | SavedAsyncResult::Unit
-            )
-        }
-        _ => false,
-    }
-}
-
-pub(super) fn trivial_chain_from_prefix(
-    prefix: &[SavedItem],
-) -> Result<(Vec<SavedItem>, Vec<String>), String> {
-    let mut appended = Vec::new();
-    let mut labels = Vec::new();
-    let mut context = replay_context(prefix)?;
-
-    for _ in 0..512 {
-        let current_ticks = current_ticks_from_trace(&context.trace);
-        let trivial = context
-            .possible
-            .iter()
-            .filter(|event| is_trivial_possible_event(event, current_ticks))
-            .collect::<Vec<_>>();
-        if trivial.len() != 1 {
-            break;
-        }
-        let choice = trivial[0];
-        labels.push(format_possible_event(choice));
-        let new_items = choice_to_saved_items(
-            &context.used_ids,
-            &context.runtime_to_symbolic,
-            current_ticks,
-            choice,
-        )?;
-        if new_items.is_empty() {
-            break;
-        }
-        for item in &new_items {
-            apply_saved_item(&mut context, item)?;
-        }
-        appended.extend(new_items);
-    }
-
-    Ok((appended, labels))
-}
-
-pub(super) fn preview_trivial_chain_from_prefix(
-    prefix: &[SavedItem],
-    limit: usize,
-) -> Result<Vec<String>, String> {
-    let mut context = replay_context(prefix)?;
-    let mut labels = Vec::new();
-
-    for _ in 0..limit {
-        let current_ticks = current_ticks_from_trace(&context.trace);
-        let trivial = context
-            .possible
-            .iter()
-            .filter(|event| is_trivial_possible_event(event, current_ticks))
-            .collect::<Vec<_>>();
-        if trivial.len() != 1 {
-            return Ok(labels);
-        }
-        let choice = trivial[0];
-        labels.push(format_possible_event(choice));
-        let new_items = choice_to_saved_items(
-            &context.used_ids,
-            &context.runtime_to_symbolic,
-            current_ticks,
-            choice,
-        )?;
-        if new_items.is_empty() {
-            return Ok(labels);
-        }
-        for item in &new_items {
-            apply_saved_item(&mut context, item)?;
-        }
-    }
-
-    let current_ticks = current_ticks_from_trace(&context.trace);
-    let more = context
-        .possible
-        .iter()
-        .filter(|event| is_trivial_possible_event(event, current_ticks))
-        .take(2)
-        .count();
-    if more == 1 {
-        labels.push("... more trivial events".to_string());
-    }
-    Ok(labels)
-}
-
-struct ReplayContext {
-    wrapper: RunWrapper<InfoPanelBundle>,
-    trace: Vec<TraceStep<SyncOp, AsyncOp, SyncResult, AsyncResult>>,
-    pending_requests: Vec<PendingRequest>,
-    symbolic_to_runtime: BTreeMap<String, u64>,
-    runtime_to_symbolic: BTreeMap<u64, String>,
-    used_ids: BTreeSet<String>,
-    next_inbound_runtime_id: u64,
-    possible: Vec<PossibleEvent<SyncOp, AsyncOp, InboundAsyncKind>>,
-}
-
-fn replay_context(prefix: &[SavedItem]) -> Result<ReplayContext, String> {
-    let rebooted = Arc::new(AtomicBool::new(false));
-    let (wrapper, initial_outbound) = NewRunWrapper::new(InfoPanelBundle::new(rebooted)).start();
-    let trace = vec![TraceStep::start(initial_outbound.clone())];
-    let mut pending_requests = Vec::new();
-    add_pending_requests(&mut pending_requests, &initial_outbound);
-    let possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&trace)
-        .map_err(|err| format!("failed to compute possible events: {err:?}"))?;
-    let mut context = ReplayContext {
-        wrapper,
-        trace,
-        pending_requests,
-        symbolic_to_runtime: BTreeMap::new(),
-        runtime_to_symbolic: BTreeMap::new(),
-        used_ids: BTreeSet::new(),
-        next_inbound_runtime_id: 1_000_000,
-        possible,
-    };
-
-    for item in prefix {
-        apply_saved_item(&mut context, item)?;
-    }
-
-    Ok(context)
-}
-
-fn apply_saved_item(context: &mut ReplayContext, item: &SavedItem) -> Result<(), String> {
-    match item {
-        SavedItem::OutboundCreateSync { .. } | SavedItem::OutboundCreateAsync { .. } => {
-            bind_outbound(
-                &mut context.pending_requests,
-                item,
-                &mut context.symbolic_to_runtime,
-                &mut context.runtime_to_symbolic,
-                &mut context.used_ids,
-            )
-        }
-        SavedItem::InboundReturnSync { .. }
-        | SavedItem::InboundResolveAsync { .. }
-        | SavedItem::InboundAbortAsync { .. }
-        | SavedItem::InboundCancelAsync { .. }
-        | SavedItem::InboundCreateAsync { .. } => {
-            let inbound = build_inbound_event(
-                item,
-                &mut context.symbolic_to_runtime,
-                &mut context.runtime_to_symbolic,
-                &mut context.next_inbound_runtime_id,
-            )?;
-            if !allows_event(&context.possible, &inbound) {
-                return Err(format!(
-                    "saved inbound item is not valid: {}",
-                    format_saved_item(item)
-                ));
-            }
-            let outbound = context.wrapper.push(inbound.clone());
-            context
-                .trace
-                .push(TraceStep::push(inbound, outbound.clone()));
-            add_pending_requests(&mut context.pending_requests, &outbound);
-            context.possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&context.trace)
-                .map_err(|err| format!("failed to replay trace incrementally: {err:?}"))?;
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1333,6 +1184,7 @@ mod tests {
 pub(super) fn inbound_target(item: &SavedItem) -> Option<&str> {
     match item {
         SavedItem::InboundReturnSync { target, .. }
+        | SavedItem::InboundErrorSync { target, .. }
         | SavedItem::InboundResolveAsync { target, .. }
         | SavedItem::InboundAbortAsync { target }
         | SavedItem::InboundCancelAsync { target } => Some(target.as_str()),
@@ -1360,6 +1212,7 @@ pub(super) fn removal_span(
     };
     match item {
         SavedItem::InboundReturnSync { .. }
+        | SavedItem::InboundErrorSync { .. }
         | SavedItem::InboundResolveAsync { .. }
         | SavedItem::InboundAbortAsync { .. }
         | SavedItem::InboundCancelAsync { .. } => {

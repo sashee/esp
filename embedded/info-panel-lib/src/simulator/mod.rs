@@ -1,15 +1,9 @@
 use anyhow::{anyhow, Result};
 use config_portal::{ConfigStore, HttpEndpoint, HttpMethod, HttpRequest, HttpResponse};
 use core::future::poll_fn;
-use crossterm::event::{KeyCode, KeyEvent};
 use embassy_time::Duration as EmbassyDuration;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use simulator::editor::{
-    FormController, FormResult, FormTarget, InsertionChoice, RunDocument, TraceRuntime, VisibleRow,
-};
-use simulator::ratatui::layout::Rect;
-use simulator::ratatui::style::{Modifier, Style};
-use simulator::ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use simulator::editor::{InsertionChoice, RuntimeTarget, TraceItem, TraceRuntime, VisibleRow};
 use simulator::{
     elapsed_time, AsyncCompletion, AsyncTiming, ElapsedTime, Event, NewRunWrapper,
     NextEventsSpec, PossibleEvent, SimBundle, SimDriver, TraceStep, possible_next_events,
@@ -31,3 +25,13 @@ mod saved;
 mod types;
 
 pub use runtime::InfoPanelSimulatorRuntime;
+
+type SavedTraceItem = TraceItem<
+    saved::SavedSyncOp,
+    saved::SavedAsyncOp,
+    saved::SavedSyncResult,
+    saved::SavedSyncError,
+    saved::SavedAsyncResult,
+>;
+type RunDocument = Vec<SavedTraceItem>;
+type FormTarget = RuntimeTarget;

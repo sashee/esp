@@ -1,15 +1,24 @@
 mod document;
 mod form;
+mod replay;
 mod state;
 mod update;
 
-pub use document::{RunDocument, SIMULATOR_RUN_KIND, SIMULATOR_RUN_VERSION};
-pub use form::{FormController, FormResult};
+pub use document::{RunEnvelope, TraceItem, SIMULATOR_RUN_KIND, SIMULATOR_RUN_VERSION};
+pub use form::{
+    form_is_auto_acceptable, form_is_complete, missing_form_fields, FormField, FormFieldKind,
+    FormSpec, FormState, FormValue,
+};
+pub use replay::{
+    is_replay_file, load_replay, replay_state_at, save_replay, ReplayEnvelope,
+    SIMULATOR_REPLAY_KIND, SIMULATOR_REPLAY_VERSION,
+};
 pub use state::{
-    AppState, Command, CommandOutcome, DialogMode, FormTarget, InsertionChoice, PromptKind,
-    RenderedTrace, Screen, TraceEntry, TraceListState, TraceViewDialog, TraceViewState, VisibleRow,
+    AppState, Command, DialogTarget, Effect, InsertionChoice, RenderedTrace, RuntimeTarget,
+    TraceViewDialog, TraceViewState, VisibleRow,
 };
 pub use update::{
-    copy_trace, create_trace, discover_traces, load_document, open_trace, refresh_trace_list,
-    update, TraceRuntime,
+    create_trace, load_trace, open_or_create_trace, open_trace, save_trace, update, EditorSession,
+    RuntimeTraceItem, TraceRuntime,
 };
+pub(crate) use update::{snapshot_for, ViewSnapshot};

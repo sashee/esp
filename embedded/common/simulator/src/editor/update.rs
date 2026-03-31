@@ -1,941 +1,905 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::{de::DeserializeOwned, Serialize};
+
 use super::{
-    AppState, Command, CommandOutcome, DialogMode, FormController, FormResult, FormTarget,
-    InsertionChoice, PromptKind, RenderedTrace, RunDocument, Screen, TraceEntry, TraceListState,
-    TraceViewDialog, TraceViewState,
+    form_is_auto_acceptable, missing_form_fields, AppState, Command, DialogTarget, Effect,
+    FormFieldKind, FormState, InsertionChoice, RenderedTrace, RunEnvelope, RuntimeTarget,
+    TraceItem, TraceViewDialog, VisibleRow,
 };
 
+pub type RuntimeTraceItem<R> = TraceItem<
+    <R as TraceRuntime>::SyncOp,
+    <R as TraceRuntime>::AsyncOp,
+    <R as TraceRuntime>::SyncResult,
+    <R as TraceRuntime>::SyncError,
+    <R as TraceRuntime>::AsyncResult,
+>;
+
+pub struct EditorSession<T> {
+    pub path: PathBuf,
+    pub state: AppState<T>,
+}
+
 pub trait TraceRuntime {
-    fn render_trace(&self, document: &RunDocument) -> Result<RenderedTrace, String>;
-    fn preview_trivial_chain(
-        &self,
-        document: &RunDocument,
-        insertion_index: usize,
-    ) -> Result<Vec<String>, String>;
-    fn apply_trivial_chain(
-        &self,
-        document: &mut RunDocument,
-        insertion_index: usize,
-    ) -> Result<usize, String>;
+    type SyncOp: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
+    type AsyncOp: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
+    type SyncResult: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
+    type SyncError: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
+    type AsyncResult: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
+
+    fn render_trace(&self, trace: &[RuntimeTraceItem<Self>]) -> Result<RenderedTrace, String>;
     fn insertion_choices(
         &self,
-        document: &RunDocument,
+        trace: &[RuntimeTraceItem<Self>],
         insertion_index: usize,
     ) -> Result<Vec<InsertionChoice>, String>;
-    fn begin_insert_form(
-        &self,
-        document: &RunDocument,
-        insertion_index: usize,
-        choice_index: usize,
-    ) -> Result<Box<dyn FormController>, String>;
     fn edit_choices(
         &self,
-        document: &RunDocument,
+        trace: &[RuntimeTraceItem<Self>],
         item_index: usize,
     ) -> Result<Vec<InsertionChoice>, String>;
-    fn begin_edit_form(
+    fn form_spec(
         &self,
-        document: &RunDocument,
-        item_index: usize,
+        trace: &[RuntimeTraceItem<Self>],
+        target: &RuntimeTarget,
         choice_index: usize,
-    ) -> Result<Box<dyn FormController>, String>;
+    ) -> Result<super::FormSpec, String>;
+    fn initial_form_state(
+        &self,
+        trace: &[RuntimeTraceItem<Self>],
+        target: &RuntimeTarget,
+        choice_index: usize,
+    ) -> Result<FormState, String>;
+    fn encode_form_state(
+        &self,
+        trace: &[RuntimeTraceItem<Self>],
+        target: &RuntimeTarget,
+        choice_index: usize,
+        state: &FormState,
+    ) -> Result<Vec<RuntimeTraceItem<Self>>, String>;
     fn apply_form(
         &self,
-        document: &mut RunDocument,
-        target: &FormTarget,
-        items: Vec<serde_json::Value>,
+        trace: &mut Vec<RuntimeTraceItem<Self>>,
+        target: &RuntimeTarget,
+        items: Vec<RuntimeTraceItem<Self>>,
     ) -> Result<(), String>;
-    fn delete_item(&self, document: &mut RunDocument, item_index: usize) -> Result<(), String>;
     fn delete_items(
         &self,
-        document: &mut RunDocument,
+        trace: &mut Vec<RuntimeTraceItem<Self>>,
         item_indices: Vec<usize>,
     ) -> Result<(), String>;
 }
 
-pub fn discover_traces(directory: &Path) -> Result<Vec<TraceEntry>, String> {
-    let mut entries = Vec::new();
-    let read_dir = fs::read_dir(directory)
-        .map_err(|err| format!("failed to read directory {}: {err}", directory.display()))?;
+const TRIVIAL_PREVIEW_LIMIT: usize = 5;
+const STATUS_HEIGHT: u16 = 4;
 
-    for entry in read_dir {
-        let entry = entry.map_err(|err| format!("failed to read directory entry: {err}"))?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-
-        let Ok(document) = load_document(&path) else {
-            continue;
-        };
-        if !document.is_simulator_run() {
-            continue;
-        }
-
-        let Some(file_name) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.to_string())
-        else {
-            continue;
-        };
-
-        entries.push(TraceEntry { path, file_name });
-    }
-
-    entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
-    Ok(entries)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StepInfo {
+    pub start_row: usize,
+    pub end_row: usize,
+    pub insertion_index: usize,
+    pub inbound_item_index: Option<usize>,
+    pub outbound_only: bool,
 }
 
-pub fn load_document(path: &Path) -> Result<RunDocument, String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ViewSnapshot {
+    pub(crate) rows: Vec<VisibleRow>,
+    pub(crate) replay_error: Option<String>,
+    pub(crate) steps: Vec<StepInfo>,
+    pub(crate) trivial_preview: Vec<VisibleRow>,
+}
+
+pub fn load_trace<R: TraceRuntime>(path: &Path) -> Result<Vec<RuntimeTraceItem<R>>, String> {
     let contents = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    let document: RunDocument = serde_json::from_str(&contents)
+    let envelope: RunEnvelope<RuntimeTraceItem<R>> = serde_json::from_str(&contents)
         .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
-    if !document.is_simulator_run() {
+    if !envelope.is_simulator_run() {
         return Err(format!("{} is not a simulator run", path.display()));
     }
-    Ok(document)
+    Ok(envelope.items)
 }
 
-pub fn save_document(path: &Path, document: &RunDocument) -> Result<(), String> {
-    let contents = serde_json::to_string_pretty(document)
+pub fn save_trace<T>(path: &Path, trace: &[T]) -> Result<(), String>
+where
+    T: Clone + Serialize,
+{
+    let envelope = RunEnvelope {
+        kind: super::SIMULATOR_RUN_KIND.to_string(),
+        version: super::SIMULATOR_RUN_VERSION,
+        items: trace.to_vec(),
+    };
+    let contents = serde_json::to_string_pretty(&envelope)
         .map_err(|err| format!("failed to serialize {}: {err}", path.display()))?;
     fs::write(path, contents).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
-pub fn create_trace(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
-    let file_name = normalize_trace_name(file_name)?;
-    let path = directory.join(file_name);
+pub fn create_trace<T>(path: &Path) -> Result<(), String>
+where
+    T: Clone + Serialize,
+{
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
-    save_document(&path, &RunDocument::default())?;
-    Ok(path)
+    save_trace::<T>(path, &[])
 }
 
-pub fn copy_trace(source: &Path, destination_name: &str) -> Result<PathBuf, String> {
-    let destination_name = normalize_trace_name(destination_name)?;
-    let destination = source
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", source.display()))?
-        .join(destination_name);
-    if destination.exists() {
-        return Err(format!("{} already exists", destination.display()));
-    }
-    fs::copy(source, &destination).map_err(|err| {
-        format!(
-            "failed to copy {} to {}: {err}",
-            source.display(),
-            destination.display()
-        )
-    })?;
-    Ok(destination)
-}
-
-pub fn open_trace(runtime: &impl TraceRuntime, path: &Path) -> Result<TraceViewState, String> {
-    let document = load_document(path)?;
-    let rendered = runtime.render_trace(&document)?;
-    let mut view = TraceViewState {
+pub fn open_trace<R: TraceRuntime>(
+    path: &Path,
+    terminal_width: u16,
+    terminal_height: u16,
+) -> Result<EditorSession<RuntimeTraceItem<R>>, String> {
+    let trace = load_trace::<R>(path)?;
+    Ok(EditorSession {
         path: path.to_path_buf(),
-        document,
-        rows: rendered.rows,
-        cursor: 0,
-        selection_anchor: None,
-        scroll_offset: 0,
-        viewport_height: 0,
-        dialog: TraceViewDialog::None,
-        status: None,
-        replay_error: rendered.replay_error,
-        trivial_preview: Vec::new(),
-        pending_zz: false,
-    };
-    refresh_trivial_preview(&mut view, runtime);
-    Ok(view)
+        state: AppState::new(trace, terminal_width, terminal_height),
+    })
 }
 
-fn selection_range(view: &TraceViewState) -> Option<(usize, usize)> {
-    let anchor = view.selection_anchor?;
-    let (anchor_start, anchor_end) = step_bounds(&view.rows, anchor);
-    let (cursor_start, cursor_end) = step_bounds(&view.rows, view.cursor);
-    Some((anchor_start.min(cursor_start), anchor_end.max(cursor_end)))
-}
-
-fn step_bounds(rows: &[super::VisibleRow], row_index: usize) -> (usize, usize) {
-    if rows.is_empty() {
-        return (0, 0);
-    }
-    let row_index = row_index.min(rows.len() - 1);
-    let key = rows[row_index].insertion_index;
-    let mut start = row_index;
-    while start > 0 && rows[start - 1].insertion_index == key {
-        start -= 1;
-    }
-    let mut end = row_index;
-    while end + 1 < rows.len() && rows[end + 1].insertion_index == key {
-        end += 1;
-    }
-    (start, end)
-}
-
-fn step_start(rows: &[super::VisibleRow], row_index: usize) -> usize {
-    step_bounds(rows, row_index).0
-}
-
-fn step_end(rows: &[super::VisibleRow], row_index: usize) -> usize {
-    step_bounds(rows, row_index).1
-}
-
-fn move_to_previous_step(view: &mut TraceViewState) {
-    if view.rows.is_empty() {
-        view.cursor = 0;
-        return;
-    }
-    let start = step_start(&view.rows, view.cursor);
-    if start == 0 {
-        view.cursor = 0;
+pub fn open_or_create_trace<R: TraceRuntime>(
+    path: &Path,
+    terminal_width: u16,
+    terminal_height: u16,
+) -> Result<EditorSession<RuntimeTraceItem<R>>, String> {
+    if path.exists() {
+        open_trace::<R>(path, terminal_width, terminal_height)
     } else {
-        view.cursor = step_start(&view.rows, start - 1);
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        if !parent.exists() {
+            return Err(format!(
+                "parent directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        save_trace::<RuntimeTraceItem<R>>(path, &[])?;
+        let mut session = open_trace::<R>(path, terminal_width, terminal_height)?;
+        session.state.view.status = Some(format!("saved {}", path.display()));
+        Ok(session)
     }
-    keep_cursor_visible(view.cursor, &mut view.scroll_offset, view.viewport_height);
 }
 
-fn move_to_next_step(view: &mut TraceViewState) {
-    if view.rows.is_empty() {
-        view.cursor = 0;
+fn trace_viewport_height<T>(state: &AppState<T>) -> usize {
+    state
+        .view
+        .terminal_height
+        .saturating_sub(STATUS_HEIGHT)
+        .saturating_sub(2) as usize
+}
+
+fn build_steps(rows: &[VisibleRow], trace_len: usize) -> Vec<StepInfo> {
+    let mut steps = Vec::new();
+    let mut row_index = 0;
+    while row_index < rows.len() {
+        let insertion_index = rows[row_index].insertion_index;
+        let start_row = row_index;
+        let mut end_row = row_index;
+        let mut inbound_item_index = None;
+        let mut outbound_only = true;
+        while end_row + 1 < rows.len() && rows[end_row + 1].insertion_index == insertion_index {
+            end_row += 1;
+        }
+        for row in &rows[start_row..=end_row] {
+            if let Some(item_index) = row.script_item_index {
+                inbound_item_index = Some(item_index);
+                outbound_only = false;
+            }
+            if row.is_invalid {
+                outbound_only = false;
+            }
+        }
+        steps.push(StepInfo {
+            start_row,
+            end_row,
+            insertion_index,
+            inbound_item_index,
+            outbound_only,
+        });
+        row_index = end_row + 1;
+    }
+    if steps.is_empty() && trace_len == 0 {
+        steps.push(StepInfo {
+            start_row: 0,
+            end_row: 0,
+            insertion_index: 0,
+            inbound_item_index: None,
+            outbound_only: false,
+        });
+    }
+    steps
+}
+
+pub(crate) fn snapshot_for<R: TraceRuntime>(
+    state: &AppState<RuntimeTraceItem<R>>,
+    runtime: &R,
+) -> Result<ViewSnapshot, String> {
+    let rendered = runtime.render_trace(&state.view.trace)?;
+    let steps = build_steps(&rendered.rows, state.view.trace.len());
+    let trivial_preview = preview_insertion_step(&steps, &rendered.rows, state)
+        .and_then(|step_index| {
+            let insertion_index =
+                insertion_index_for_append(&steps, step_index, state.view.trace.len());
+            let (trace, inserted_count, has_more) = build_trivial_chain_trace(
+                runtime,
+                &state.view.trace,
+                insertion_index,
+                Some(TRIVIAL_PREVIEW_LIMIT),
+            )
+            .ok()?;
+            if inserted_count == 0 {
+                return Some(Vec::new());
+            }
+            let mut preview = runtime.render_trace(&trace).ok()?.rows;
+            preview.drain(..rendered.rows.len());
+            if has_more {
+                preview.push(VisibleRow {
+                    timeline: String::new(),
+                    text: "... more trivial events".to_string(),
+                    insertion_index: trace.len(),
+                    script_item_index: None,
+                    is_invalid: false,
+                });
+            }
+            Some(preview)
+        })
+        .unwrap_or_default();
+
+    Ok(ViewSnapshot {
+        rows: rendered.rows,
+        replay_error: rendered.replay_error,
+        steps,
+        trivial_preview,
+    })
+}
+
+fn clamp_cursor_step<T>(state: &mut AppState<T>, snapshot: &ViewSnapshot) {
+    state.view.cursor_step_index = state
+        .view
+        .cursor_step_index
+        .min(snapshot.steps.len().saturating_sub(1));
+    if let Some(anchor) = state.view.selection_anchor_step_index {
+        state.view.selection_anchor_step_index =
+            Some(anchor.min(snapshot.steps.len().saturating_sub(1)));
+    }
+}
+
+fn selected_step_range<T>(state: &AppState<T>) -> (usize, usize) {
+    match state.view.selection_anchor_step_index {
+        Some(anchor) => (
+            anchor.min(state.view.cursor_step_index),
+            anchor.max(state.view.cursor_step_index),
+        ),
+        None => (state.view.cursor_step_index, state.view.cursor_step_index),
+    }
+}
+
+fn keep_cursor_visible<T>(state: &mut AppState<T>, snapshot: &ViewSnapshot) {
+    if snapshot.steps.is_empty() {
+        state.view.scroll_offset = 0;
         return;
     }
-    let end = step_end(&view.rows, view.cursor);
-    if end + 1 < view.rows.len() {
-        view.cursor = end + 1;
-    }
-    keep_cursor_visible(view.cursor, &mut view.scroll_offset, view.viewport_height);
-}
-
-fn move_cursor_by_page(view: &mut TraceViewState, delta_rows: isize) {
-    if view.rows.is_empty() {
-        view.cursor = 0;
+    let cursor_row = snapshot.steps[state.view.cursor_step_index].start_row;
+    let viewport_height = trace_viewport_height(state);
+    if viewport_height == 0 {
         return;
     }
-    let max = view.rows.len().saturating_sub(1) as isize;
-    let target_row = (view.cursor as isize + delta_rows).clamp(0, max) as usize;
-    view.cursor = step_start(&view.rows, target_row);
-    keep_cursor_visible(view.cursor, &mut view.scroll_offset, view.viewport_height);
+    if cursor_row < state.view.scroll_offset {
+        state.view.scroll_offset = cursor_row;
+        return;
+    }
+    let last_visible = state
+        .view
+        .scroll_offset
+        .saturating_add(viewport_height.saturating_sub(1));
+    if cursor_row > last_visible {
+        state.view.scroll_offset = cursor_row.saturating_sub(viewport_height.saturating_sub(1));
+    }
 }
 
-fn selected_script_item_indices(view: &TraceViewState) -> Vec<usize> {
-    let rows: Box<dyn Iterator<Item = &super::VisibleRow> + '_> =
-        if let Some((start, end)) = selection_range(view) {
-            Box::new(view.rows[start..=end].iter())
+fn insertion_index_for_append(steps: &[StepInfo], step_index: usize, trace_len: usize) -> usize {
+    if steps.is_empty() {
+        return 0;
+    }
+    let current = step_index.min(steps.len() - 1);
+    let next_index = current + 1;
+    if next_index < steps.len() && steps[next_index].outbound_only {
+        if next_index + 1 < steps.len() {
+            steps[next_index + 1].insertion_index
         } else {
-            Box::new(view.rows.get(view.cursor).into_iter())
-        };
+            trace_len
+        }
+    } else if next_index < steps.len() {
+        steps[next_index].insertion_index
+    } else {
+        trace_len
+    }
+}
 
-    let mut indices = rows
-        .filter_map(|row| row.script_item_index)
+fn preview_insertion_step<T>(
+    steps: &[StepInfo],
+    rows: &[VisibleRow],
+    state: &AppState<T>,
+) -> Option<usize> {
+    let last_valid_row = rows.iter().rposition(|row| !row.is_invalid)?;
+    let last_valid_step = steps
+        .iter()
+        .rposition(|step| step.start_row <= last_valid_row && last_valid_row <= step.end_row)?;
+    (state.view.cursor_step_index == last_valid_step).then_some(last_valid_step)
+}
+
+fn resolve_runtime_target<T>(
+    state: &AppState<T>,
+    snapshot: &ViewSnapshot,
+    target: &DialogTarget,
+) -> Result<RuntimeTarget, String> {
+    match target {
+        DialogTarget::InsertAfterStep { step_index } => Ok(RuntimeTarget::Insert {
+            insertion_index: insertion_index_for_append(
+                &snapshot.steps,
+                *step_index,
+                state.view.trace.len(),
+            ),
+        }),
+        DialogTarget::EditInboundOfStep { step_index } => snapshot
+            .steps
+            .get(*step_index)
+            .and_then(|step| step.inbound_item_index)
+            .map(|item_index| RuntimeTarget::Edit { item_index })
+            .ok_or_else(|| "current step has no editable inbound event".to_string()),
+    }
+}
+
+fn selected_script_item_indices(
+    snapshot: &ViewSnapshot,
+    start_step: usize,
+    end_step: usize,
+) -> Vec<usize> {
+    let mut indices = snapshot.steps[start_step..=end_step]
+        .iter()
+        .filter_map(|step| step.inbound_item_index)
         .collect::<Vec<_>>();
     indices.sort_unstable();
     indices.dedup();
     indices
 }
 
-enum CursorTarget {
-    ScriptItemAtOrAfter(usize),
-}
-
-fn restore_cursor(next_view: &mut TraceViewState, target: CursorTarget) {
-    let resolved = match target {
-        CursorTarget::ScriptItemAtOrAfter(item_index) => next_view
-            .rows
-            .iter()
-            .position(|row| {
-                row.script_item_index
-                    .is_some_and(|index| index >= item_index)
-            })
-            .or_else(|| {
-                next_view
-                    .rows
-                    .iter()
-                    .rposition(|row| row.script_item_index.is_some())
-            })
-            .unwrap_or(0),
-    };
-    next_view.cursor = resolved;
-}
-
-fn restore_viewport(
-    next_view: &mut TraceViewState,
-    previous_scroll_offset: usize,
-    previous_viewport_height: usize,
-) {
-    next_view.viewport_height = previous_viewport_height;
-    next_view.scroll_offset = previous_scroll_offset;
-    keep_cursor_visible(
-        next_view.cursor,
-        &mut next_view.scroll_offset,
-        next_view.viewport_height,
-    );
-}
-
-fn preview_insertion_index(view: &TraceViewState) -> Option<usize> {
-    let last_valid_row = view.rows.iter().rposition(|row| !row.is_invalid)?;
-    if step_end(&view.rows, view.cursor) != last_valid_row {
-        return None;
+fn build_trivial_chain_trace<R: TraceRuntime>(
+    runtime: &R,
+    trace: &[RuntimeTraceItem<R>],
+    insertion_index: usize,
+    preview_limit: Option<usize>,
+) -> Result<(Vec<RuntimeTraceItem<R>>, usize, bool), String> {
+    let mut trace = trace.to_vec();
+    let mut next_insertion_index = insertion_index;
+    let mut inserted_count = 0;
+    let mut reached_limit_with_more = false;
+    for _ in 0..512 {
+        if preview_limit.is_some_and(|limit| inserted_count >= limit) {
+            let choices = runtime.insertion_choices(&trace, next_insertion_index)?;
+            let target = RuntimeTarget::Insert {
+                insertion_index: next_insertion_index,
+            };
+            let mut complete_choices = 0;
+            for (choice_index, _) in choices.iter().enumerate() {
+                let spec = runtime.form_spec(&trace, &target, choice_index)?;
+                let state = runtime.initial_form_state(&trace, &target, choice_index)?;
+                if form_is_auto_acceptable(&spec, &state) {
+                    complete_choices += 1;
+                    if complete_choices > 1 {
+                        break;
+                    }
+                }
+            }
+            reached_limit_with_more = complete_choices == 1;
+            break;
+        }
+        let choices = runtime.insertion_choices(&trace, next_insertion_index)?;
+        let target = RuntimeTarget::Insert {
+            insertion_index: next_insertion_index,
+        };
+        let mut trivial_choice = None;
+        for (choice_index, _) in choices.iter().enumerate() {
+            let spec = runtime.form_spec(&trace, &target, choice_index)?;
+            let state = runtime.initial_form_state(&trace, &target, choice_index)?;
+            if form_is_auto_acceptable(&spec, &state) {
+                if trivial_choice.is_some() {
+                    trivial_choice = None;
+                    break;
+                }
+                trivial_choice = Some((choice_index, state));
+            }
+        }
+        let Some((choice_index, state)) = trivial_choice else {
+            break;
+        };
+        let items = runtime.encode_form_state(&trace, &target, choice_index, &state)?;
+        if items.is_empty() {
+            break;
+        }
+        let item_count = items.len();
+        runtime.apply_form(&mut trace, &target, items)?;
+        next_insertion_index += item_count;
+        inserted_count += item_count;
     }
-    view.rows.get(last_valid_row).map(|row| row.insertion_index)
+    Ok((trace, inserted_count, reached_limit_with_more))
 }
 
-fn refresh_trivial_preview(view: &mut TraceViewState, runtime: &impl TraceRuntime) {
-    view.trivial_preview = preview_insertion_index(view)
-        .and_then(|insertion_index| {
-            runtime
-                .preview_trivial_chain(&view.document, insertion_index)
-                .ok()
-        })
-        .unwrap_or_default();
-}
-
-pub fn refresh_trace_list(
-    directory: &Path,
-    selected_file_name: Option<&str>,
-) -> Result<TraceListState, String> {
-    let entries = discover_traces(directory)?;
-    let selected = selected_file_name
-        .and_then(|file_name| {
-            entries
-                .iter()
-                .position(|entry| entry.file_name == file_name)
-        })
-        .unwrap_or(0)
-        .min(entries.len().saturating_sub(1));
-
-    Ok(TraceListState {
-        directory: directory.to_path_buf(),
-        entries,
-        selected,
-        scroll_offset: 0,
-        viewport_height: 0,
-        dialog: DialogMode::None,
-        status: None,
+fn open_form_dialog<R: TraceRuntime>(
+    state: &AppState<RuntimeTraceItem<R>>,
+    runtime: &R,
+    snapshot: &ViewSnapshot,
+    target: DialogTarget,
+    choice_index: usize,
+) -> Result<TraceViewDialog, String> {
+    let runtime_target = resolve_runtime_target(state, snapshot, &target)?;
+    let spec = runtime.form_spec(&state.view.trace, &runtime_target, choice_index)?;
+    let form_state =
+        runtime.initial_form_state(&state.view.trace, &runtime_target, choice_index)?;
+    Ok(TraceViewDialog::Form {
+        target,
+        choice_index,
+        spec,
+        state: form_state,
+        selected_field: 0,
     })
 }
 
-fn keep_cursor_visible(cursor: usize, scroll_offset: &mut usize, viewport_height: usize) {
-    if viewport_height == 0 {
-        return;
-    }
-    if cursor < *scroll_offset {
-        *scroll_offset = cursor;
-        return;
-    }
-    let last_visible = scroll_offset.saturating_add(viewport_height.saturating_sub(1));
-    if cursor > last_visible {
-        *scroll_offset = cursor.saturating_sub(viewport_height.saturating_sub(1));
-    }
+fn set_status<T>(state: &mut AppState<T>, message: impl Into<String>) {
+    state.view.status = Some(message.into());
 }
 
-pub fn update(
-    state: &mut AppState,
+pub fn update<R: TraceRuntime>(
+    mut state: AppState<RuntimeTraceItem<R>>,
     command: Command,
-    runtime: &impl TraceRuntime,
-) -> CommandOutcome {
-    match state.screen {
-        Screen::TraceList(_) => update_trace_list(state, command, runtime),
-        Screen::TraceView(_) => update_trace_view(state, command, runtime),
+    runtime: &R,
+) -> (
+    AppState<RuntimeTraceItem<R>>,
+    Vec<Effect<RuntimeTraceItem<R>>>,
+) {
+    if !matches!(command, Command::Char('z')) {
+        state.view.last_char = None;
     }
-}
-
-fn update_trace_list(
-    state: &mut AppState,
-    command: Command,
-    runtime: &impl TraceRuntime,
-) -> CommandOutcome {
-    let Screen::TraceList(list) = &mut state.screen else {
-        unreachable!();
+    let snapshot = match snapshot_for(&state, runtime) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            set_status(&mut state, err);
+            return (state, Vec::new());
+        }
     };
-    match (&mut list.dialog, command) {
-        (DialogMode::Prompt { value, .. }, Command::PromptInsert(ch)) => {
-            value.push(ch);
-            return CommandOutcome::Noop;
-        }
-        (DialogMode::Prompt { value, .. }, Command::PromptBackspace) => {
-            value.pop();
-            return CommandOutcome::Noop;
-        }
-        (_, Command::PromptCancel) => {
-            list.dialog = DialogMode::None;
-            return CommandOutcome::Noop;
-        }
-        (DialogMode::Prompt { kind, value }, Command::PromptSubmit) => {
-            let input = value.trim().to_string();
-            let result = match kind {
-                PromptKind::Create => create_trace(&list.directory, &input),
-                PromptKind::CopySelected => {
-                    let Some(entry) = list.entries.get(list.selected) else {
-                        return CommandOutcome::Message("no trace selected to copy".to_string());
-                    };
-                    copy_trace(&entry.path, &input)
-                }
-            };
-            list.dialog = DialogMode::None;
-            match result {
-                Ok(path) => match refresh_trace_list(
-                    &list.directory,
-                    path.file_name().and_then(|name| name.to_str()),
-                ) {
-                    Ok(next) => {
-                        *list = next;
-                        CommandOutcome::Message(format!("saved {}", path.display()))
-                    }
-                    Err(err) => CommandOutcome::Message(err),
-                },
-                Err(err) => CommandOutcome::Message(err),
-            }
-        }
-        (DialogMode::Prompt { .. }, _) => CommandOutcome::Noop,
-        (DialogMode::None, Command::MoveUp) => {
-            if list.selected > 0 {
-                list.selected -= 1;
-                keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            }
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MoveDown) => {
-            if list.selected + 1 < list.entries.len() {
-                list.selected += 1;
-                keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            }
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MoveTop) => {
-            list.selected = 0;
-            keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MoveBottom) => {
-            list.selected = list.entries.len().saturating_sub(1);
-            keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MovePageUp) => {
-            let delta = list.viewport_height.max(1);
-            list.selected = list.selected.saturating_sub(delta);
-            keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MovePageDown) => {
-            let delta = list.viewport_height.max(1);
-            list.selected = (list.selected + delta).min(list.entries.len().saturating_sub(1));
-            keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MoveHalfPageUp) => {
-            let delta = (list.viewport_height.max(2) / 2).max(1);
-            list.selected = list.selected.saturating_sub(delta);
-            keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::MoveHalfPageDown) => {
-            let delta = (list.viewport_height.max(2) / 2).max(1);
-            list.selected = (list.selected + delta).min(list.entries.len().saturating_sub(1));
-            keep_cursor_visible(list.selected, &mut list.scroll_offset, list.viewport_height);
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::StartCreate) => {
-            list.dialog = DialogMode::Prompt {
-                kind: PromptKind::Create,
-                value: String::new(),
-            };
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::StartCopy) => {
-            list.dialog = DialogMode::Prompt {
-                kind: PromptKind::CopySelected,
-                value: String::new(),
-            };
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::OpenSelected) => {
-            let Some(entry) = list.entries.get(list.selected) else {
-                return CommandOutcome::Message("no trace selected".to_string());
-            };
-            match open_trace(runtime, &entry.path) {
-                Ok(view) => {
-                    state.screen = Screen::TraceView(view);
-                    CommandOutcome::Noop
-                }
-                Err(err) => CommandOutcome::Message(err),
-            }
-        }
-        (DialogMode::None, Command::Quit) => {
-            state.should_quit = true;
-            CommandOutcome::Noop
-        }
-        (DialogMode::None, Command::ClearStatus) => {
-            list.status = None;
-            CommandOutcome::Noop
-        }
-        (
-            DialogMode::None,
-            Command::DialogCancel
-            | Command::DialogConfirm
-            | Command::FormKey(_)
-            | Command::StartInsert
-            | Command::StartEdit
-            | Command::DeleteCurrent
-            | Command::AcceptTrivialChain
-            | Command::ToggleVisual,
-        ) => CommandOutcome::Noop,
-        (DialogMode::None, _) => CommandOutcome::Noop,
-    }
-}
-
-fn update_trace_view(
-    state: &mut AppState,
-    command: Command,
-    runtime: &impl TraceRuntime,
-) -> CommandOutcome {
-    let Screen::TraceView(view) = &mut state.screen else {
-        unreachable!();
-    };
-
+    clamp_cursor_step(&mut state, &snapshot);
     match command {
-        Command::ClearStatus => {
-            view.pending_zz = true;
-            return CommandOutcome::Noop;
+        Command::Resize { width, height } => {
+            state.view.terminal_width = width;
+            state.view.terminal_height = height;
+            state.view.last_char = None;
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
         }
-        Command::CenterCursor => {
-            view.pending_zz = false;
-        }
-        _ => {
-            view.pending_zz = false;
-        }
-    }
-
-    match (&mut view.dialog, command.clone()) {
-        (
-            TraceViewDialog::Insert {
-                selected,
-                choices: _,
-                ..
-            },
-            Command::MoveUp,
-        ) => {
-            if *selected > 0 {
-                *selected -= 1;
-            }
-            return CommandOutcome::Noop;
-        }
-        (
-            TraceViewDialog::Insert {
-                selected, choices, ..
-            },
-            Command::MoveDown,
-        ) => {
-            if *selected + 1 < choices.len() {
-                *selected += 1;
-            }
-            return CommandOutcome::Noop;
-        }
-        (
-            TraceViewDialog::Edit {
-                selected,
-                choices: _,
-                ..
-            },
-            Command::MoveUp,
-        ) => {
-            if *selected > 0 {
-                *selected -= 1;
-            }
-            return CommandOutcome::Noop;
-        }
-        (
-            TraceViewDialog::Edit {
-                selected, choices, ..
-            },
-            Command::MoveDown,
-        ) => {
-            if *selected + 1 < choices.len() {
-                *selected += 1;
-            }
-            return CommandOutcome::Noop;
-        }
-        (TraceViewDialog::Insert { .. }, Command::DialogCancel) => {
-            view.dialog = TraceViewDialog::None;
-            return CommandOutcome::Noop;
-        }
-        (TraceViewDialog::Edit { .. }, Command::DialogCancel) => {
-            view.dialog = TraceViewDialog::None;
-            return CommandOutcome::Noop;
-        }
-        (TraceViewDialog::Form { .. }, Command::DialogCancel) => {
-            view.dialog = TraceViewDialog::None;
-            return CommandOutcome::Noop;
-        }
-        (
-            TraceViewDialog::Insert {
-                insertion_index,
-                selected,
-                ..
-            },
-            Command::DialogConfirm,
-        ) => {
-            let insertion_index = *insertion_index;
-            let selected = *selected;
-            match runtime.begin_insert_form(&view.document, insertion_index, selected) {
-                Ok(controller) => {
-                    view.dialog = TraceViewDialog::Form {
-                        target: FormTarget::Insert { insertion_index },
-                        controller,
-                    };
-                    return CommandOutcome::Noop;
-                }
-                Err(err) => return CommandOutcome::Message(err),
-            }
-        }
-        (
-            TraceViewDialog::Edit {
-                item_index,
-                selected,
-                ..
-            },
-            Command::DialogConfirm,
-        ) => {
-            let item_index = *item_index;
-            let selected = *selected;
-            match runtime.begin_edit_form(&view.document, item_index, selected) {
-                Ok(controller) => {
-                    view.dialog = TraceViewDialog::Form {
-                        target: FormTarget::Edit { item_index },
-                        controller,
-                    };
-                    return CommandOutcome::Noop;
-                }
-                Err(err) => return CommandOutcome::Message(err),
-            }
-        }
-        (TraceViewDialog::Form { target, controller }, Command::FormKey(key)) => {
-            match controller.handle_key(key) {
-                Ok(FormResult::Continue) => return CommandOutcome::Noop,
-                Ok(FormResult::Cancel) => {
-                    view.dialog = TraceViewDialog::None;
-                    return CommandOutcome::Noop;
-                }
-                Ok(FormResult::Save { items }) => {
-                    let mut document = view.document.clone();
-                    let previous_scroll_offset = view.scroll_offset;
-                    let previous_viewport_height = view.viewport_height;
-                    let cursor_target = match target {
-                        FormTarget::Insert { insertion_index } => {
-                            CursorTarget::ScriptItemAtOrAfter(*insertion_index)
-                        }
-                        FormTarget::Edit { item_index } => {
-                            CursorTarget::ScriptItemAtOrAfter(*item_index)
-                        }
-                    };
-                    match runtime.apply_form(&mut document, target, items) {
-                        Ok(()) => {
-                            let path = view.path.clone();
-                            match save_document(&path, &document)
-                                .and_then(|()| open_trace(runtime, &path))
-                            {
-                                Ok(mut next_view) => {
-                                    restore_cursor(&mut next_view, cursor_target);
-                                    restore_viewport(
-                                        &mut next_view,
-                                        previous_scroll_offset,
-                                        previous_viewport_height,
-                                    );
-                                    refresh_trivial_preview(&mut next_view, runtime);
-                                    next_view.status = Some(format!("saved {}", path.display()));
-                                    state.screen = Screen::TraceView(next_view);
-                                    return CommandOutcome::Noop;
-                                }
-                                Err(err) => return CommandOutcome::Message(err),
-                            }
-                        }
-                        Err(err) => return CommandOutcome::Message(err),
-                    }
-                }
-                Err(err) => return CommandOutcome::Message(err),
-            }
-        }
-        (
-            TraceViewDialog::Insert { .. }
-            | TraceViewDialog::Edit { .. }
-            | TraceViewDialog::Form { .. },
-            _,
-        ) => return CommandOutcome::Noop,
-        (TraceViewDialog::None, _) => {}
-    }
-
-    match command {
         Command::MoveUp => {
-            move_to_previous_step(view);
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
+            state.view.cursor_step_index = state.view.cursor_step_index.saturating_sub(1);
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
         }
         Command::MoveDown => {
-            move_to_next_step(view);
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
+            if state.view.cursor_step_index + 1 < snapshot.steps.len() {
+                state.view.cursor_step_index += 1;
+            }
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
         }
         Command::MoveTop => {
-            view.cursor = 0;
-            keep_cursor_visible(view.cursor, &mut view.scroll_offset, view.viewport_height);
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
-        }
-        Command::MovePageUp => {
-            move_cursor_by_page(view, -(view.viewport_height.max(1) as isize));
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
-        }
-        Command::MovePageDown => {
-            move_cursor_by_page(view, view.viewport_height.max(1) as isize);
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
-        }
-        Command::MoveHalfPageUp => {
-            move_cursor_by_page(view, -((view.viewport_height.max(2) / 2) as isize));
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
-        }
-        Command::MoveHalfPageDown => {
-            move_cursor_by_page(view, (view.viewport_height.max(2) / 2) as isize);
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
-        }
-        Command::CenterCursor => {
-            if view.viewport_height > 0 {
-                view.scroll_offset = view.cursor.saturating_sub(view.viewport_height / 2);
-            }
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
-        }
-        Command::ToggleVisual => {
-            view.selection_anchor = if view.selection_anchor.is_some() {
-                None
-            } else {
-                Some(step_start(&view.rows, view.cursor))
-            };
-            CommandOutcome::Noop
+            state.view.cursor_step_index = 0;
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
         }
         Command::MoveBottom => {
-            view.cursor = view.rows.len().saturating_sub(1);
-            keep_cursor_visible(view.cursor, &mut view.scroll_offset, view.viewport_height);
-            refresh_trivial_preview(view, runtime);
-            CommandOutcome::Noop
+            state.view.cursor_step_index = snapshot.steps.len().saturating_sub(1);
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
+        }
+        Command::MovePageUp => {
+            let delta = trace_viewport_height(&state).max(1);
+            state.view.cursor_step_index = state.view.cursor_step_index.saturating_sub(delta);
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
+        }
+        Command::MovePageDown => {
+            let delta = trace_viewport_height(&state).max(1);
+            state.view.cursor_step_index =
+                (state.view.cursor_step_index + delta).min(snapshot.steps.len().saturating_sub(1));
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
+        }
+        Command::MoveHalfPageUp => {
+            let delta = (trace_viewport_height(&state).max(2) / 2).max(1);
+            state.view.cursor_step_index = state.view.cursor_step_index.saturating_sub(delta);
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
+        }
+        Command::MoveHalfPageDown => {
+            let delta = (trace_viewport_height(&state).max(2) / 2).max(1);
+            state.view.cursor_step_index =
+                (state.view.cursor_step_index + delta).min(snapshot.steps.len().saturating_sub(1));
+            keep_cursor_visible(&mut state, &snapshot);
+            (state, Vec::new())
+        }
+        Command::CenterCursor => {
+            if let Some(step) = snapshot.steps.get(state.view.cursor_step_index) {
+                let viewport_height = trace_viewport_height(&state);
+                state.view.scroll_offset = step
+                    .start_row
+                    .saturating_sub(viewport_height.saturating_sub(1) / 2);
+            }
+            (state, Vec::new())
         }
         Command::StartInsert => {
-            let insertion_index = view
-                .rows
-                .get(view.cursor)
-                .map(|row| row.insertion_index)
-                .unwrap_or(0);
-            match runtime.insertion_choices(&view.document, insertion_index) {
-                Ok(choices) if choices.is_empty() => {
-                    CommandOutcome::Message("no valid inbound events at this position".to_string())
+            let target = DialogTarget::InsertAfterStep {
+                step_index: state.view.cursor_step_index,
+            };
+            let runtime_target = match resolve_runtime_target(&state, &snapshot, &target) {
+                Ok(target) => target,
+                Err(err) => {
+                    set_status(&mut state, err);
+                    return (state, Vec::new());
                 }
+            };
+            match runtime.insertion_choices(
+                &state.view.trace,
+                match runtime_target {
+                    RuntimeTarget::Insert { insertion_index } => insertion_index,
+                    RuntimeTarget::Edit { .. } => unreachable!(),
+                },
+            ) {
                 Ok(choices) => {
-                    view.dialog = TraceViewDialog::Insert {
-                        insertion_index,
+                    state.view.dialog = TraceViewDialog::Choice {
+                        target,
                         choices,
                         selected: 0,
                     };
-                    CommandOutcome::Noop
+                    (state, Vec::new())
                 }
-                Err(err) => CommandOutcome::Message(err),
+                Err(err) => {
+                    set_status(&mut state, err);
+                    (state, Vec::new())
+                }
             }
         }
         Command::StartEdit => {
-            let Some(item_index) = view
-                .rows
-                .get(view.cursor)
-                .and_then(|row| row.script_item_index)
-            else {
-                return CommandOutcome::Message("current row is not editable".to_string());
+            let target = DialogTarget::EditInboundOfStep {
+                step_index: state.view.cursor_step_index,
             };
-            match runtime.edit_choices(&view.document, item_index) {
-                Ok(choices) if choices.is_empty() => {
-                    CommandOutcome::Message("no valid edits for this row".to_string())
+            let runtime_target = match resolve_runtime_target(&state, &snapshot, &target) {
+                Ok(target) => target,
+                Err(err) => {
+                    set_status(&mut state, err);
+                    return (state, Vec::new());
                 }
+            };
+            match runtime.edit_choices(
+                &state.view.trace,
+                match runtime_target {
+                    RuntimeTarget::Edit { item_index } => item_index,
+                    RuntimeTarget::Insert { .. } => unreachable!(),
+                },
+            ) {
                 Ok(choices) => {
-                    view.dialog = TraceViewDialog::Edit {
-                        item_index,
+                    state.view.dialog = TraceViewDialog::Choice {
+                        target,
                         choices,
                         selected: 0,
                     };
-                    CommandOutcome::Noop
+                    (state, Vec::new())
                 }
-                Err(err) => CommandOutcome::Message(err),
+                Err(err) => {
+                    set_status(&mut state, err);
+                    (state, Vec::new())
+                }
+            }
+        }
+        Command::DialogCancel => {
+            state.view.dialog = TraceViewDialog::None;
+            (state, Vec::new())
+        }
+        Command::DialogConfirm => match &state.view.dialog {
+            TraceViewDialog::Choice {
+                target, selected, ..
+            } => match open_form_dialog(&state, runtime, &snapshot, target.clone(), *selected) {
+                Ok(dialog) => {
+                    state.view.dialog = dialog;
+                    (state, Vec::new())
+                }
+                Err(err) => {
+                    set_status(&mut state, err);
+                    (state, Vec::new())
+                }
+            },
+            TraceViewDialog::Form { .. } | TraceViewDialog::None => (state, Vec::new()),
+        },
+        Command::FormCancel
+        | Command::FormMoveUp
+        | Command::FormMoveDown
+        | Command::FormSelectPrev
+        | Command::FormSelectNext
+        | Command::FormBackspace
+        | Command::FormInsertChar(_)
+        | Command::FormInsertNewline
+        | Command::FormSubmit => {
+            let TraceViewDialog::Form {
+                target,
+                choice_index,
+                spec,
+                state: form_state,
+                selected_field,
+            } = &mut state.view.dialog
+            else {
+                return (state, Vec::new());
+            };
+            match command {
+                Command::FormCancel => {
+                    state.view.dialog = TraceViewDialog::None;
+                    (state, Vec::new())
+                }
+                Command::FormMoveUp => {
+                    *selected_field = selected_field.saturating_sub(1);
+                    (state, Vec::new())
+                }
+                Command::FormMoveDown => {
+                    if *selected_field + 1 < spec.fields.len() {
+                        *selected_field += 1;
+                    }
+                    (state, Vec::new())
+                }
+                Command::FormSelectPrev => {
+                    if let Some(field) = spec.fields.get(*selected_field) {
+                        match form_value_for_field(form_state, field) {
+                            super::FormValue::Select(value) => {
+                                *value = value.saturating_sub(1);
+                            }
+                            super::FormValue::Toggle(value) => *value = false,
+                            super::FormValue::Text(_) => {}
+                        }
+                    }
+                    (state, Vec::new())
+                }
+                Command::FormSelectNext => {
+                    if let Some(field) = spec.fields.get(*selected_field) {
+                        match form_value_for_field(form_state, field) {
+                            super::FormValue::Select(value) => {
+                                if let FormFieldKind::Select { options } = &field.kind {
+                                    *value = (*value + 1).min(options.len().saturating_sub(1));
+                                }
+                            }
+                            super::FormValue::Toggle(value) => *value = true,
+                            super::FormValue::Text(_) => {}
+                        }
+                    }
+                    (state, Vec::new())
+                }
+                Command::FormBackspace => {
+                    if let Some(field) = spec.fields.get(*selected_field) {
+                        if let super::FormValue::Text(value) =
+                            form_value_for_field(form_state, field)
+                        {
+                            value.pop();
+                        }
+                    }
+                    (state, Vec::new())
+                }
+                Command::FormInsertNewline => {
+                    if let Some(field) = spec.fields.get(*selected_field) {
+                        if matches!(field.kind, FormFieldKind::Text { multiline: true }) {
+                            if let super::FormValue::Text(value) =
+                                form_value_for_field(form_state, field)
+                            {
+                                value.push('\n');
+                            }
+                        }
+                    }
+                    (state, Vec::new())
+                }
+                Command::FormSubmit => {
+                    let target = target.clone();
+                    let choice_index = *choice_index;
+                    let spec = spec.clone();
+                    let form_state = form_state.clone();
+                    if let Some(missing) = missing_form_fields(&spec, &form_state).first() {
+                        set_status(&mut state, format!("missing {missing}"));
+                        return (state, Vec::new());
+                    }
+                    let runtime_target = match resolve_runtime_target(&state, &snapshot, &target) {
+                        Ok(target) => target,
+                        Err(err) => {
+                            set_status(&mut state, err);
+                            return (state, Vec::new());
+                        }
+                    };
+                    let items = match runtime.encode_form_state(
+                        &state.view.trace,
+                        &runtime_target,
+                        choice_index,
+                        &form_state,
+                    ) {
+                        Ok(items) => items,
+                        Err(err) => {
+                            set_status(&mut state, err);
+                            return (state, Vec::new());
+                        }
+                    };
+                    match runtime.apply_form(&mut state.view.trace, &runtime_target, items) {
+                        Ok(()) => {
+                            state.view.dialog = TraceViewDialog::None;
+                            match &target {
+                                DialogTarget::InsertAfterStep { step_index } => {
+                                    state.view.cursor_step_index = *step_index + 1;
+                                }
+                                DialogTarget::EditInboundOfStep { step_index } => {
+                                    state.view.cursor_step_index = *step_index;
+                                }
+                            }
+                            let trace = state.view.trace.clone();
+                            (state, vec![Effect::SaveTrace { trace }])
+                        }
+                        Err(err) => {
+                            set_status(&mut state, err);
+                            (state, Vec::new())
+                        }
+                    }
+                }
+                Command::FormInsertChar(ch) => {
+                    if let Some(field) = spec.fields.get(*selected_field) {
+                        if let super::FormValue::Text(value) =
+                            form_value_for_field(form_state, field)
+                        {
+                            value.push(ch);
+                        }
+                    }
+                    (state, Vec::new())
+                }
+                _ => unreachable!(),
             }
         }
         Command::DeleteCurrent => {
-            let item_indices = selected_script_item_indices(view);
-            if item_indices.is_empty() {
-                return CommandOutcome::Message("current row is not deletable".to_string());
+            let (start, end) = selected_step_range(&state);
+            let indices = selected_script_item_indices(&snapshot, start, end);
+            if indices.is_empty() {
+                set_status(&mut state, "no editable inbound events selected");
+                return (state, Vec::new());
             }
-            let first_item_index = item_indices[0];
-            let mut document = view.document.clone();
-            let previous_scroll_offset = view.scroll_offset;
-            let previous_viewport_height = view.viewport_height;
-            match runtime.delete_items(&mut document, item_indices) {
+            match runtime.delete_items(&mut state.view.trace, indices) {
                 Ok(()) => {
-                    let path = view.path.clone();
-                    match save_document(&path, &document).and_then(|()| open_trace(runtime, &path))
-                    {
-                        Ok(mut next_view) => {
-                            restore_cursor(
-                                &mut next_view,
-                                CursorTarget::ScriptItemAtOrAfter(first_item_index),
-                            );
-                            restore_viewport(
-                                &mut next_view,
-                                previous_scroll_offset,
-                                previous_viewport_height,
-                            );
-                            next_view.selection_anchor = None;
-                            refresh_trivial_preview(&mut next_view, runtime);
-                            next_view.status = Some(format!("saved {}", path.display()));
-                            state.screen = Screen::TraceView(next_view);
-                            CommandOutcome::Noop
-                        }
-                        Err(err) => CommandOutcome::Message(err),
-                    }
+                    state.view.selection_anchor_step_index = None;
+                    state.view.cursor_step_index = start.min(state.view.cursor_step_index);
+                    let trace = state.view.trace.clone();
+                    (state, vec![Effect::SaveTrace { trace }])
                 }
-                Err(err) => CommandOutcome::Message(err),
+                Err(err) => {
+                    set_status(&mut state, err);
+                    (state, Vec::new())
+                }
             }
         }
         Command::AcceptTrivialChain => {
-            let Some(insertion_index) = preview_insertion_index(view) else {
-                return CommandOutcome::Message(
-                    "trivial chain is only available at the end of the valid trace".to_string(),
-                );
+            let Some(step_index) = preview_insertion_step(&snapshot.steps, &snapshot.rows, &state)
+            else {
+                return (state, Vec::new());
             };
-            let mut document = view.document.clone();
-            let previous_scroll_offset = view.scroll_offset;
-            let previous_viewport_height = view.viewport_height;
-            match runtime.apply_trivial_chain(&mut document, insertion_index) {
-                Ok(inserted_count) if inserted_count == 0 => {
-                    CommandOutcome::Message("no trivial events to apply".to_string())
+            let insertion_index =
+                insertion_index_for_append(&snapshot.steps, step_index, state.view.trace.len());
+            match build_trivial_chain_trace(runtime, &state.view.trace, insertion_index, None) {
+                Ok((trace, inserted_count, _)) if inserted_count > 0 => {
+                    state.view.trace = trace;
+                    state.view.cursor_step_index = snapshot.steps.len();
+                    let trace = state.view.trace.clone();
+                    (state, vec![Effect::SaveTrace { trace }])
                 }
-                Ok(inserted_count) => {
-                    let path = view.path.clone();
-                    match save_document(&path, &document).and_then(|()| open_trace(runtime, &path))
-                    {
-                        Ok(mut next_view) => {
-                            restore_cursor(
-                                &mut next_view,
-                                CursorTarget::ScriptItemAtOrAfter(insertion_index),
-                            );
-                            restore_viewport(
-                                &mut next_view,
-                                previous_scroll_offset,
-                                previous_viewport_height,
-                            );
-                            refresh_trivial_preview(&mut next_view, runtime);
-                            next_view.status =
-                                Some(format!("applied {inserted_count} trivial events"));
-                            state.screen = Screen::TraceView(next_view);
-                            CommandOutcome::Noop
-                        }
-                        Err(err) => CommandOutcome::Message(err),
-                    }
+                Ok(_) => (state, Vec::new()),
+                Err(err) => {
+                    set_status(&mut state, err);
+                    (state, Vec::new())
                 }
-                Err(err) => CommandOutcome::Message(err),
             }
         }
-        Command::Back => {
-            let selected = view.path.file_name().and_then(|name| name.to_str());
-            match refresh_trace_list(
-                view.path.parent().unwrap_or_else(|| Path::new(".")),
-                selected,
-            ) {
-                Ok(list) => {
-                    state.screen = Screen::TraceList(list);
-                    CommandOutcome::Noop
-                }
-                Err(err) => CommandOutcome::Message(err),
+        Command::ToggleVisual => {
+            if state.view.selection_anchor_step_index.is_some() {
+                state.view.selection_anchor_step_index = None;
+            } else {
+                state.view.selection_anchor_step_index = Some(state.view.cursor_step_index);
             }
+            (state, Vec::new())
         }
-        Command::Quit => {
-            state.should_quit = true;
-            CommandOutcome::Noop
+        Command::Char('z') => {
+            if state.view.last_char == Some('z') {
+                state.view.last_char = None;
+                if let Some(step) = snapshot.steps.get(state.view.cursor_step_index) {
+                    let viewport_height = trace_viewport_height(&state);
+                    state.view.scroll_offset = step
+                        .start_row
+                        .saturating_sub(viewport_height.saturating_sub(1) / 2);
+                }
+            } else {
+                state.view.last_char = Some('z');
+                state.view.status = None;
+            }
+            (state, Vec::new())
         }
+        Command::Char(_) => (state, Vec::new()),
         Command::ClearStatus => {
-            view.status = None;
-            CommandOutcome::Noop
+            state.view.status = None;
+            (state, Vec::new())
         }
-        Command::DialogCancel | Command::DialogConfirm => CommandOutcome::Noop,
-        _ => CommandOutcome::Noop,
+        Command::Quit => (state, vec![Effect::Quit]),
     }
 }
 
-fn normalize_trace_name(input: &str) -> Result<String, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("trace name cannot be empty".to_string());
-    }
-    if trimmed.contains('/') {
-        return Err("trace name cannot contain '/'".to_string());
-    }
-    if trimmed.contains('\0') {
-        return Err("trace name cannot contain NUL".to_string());
-    }
-    if trimmed.ends_with(".json") {
-        Ok(trimmed.to_string())
-    } else {
-        Ok(format!("{trimmed}.json"))
-    }
+fn form_value_for_field<'a>(
+    state: &'a mut FormState,
+    field: &super::FormField,
+) -> &'a mut super::FormValue {
+    state
+        .entry(field.id.clone())
+        .or_insert_with(|| match &field.kind {
+            FormFieldKind::Text { .. } => super::FormValue::Text(String::new()),
+            FormFieldKind::Select { .. } => super::FormValue::Select(0),
+            FormFieldKind::Toggle { .. } => super::FormValue::Toggle(false),
+        })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use serde::Deserialize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::*;
-    use crate::editor::VisibleRow;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::layout::Rect;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    enum TestSyncOp {
+        BootReason,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    enum TestAsyncOp {
+        Sleep,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    enum TestSyncResult {
+        Unit,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    enum TestSyncError {
+        Unit,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    enum TestAsyncResult {
+        Unit,
+    }
 
     struct TestRuntime;
 
-    struct TestForm {
-        replacement: serde_json::Value,
-    }
-
-    impl FormController for TestForm {
-        fn render(&self, _frame: &mut ratatui::Frame<'_>, _area: Rect) {}
-
-        fn handle_key(&mut self, key: KeyEvent) -> Result<FormResult, String> {
-            match key.code {
-                KeyCode::Enter => Ok(FormResult::Save {
-                    items: vec![self.replacement.clone()],
-                }),
-                KeyCode::Esc => Ok(FormResult::Cancel),
-                _ => Ok(FormResult::Continue),
-            }
-        }
-    }
-
     impl TraceRuntime for TestRuntime {
-        fn render_trace(&self, document: &RunDocument) -> Result<RenderedTrace, String> {
-            let mut rows = Vec::new();
-            rows.push(VisibleRow {
+        type SyncOp = TestSyncOp;
+        type AsyncOp = TestAsyncOp;
+        type SyncResult = TestSyncResult;
+        type SyncError = TestSyncError;
+        type AsyncResult = TestAsyncResult;
+
+        fn render_trace(&self, trace: &[RuntimeTraceItem<Self>]) -> Result<RenderedTrace, String> {
+            let mut rows = vec![VisibleRow {
                 timeline: String::new(),
                 text: "CreateSync#0 BootReason".to_string(),
                 insertion_index: 0,
                 script_item_index: None,
                 is_invalid: false,
-            });
-            for (index, item) in document.items.iter().enumerate() {
+            }];
+            for (index, _) in trace.iter().enumerate() {
                 rows.push(VisibleRow {
                     timeline: String::new(),
-                    text: item.to_string(),
+                    text: format!("row {index}"),
                     insertion_index: index + 1,
                     script_item_index: Some(index),
                     is_invalid: false,
@@ -947,638 +911,133 @@ mod tests {
             })
         }
 
-        fn preview_trivial_chain(
-            &self,
-            _document: &RunDocument,
-            _insertion_index: usize,
-        ) -> Result<Vec<String>, String> {
-            Ok(vec!["ReturnSync UnitOk".to_string()])
-        }
-
-        fn apply_trivial_chain(
-            &self,
-            document: &mut RunDocument,
-            insertion_index: usize,
-        ) -> Result<usize, String> {
-            document.items.insert(
-                insertion_index,
-                serde_json::json!({"type":"return_sync","target":0,"trivial":true}),
-            );
-            Ok(1)
-        }
-
         fn insertion_choices(
             &self,
-            _document: &RunDocument,
+            _trace: &[RuntimeTraceItem<Self>],
             _insertion_index: usize,
         ) -> Result<Vec<InsertionChoice>, String> {
             Ok(vec![InsertionChoice {
-                label: "ReturnSync#0 BootReason".to_string(),
+                label: "ReturnSync#0 BootReason".into(),
             }])
-        }
-
-        fn begin_insert_form(
-            &self,
-            _document: &RunDocument,
-            _insertion_index: usize,
-            _choice_index: usize,
-        ) -> Result<Box<dyn FormController>, String> {
-            Ok(Box::new(TestForm {
-                replacement: serde_json::json!({"type":"return_sync","target":0}),
-            }))
         }
 
         fn edit_choices(
             &self,
-            _document: &RunDocument,
+            _trace: &[RuntimeTraceItem<Self>],
             _item_index: usize,
         ) -> Result<Vec<InsertionChoice>, String> {
             Ok(vec![InsertionChoice {
-                label: "EditedReturnSync".to_string(),
+                label: "ReturnSync#0 BootReason".into(),
             }])
         }
 
-        fn begin_edit_form(
+        fn form_spec(
             &self,
-            _document: &RunDocument,
-            _item_index: usize,
+            _trace: &[RuntimeTraceItem<Self>],
+            _target: &RuntimeTarget,
             _choice_index: usize,
-        ) -> Result<Box<dyn FormController>, String> {
-            Ok(Box::new(TestForm {
-                replacement: serde_json::json!({"type":"return_sync","target":1}),
-            }))
+        ) -> Result<super::super::FormSpec, String> {
+            Ok(super::super::FormSpec {
+                title: "Edit".into(),
+                details: Vec::new(),
+                fields: Vec::new(),
+                auto_accept_if_complete: true,
+            })
+        }
+
+        fn initial_form_state(
+            &self,
+            _trace: &[RuntimeTraceItem<Self>],
+            _target: &RuntimeTarget,
+            _choice_index: usize,
+        ) -> Result<FormState, String> {
+            Ok(FormState::new())
+        }
+
+        fn encode_form_state(
+            &self,
+            _trace: &[RuntimeTraceItem<Self>],
+            _target: &RuntimeTarget,
+            _choice_index: usize,
+            _state: &FormState,
+        ) -> Result<Vec<RuntimeTraceItem<Self>>, String> {
+            Ok(vec![TraceItem::InboundReturnSync {
+                target: "0".into(),
+                result: TestSyncResult::Unit,
+            }])
         }
 
         fn apply_form(
             &self,
-            document: &mut RunDocument,
-            target: &FormTarget,
-            items: Vec<serde_json::Value>,
+            trace: &mut Vec<RuntimeTraceItem<Self>>,
+            target: &RuntimeTarget,
+            items: Vec<RuntimeTraceItem<Self>>,
         ) -> Result<(), String> {
             match target {
-                FormTarget::Insert { insertion_index } => {
+                RuntimeTarget::Insert { insertion_index } => {
                     for (offset, item) in items.into_iter().enumerate() {
-                        document.items.insert(insertion_index + offset, item);
+                        trace.insert(insertion_index + offset, item);
                     }
                 }
-                FormTarget::Edit { item_index } => {
-                    document.items.splice(*item_index..=*item_index, items);
+                RuntimeTarget::Edit { item_index } => {
+                    trace.splice(*item_index..=*item_index, items);
                 }
             }
-            Ok(())
-        }
-
-        fn delete_item(&self, document: &mut RunDocument, item_index: usize) -> Result<(), String> {
-            document.items.remove(item_index);
             Ok(())
         }
 
         fn delete_items(
             &self,
-            document: &mut RunDocument,
+            trace: &mut Vec<RuntimeTraceItem<Self>>,
             mut item_indices: Vec<usize>,
         ) -> Result<(), String> {
             item_indices.sort_unstable();
             item_indices.dedup();
-            for item_index in item_indices.into_iter().rev() {
-                document.items.remove(item_index);
+            for index in item_indices.into_iter().rev() {
+                trace.remove(index);
             }
             Ok(())
         }
     }
 
-    fn temp_dir() -> PathBuf {
+    fn temp_path() -> PathBuf {
         let mut path = std::env::temp_dir();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        path.push(format!("simulator-editor-{unique}"));
-        fs::create_dir_all(&path).unwrap();
+        path.push(format!("simulator-editor-{unique}.json"));
         path
     }
 
     #[test]
-    fn discover_traces_filters_non_simulator_json() {
-        let directory = temp_dir();
-        fs::write(
-            directory.join("notes.json"),
-            "{\"kind\":\"other\",\"version\":1,\"items\":[]}",
-        )
-        .unwrap();
-        save_document(&directory.join("trace.json"), &RunDocument::default()).unwrap();
-
-        let entries = discover_traces(&directory).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].file_name, "trace.json");
+    fn open_or_create_trace_creates_missing_trace_file() {
+        let path = temp_path();
+        let session = open_or_create_trace::<TestRuntime>(&path, 120, 40).unwrap();
+        assert!(path.exists());
+        assert_eq!(session.state.view.trace.len(), 0);
     }
 
     #[test]
-    fn create_and_open_trace() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-
-        assert_eq!(view.rows.len(), 1);
-        assert_eq!(view.rows[0].text, "CreateSync#0 BootReason");
-    }
-
-    #[test]
-    fn insert_after_cursor_updates_document_and_resaves() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-        let mut state = AppState {
-            screen: Screen::TraceView(view),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::StartInsert, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(&mut state, Command::DialogConfirm, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(
-                &mut state,
-                Command::FormKey(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-                &TestRuntime,
-            ),
-            CommandOutcome::Noop
-        );
-
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.document.items.len(), 1);
-        assert_eq!(view.cursor, 1);
-
-        let saved = load_document(&path).unwrap();
-        assert_eq!(saved.items.len(), 1);
-    }
-
-    #[test]
-    fn edit_current_row_updates_document_and_resaves() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        save_document(
-            &path,
-            &RunDocument {
-                items: vec![serde_json::json!({"type":"return_sync","target":0})],
-                ..RunDocument::default()
+    fn resize_updates_terminal_size() {
+        let state = AppState::new(Vec::<RuntimeTraceItem<TestRuntime>>::new(), 80, 24);
+        let (state, effects) = update(
+            state,
+            Command::Resize {
+                width: 120,
+                height: 40,
             },
-        )
-        .unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-        let mut state = AppState {
-            screen: Screen::TraceView(view),
-            should_quit: false,
-        };
-        let Screen::TraceView(view) = &mut state.screen else {
-            panic!("expected trace view");
-        };
-        view.cursor = 1;
-
-        assert_eq!(
-            update(&mut state, Command::StartEdit, &TestRuntime),
-            CommandOutcome::Noop
+            &TestRuntime,
         );
-        assert_eq!(
-            update(&mut state, Command::DialogConfirm, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(
-                &mut state,
-                Command::FormKey(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-                &TestRuntime,
-            ),
-            CommandOutcome::Noop
-        );
-
-        let saved = load_document(&path).unwrap();
-        assert_eq!(
-            saved.items[0],
-            serde_json::json!({"type":"return_sync","target":1})
-        );
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 1);
+        assert!(effects.is_empty());
+        assert_eq!(state.view.terminal_width, 120);
+        assert_eq!(state.view.terminal_height, 40);
     }
 
     #[test]
-    fn delete_current_row_updates_document_and_resaves() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        save_document(
-            &path,
-            &RunDocument {
-                items: vec![serde_json::json!({"type":"return_sync","target":0})],
-                ..RunDocument::default()
-            },
-        )
-        .unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-        let mut state = AppState {
-            screen: Screen::TraceView(view),
-            should_quit: false,
-        };
-        let Screen::TraceView(view) = &mut state.screen else {
-            panic!("expected trace view");
-        };
-        view.cursor = 1;
-
-        assert_eq!(
-            update(&mut state, Command::DeleteCurrent, &TestRuntime),
-            CommandOutcome::Noop
-        );
-
-        let saved = load_document(&path).unwrap();
-        assert!(saved.items.is_empty());
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 0);
-    }
-
-    #[test]
-    fn moving_up_within_viewport_keeps_scroll_offset() {
-        let mut state = AppState {
-            screen: Screen::TraceView(TraceViewState {
-                path: PathBuf::from("trace.json"),
-                document: RunDocument::default(),
-                rows: (0..20)
-                    .map(|index| VisibleRow {
-                        timeline: String::new(),
-                        text: format!("row {index}"),
-                        insertion_index: index,
-                        script_item_index: Some(index),
-                        is_invalid: false,
-                    })
-                    .collect(),
-                cursor: 8,
-                selection_anchor: None,
-                scroll_offset: 5,
-                viewport_height: 5,
-                dialog: TraceViewDialog::None,
-                status: None,
-                replay_error: None,
-                trivial_preview: Vec::new(),
-                pending_zz: false,
-            }),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::MoveUp, &TestRuntime),
-            CommandOutcome::Noop
-        );
-
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 7);
-        assert_eq!(view.scroll_offset, 5);
-    }
-
-    #[test]
-    fn moving_up_past_top_of_viewport_scrolls_up() {
-        let mut state = AppState {
-            screen: Screen::TraceView(TraceViewState {
-                path: PathBuf::from("trace.json"),
-                document: RunDocument::default(),
-                rows: (0..20)
-                    .map(|index| VisibleRow {
-                        timeline: String::new(),
-                        text: format!("row {index}"),
-                        insertion_index: index,
-                        script_item_index: Some(index),
-                        is_invalid: false,
-                    })
-                    .collect(),
-                cursor: 5,
-                selection_anchor: None,
-                scroll_offset: 5,
-                viewport_height: 5,
-                dialog: TraceViewDialog::None,
-                status: None,
-                replay_error: None,
-                trivial_preview: Vec::new(),
-                pending_zz: false,
-            }),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::MoveUp, &TestRuntime),
-            CommandOutcome::Noop
-        );
-
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 4);
-        assert_eq!(view.scroll_offset, 4);
-    }
-
-    #[test]
-    fn insert_preserves_scroll_context() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-        let mut state = AppState {
-            screen: Screen::TraceView(view),
-            should_quit: false,
-        };
-        let Screen::TraceView(view) = &mut state.screen else {
-            panic!("expected trace view");
-        };
-        view.scroll_offset = 4;
-        view.viewport_height = 5;
-
-        assert_eq!(
-            update(&mut state, Command::StartInsert, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(&mut state, Command::DialogConfirm, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(
-                &mut state,
-                Command::FormKey(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-                &TestRuntime,
-            ),
-            CommandOutcome::Noop
-        );
-
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.viewport_height, 5);
-        assert_eq!(view.scroll_offset, 1);
-    }
-
-    #[test]
-    fn visual_delete_removes_selected_script_rows() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        save_document(
-            &path,
-            &RunDocument {
-                items: vec![
-                    serde_json::json!({"type":"a"}),
-                    serde_json::json!({"type":"b"}),
-                    serde_json::json!({"type":"c"}),
-                ],
-                ..RunDocument::default()
-            },
-        )
-        .unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-        let mut state = AppState {
-            screen: Screen::TraceView(view),
-            should_quit: false,
-        };
-        let Screen::TraceView(view) = &mut state.screen else {
-            panic!("expected trace view");
-        };
-        view.cursor = 1;
-
-        assert_eq!(
-            update(&mut state, Command::ToggleVisual, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(&mut state, Command::MoveDown, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(&mut state, Command::DeleteCurrent, &TestRuntime),
-            CommandOutcome::Noop
-        );
-
-        let saved = load_document(&path).unwrap();
-        assert_eq!(saved.items, vec![serde_json::json!({"type":"c"})]);
-    }
-
-    #[test]
-    fn page_down_moves_by_viewport_height() {
-        let mut state = AppState {
-            screen: Screen::TraceView(TraceViewState {
-                path: PathBuf::from("trace.json"),
-                document: RunDocument::default(),
-                rows: (0..20)
-                    .map(|index| VisibleRow {
-                        timeline: String::new(),
-                        text: format!("row {index}"),
-                        insertion_index: index,
-                        script_item_index: Some(index),
-                        is_invalid: false,
-                    })
-                    .collect(),
-                cursor: 0,
-                selection_anchor: None,
-                scroll_offset: 0,
-                viewport_height: 5,
-                dialog: TraceViewDialog::None,
-                status: None,
-                replay_error: None,
-                trivial_preview: Vec::new(),
-                pending_zz: false,
-            }),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::MovePageDown, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 5);
-    }
-
-    #[test]
-    fn stepwise_move_down_jumps_to_next_step_start() {
-        let mut state = AppState {
-            screen: Screen::TraceView(TraceViewState {
-                path: PathBuf::from("trace.json"),
-                document: RunDocument::default(),
-                rows: vec![
-                    VisibleRow {
-                        timeline: String::new(),
-                        text: "s0 a".into(),
-                        insertion_index: 0,
-                        script_item_index: None,
-                        is_invalid: false,
-                    },
-                    VisibleRow {
-                        timeline: String::new(),
-                        text: "s0 b".into(),
-                        insertion_index: 0,
-                        script_item_index: None,
-                        is_invalid: false,
-                    },
-                    VisibleRow {
-                        timeline: String::new(),
-                        text: "s1 a".into(),
-                        insertion_index: 1,
-                        script_item_index: Some(0),
-                        is_invalid: false,
-                    },
-                    VisibleRow {
-                        timeline: String::new(),
-                        text: "s1 b".into(),
-                        insertion_index: 1,
-                        script_item_index: None,
-                        is_invalid: false,
-                    },
-                    VisibleRow {
-                        timeline: String::new(),
-                        text: "s2 a".into(),
-                        insertion_index: 2,
-                        script_item_index: Some(1),
-                        is_invalid: false,
-                    },
-                ],
-                cursor: 0,
-                selection_anchor: None,
-                scroll_offset: 0,
-                viewport_height: 5,
-                dialog: TraceViewDialog::None,
-                status: None,
-                replay_error: None,
-                trivial_preview: Vec::new(),
-                pending_zz: false,
-            }),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::MoveDown, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 2);
-    }
-
-    #[test]
-    fn step_bounds_cover_whole_step() {
-        let rows = vec![
-            VisibleRow {
-                timeline: String::new(),
-                text: "a".into(),
-                insertion_index: 0,
-                script_item_index: None,
-                is_invalid: false,
-            },
-            VisibleRow {
-                timeline: String::new(),
-                text: "b".into(),
-                insertion_index: 0,
-                script_item_index: None,
-                is_invalid: false,
-            },
-            VisibleRow {
-                timeline: String::new(),
-                text: "c".into(),
-                insertion_index: 1,
-                script_item_index: Some(0),
-                is_invalid: false,
-            },
-            VisibleRow {
-                timeline: String::new(),
-                text: "d".into(),
-                insertion_index: 1,
-                script_item_index: None,
-                is_invalid: false,
-            },
-            VisibleRow {
-                timeline: String::new(),
-                text: "e".into(),
-                insertion_index: 2,
-                script_item_index: Some(1),
-                is_invalid: false,
-            },
-        ];
-
-        assert_eq!(step_bounds(&rows, 0), (0, 1));
-        assert_eq!(step_bounds(&rows, 1), (0, 1));
-        assert_eq!(step_bounds(&rows, 2), (2, 3));
-        assert_eq!(step_bounds(&rows, 3), (2, 3));
-    }
-
-    #[test]
-    fn zz_centers_cursor() {
-        let mut state = AppState {
-            screen: Screen::TraceView(TraceViewState {
-                path: PathBuf::from("trace.json"),
-                document: RunDocument::default(),
-                rows: (0..20)
-                    .map(|index| VisibleRow {
-                        timeline: String::new(),
-                        text: format!("row {index}"),
-                        insertion_index: index,
-                        script_item_index: Some(index),
-                        is_invalid: false,
-                    })
-                    .collect(),
-                cursor: 10,
-                selection_anchor: None,
-                scroll_offset: 0,
-                viewport_height: 6,
-                dialog: TraceViewDialog::None,
-                status: None,
-                replay_error: None,
-                trivial_preview: Vec::new(),
-                pending_zz: false,
-            }),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::ClearStatus, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        assert_eq!(
-            update(&mut state, Command::CenterCursor, &TestRuntime),
-            CommandOutcome::Noop
-        );
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.scroll_offset, 7);
-    }
-
-    #[test]
-    fn accept_trivial_chain_inserts_without_form() {
-        let directory = temp_dir();
-        let path = create_trace(&directory, "sample").unwrap();
-        let view = open_trace(&TestRuntime, &path).unwrap();
-        let mut state = AppState {
-            screen: Screen::TraceView(view),
-            should_quit: false,
-        };
-
-        assert_eq!(
-            update(&mut state, Command::AcceptTrivialChain, &TestRuntime),
-            CommandOutcome::Noop
-        );
-
-        let saved = load_document(&path).unwrap();
-        assert_eq!(saved.items.len(), 1);
-        let Screen::TraceView(view) = &state.screen else {
-            panic!("expected trace view");
-        };
-        assert_eq!(view.cursor, 1);
+    fn quit_returns_quit_effect() {
+        let state = AppState::new(Vec::<RuntimeTraceItem<TestRuntime>>::new(), 80, 24);
+        let (_, effects) = update(state, Command::Quit, &TestRuntime);
+        assert_eq!(effects, vec![Effect::Quit]);
     }
 }
