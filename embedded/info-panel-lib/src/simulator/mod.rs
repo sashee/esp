@@ -3,7 +3,7 @@ use config_portal::{ConfigStore, HttpEndpoint, HttpMethod, HttpRequest, HttpResp
 use core::future::poll_fn;
 use embassy_time::Duration as EmbassyDuration;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use simulator::editor::{InsertionChoice, RuntimeTarget, TraceItem, TraceRuntime, VisibleRow};
+use simulator::editor::{InsertionChoice, RuntimeTarget, TraceItem, TraceRuntime};
 use simulator::{
     elapsed_time, AsyncCompletion, AsyncTiming, ElapsedTime, Event, NewRunWrapper,
     NextEventsSpec, PossibleEvent, SimBundle, SimDriver, TraceStep, possible_next_events,

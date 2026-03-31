@@ -1,7 +1,7 @@
 use super::saved::*;
 use super::types::*;
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 pub(super) fn format_embassy_duration(duration: EmbassyDuration) -> String {
     let millis = duration.as_millis();
@@ -650,147 +650,10 @@ pub(super) enum PendingRequestOp {
 }
 
 pub(super) struct ReplaySnapshot {
-    pub(super) rows: Vec<VisibleRow>,
     pub(super) possible: Vec<PossibleEvent<SyncOp, AsyncOp, InboundAsyncKind>>,
     pub(super) runtime_to_symbolic: BTreeMap<u64, String>,
     pub(super) used_ids: BTreeSet<String>,
-    pub(super) replay_error: Option<String>,
     pub(super) current_ticks: u64,
-}
-
-#[derive(Clone)]
-enum RowTimelineEvent {
-    Start(u64),
-    End(u64),
-}
-
-#[derive(Clone)]
-struct ReplayRow {
-    text: String,
-    insertion_index: usize,
-    script_item_index: Option<usize>,
-    is_invalid: bool,
-    timeline_event: Option<RowTimelineEvent>,
-}
-
-fn visible_row(
-    text: String,
-    insertion_index: usize,
-    script_item_index: Option<usize>,
-    is_invalid: bool,
-    timeline_event: Option<RowTimelineEvent>,
-) -> ReplayRow {
-    ReplayRow {
-        text,
-        insertion_index,
-        script_item_index,
-        is_invalid,
-        timeline_event,
-    }
-}
-
-fn request_start_id(event: &Event<SyncOp, AsyncOp, SyncResult, AsyncResult>) -> Option<u64> {
-    match event {
-        Event::CreateSync { id, .. } | Event::CreateAsync { id, .. } => Some(*id),
-        _ => None,
-    }
-}
-
-fn request_end_id(event: &Event<SyncOp, AsyncOp, SyncResult, AsyncResult>) -> Option<u64> {
-    match event {
-        Event::ReturnSync { id, .. }
-        | Event::ResolveAsync { id, .. }
-        | Event::AbortAsync { id }
-        | Event::CancelAsync { id } => Some(*id),
-        _ => None,
-    }
-}
-
-fn build_timeline(rows: Vec<ReplayRow>) -> Vec<VisibleRow> {
-    let mut lane_by_request = BTreeMap::<u64, usize>::new();
-    let mut result = Vec::with_capacity(rows.len());
-
-    for row in rows {
-        if row.is_invalid {
-            result.push(VisibleRow {
-                timeline: String::new(),
-                text: row.text,
-                insertion_index: row.insertion_index,
-                script_item_index: row.script_item_index,
-                is_invalid: true,
-            });
-            continue;
-        }
-
-        let mut active = lane_by_request.values().copied().collect::<Vec<_>>();
-        active.sort_unstable();
-        active.dedup();
-
-        let marker_lane = match row.timeline_event.as_ref() {
-            Some(RowTimelineEvent::Start(id)) => {
-                let mut lane = 0;
-                while active.contains(&lane) {
-                    lane += 1;
-                }
-                Some((lane, true, *id))
-            }
-            Some(RowTimelineEvent::End(id)) => lane_by_request
-                .get(id)
-                .copied()
-                .map(|lane| (lane, false, *id)),
-            None => None,
-        };
-
-        let max_lane = active
-            .iter()
-            .copied()
-            .chain(marker_lane.iter().map(|(lane, _, _)| *lane))
-            .max();
-        let timeline = if let Some(max_lane) = max_lane {
-            let mut chars = Vec::new();
-            for lane in 0..=max_lane {
-                let ch = if let Some((marker_lane, is_start, _)) = marker_lane.as_ref() {
-                    if *marker_lane == lane {
-                        if *is_start {
-                            '┌'
-                        } else {
-                            '└'
-                        }
-                    } else if active.contains(&lane) {
-                        '│'
-                    } else {
-                        ' '
-                    }
-                } else if active.contains(&lane) {
-                    '│'
-                } else {
-                    ' '
-                };
-                chars.push(ch);
-            }
-            chars.into_iter().collect::<String>()
-        } else {
-            String::new()
-        };
-
-        if let Some((lane, is_start, id)) = marker_lane {
-            if is_start {
-                lane_by_request.insert(id, lane);
-            } else {
-                lane_by_request.remove(&id);
-            }
-        }
-
-        result.push(VisibleRow {
-            timeline,
-            text: row.text,
-            insertion_index: row.insertion_index,
-            script_item_index: row.script_item_index,
-            is_invalid: row.is_invalid,
-        });
-    }
-
-    result
 }
 
 pub(super) fn add_pending_requests(
@@ -933,18 +796,6 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
     let rebooted = Arc::new(AtomicBool::new(false));
     let (mut wrapper, initial_outbound) =
         NewRunWrapper::new(InfoPanelBundle::new(rebooted.clone())).start();
-    let mut rows = initial_outbound
-        .iter()
-        .map(|event| {
-            visible_row(
-                format!("OUT {}", format_event(event)),
-                0,
-                None,
-                false,
-                request_start_id(event).map(RowTimelineEvent::Start),
-            )
-        })
-        .collect::<Vec<_>>();
     let mut trace = vec![TraceStep::start(initial_outbound.clone())];
     let mut pending_requests = Vec::new();
     add_pending_requests(&mut pending_requests, &initial_outbound);
@@ -954,7 +805,6 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
     let mut next_inbound_runtime_id = 1_000_000;
     let mut possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&trace)
         .map_err(|err| format!("failed to compute possible events: {err:?}"))?;
-    let mut replay_error = None;
 
     for (index, item) in items.iter().enumerate() {
         let result = match item {
@@ -986,42 +836,11 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
                                 format_saved_item(item)
                             ))
                         } else {
-                            rows.push(visible_row(
-                                format_saved_item(item),
-                                index + 1,
-                                Some(index),
-                                false,
-                                request_start_id(&inbound)
-                                    .map(RowTimelineEvent::Start)
-                                    .or_else(|| {
-                                        request_end_id(&inbound).map(RowTimelineEvent::End)
-                                    }),
-                            ));
                             let outbound = wrapper.push(inbound.clone());
                             trace.push(TraceStep::push(inbound, outbound.clone()));
                             add_pending_requests(&mut pending_requests, &outbound);
-                            rows.extend(outbound.iter().map(|event| {
-                                visible_row(
-                                    format!("OUT {}", format_event(event)),
-                                    index + 1,
-                                    None,
-                                    false,
-                                    request_start_id(event)
-                                        .map(RowTimelineEvent::Start)
-                                        .or_else(|| {
-                                            request_end_id(event).map(RowTimelineEvent::End)
-                                        }),
-                                )
-                            }));
-                            if wrapper.is_terminated() && rebooted.load(Ordering::SeqCst) {
-                                rows.push(visible_row(
-                                    "RUN rebooted".to_string(),
-                                    index + 1,
-                                    None,
-                                    false,
-                                    None,
-                                ));
-                            }
+                            let _ = wrapper.is_terminated()
+                                && rebooted.load(std::sync::atomic::Ordering::SeqCst);
                             possible = possible_next_events::<_, _, _, _, InfoPanelSpec>(&trace)
                                 .map_err(|err| {
                                     format!("failed to replay trace at index {index}: {err:?}")
@@ -1035,34 +854,15 @@ pub(super) fn replay_items(items: &[SavedItem]) -> Result<ReplaySnapshot, String
         };
 
         if let Err(err) = result {
-            replay_error = Some(err);
-            rows.push(visible_row(
-                format_saved_item(item),
-                index + 1,
-                Some(index),
-                true,
-                None,
-            ));
-            for (tail_index, tail_item) in items.iter().enumerate().skip(index + 1) {
-                rows.push(visible_row(
-                    format_saved_item(tail_item),
-                    tail_index + 1,
-                    Some(tail_index),
-                    true,
-                    None,
-                ));
-            }
-            break;
+            return Err(err);
         }
     }
 
     let current_ticks = current_ticks_from_trace(&trace);
     Ok(ReplaySnapshot {
-        rows: build_timeline(rows),
         possible,
         runtime_to_symbolic,
         used_ids,
-        replay_error,
         current_ticks,
     })
 }
@@ -1135,49 +935,6 @@ pub(super) fn choice_to_saved_items(
             };
             Ok(vec![SavedItem::InboundCancelAsync { target }])
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_timeline_shows_parallel_lanes_for_overlapping_requests() {
-        let rows = build_timeline(vec![
-            visible_row(
-                "start a".to_string(),
-                0,
-                None,
-                false,
-                Some(RowTimelineEvent::Start(1)),
-            ),
-            visible_row(
-                "start b".to_string(),
-                0,
-                None,
-                false,
-                Some(RowTimelineEvent::Start(2)),
-            ),
-            visible_row(
-                "end a".to_string(),
-                0,
-                None,
-                false,
-                Some(RowTimelineEvent::End(1)),
-            ),
-            visible_row("middle b".to_string(), 0, None, false, None),
-            visible_row(
-                "end b".to_string(),
-                0,
-                None,
-                false,
-                Some(RowTimelineEvent::End(2)),
-            ),
-        ]);
-
-        let timelines = rows.into_iter().map(|row| row.timeline).collect::<Vec<_>>();
-        assert_eq!(timelines, vec!["┌", "│┌", "└│", " │", " └"]);
     }
 }
 

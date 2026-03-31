@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{de::DeserializeOwned, Serialize};
 
+use crate::{Event, NewRunWrapper, NextEventsSpec, PossibleEvent, SimBundle, TraceStep};
+
 use super::{
     form_is_auto_acceptable, missing_form_fields, AppState, Command, DialogTarget, Effect,
     FormFieldKind, FormState, InsertionChoice, RenderedTrace, RunEnvelope, RuntimeTarget,
@@ -22,18 +24,38 @@ pub struct EditorSession<T> {
     pub state: AppState<T>,
 }
 
+pub enum ReplayItemAction<S, A, SR, AR> {
+    BindOutbound,
+    PushInbound(Event<S, A, SR, AR>),
+}
+
 pub trait TraceRuntime {
     type SyncOp: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
     type AsyncOp: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
     type SyncResult: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
     type SyncError: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
     type AsyncResult: Clone + Serialize + DeserializeOwned + PartialEq + Eq;
+    type ReplaySyncOp: Clone + Send + 'static;
+    type ReplayAsyncOp: Clone + Send + 'static;
+    type ReplaySyncResult: Clone + Send + 'static;
+    type ReplayAsyncResult: Clone + Send + 'static;
+    type Bundle: SimBundle<
+        SyncOp = Self::ReplaySyncOp,
+        AsyncOp = Self::ReplayAsyncOp,
+        SyncResult = Self::ReplaySyncResult,
+        AsyncResult = Self::ReplayAsyncResult,
+    >;
+    type ReplaySpec: NextEventsSpec<
+        Self::ReplaySyncOp,
+        Self::ReplayAsyncOp,
+        Self::ReplaySyncResult,
+        Self::ReplayAsyncResult,
+    >;
+    type ReplayState;
 
-    fn render_trace(&self, trace: &[RuntimeTraceItem<Self>]) -> Result<RenderedTrace, String>;
     fn insertion_choices(
         &self,
-        trace: &[RuntimeTraceItem<Self>],
-        insertion_index: usize,
+        trace_prefix: &[RuntimeTraceItem<Self>],
     ) -> Result<Vec<InsertionChoice>, String>;
     fn edit_choices(
         &self,
@@ -65,11 +87,64 @@ pub trait TraceRuntime {
         target: &RuntimeTarget,
         items: Vec<RuntimeTraceItem<Self>>,
     ) -> Result<(), String>;
-    fn delete_items(
+    fn new_replay_state(&self) -> Self::ReplayState;
+    fn new_replay_bundle(&self, replay_state: &mut Self::ReplayState) -> Self::Bundle;
+    fn record_runtime_outbound(
         &self,
-        trace: &mut Vec<RuntimeTraceItem<Self>>,
-        item_indices: Vec<usize>,
-    ) -> Result<(), String>;
+        replay_state: &mut Self::ReplayState,
+        events: &[Event<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >],
+    );
+    fn replay_item_action(
+        &self,
+        replay_state: &mut Self::ReplayState,
+        item: &RuntimeTraceItem<Self>,
+    ) -> Result<
+        ReplayItemAction<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >,
+        String,
+    >;
+    fn matches_possible_event(
+        &self,
+        replay_state: &Self::ReplayState,
+        candidate: &PossibleEvent<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            <Self::ReplaySpec as NextEventsSpec<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                Self::ReplaySyncResult,
+                Self::ReplayAsyncResult,
+            >>::InboundAsyncKind,
+        >,
+        event: &Event<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >,
+    ) -> bool;
+    fn format_trace_item(&self, item: &RuntimeTraceItem<Self>) -> String;
+    fn format_runtime_event(
+        &self,
+        event: &Event<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >,
+    ) -> String;
+    fn replay_terminated_marker(&self, _replay_state: &Self::ReplayState) -> Option<String> {
+        None
+    }
 }
 
 const TRIVIAL_PREVIEW_LIMIT: usize = 5;
@@ -213,11 +288,251 @@ fn build_steps(rows: &[VisibleRow], trace_len: usize) -> Vec<StepInfo> {
     steps
 }
 
+#[derive(Clone)]
+enum RowTimelineEvent {
+    Start(u64),
+    End(u64),
+}
+
+#[derive(Clone)]
+struct ReplayRow {
+    text: String,
+    insertion_index: usize,
+    script_item_index: Option<usize>,
+    is_invalid: bool,
+    timeline_event: Option<RowTimelineEvent>,
+}
+
+fn request_start_id<S, A, SR, AR>(event: &Event<S, A, SR, AR>) -> Option<u64> {
+    match event {
+        Event::CreateSync { id, .. } | Event::CreateAsync { id, .. } => Some(*id),
+        _ => None,
+    }
+}
+
+fn request_end_id<S, A, SR, AR>(event: &Event<S, A, SR, AR>) -> Option<u64> {
+    match event {
+        Event::ReturnSync { id, .. }
+        | Event::ResolveAsync { id, .. }
+        | Event::AbortAsync { id }
+        | Event::CancelAsync { id } => Some(*id),
+        _ => None,
+    }
+}
+
+fn build_timeline(rows: Vec<ReplayRow>) -> Vec<VisibleRow> {
+    let mut lane_by_request = std::collections::BTreeMap::<u64, usize>::new();
+    let mut result = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        if row.is_invalid {
+            result.push(VisibleRow {
+                timeline: String::new(),
+                text: row.text,
+                insertion_index: row.insertion_index,
+                script_item_index: row.script_item_index,
+                is_invalid: true,
+            });
+            continue;
+        }
+
+        let mut active = lane_by_request.values().copied().collect::<Vec<_>>();
+        active.sort_unstable();
+        active.dedup();
+
+        let marker_lane = match row.timeline_event.as_ref() {
+            Some(RowTimelineEvent::Start(id)) => {
+                let mut lane = 0;
+                while active.contains(&lane) {
+                    lane += 1;
+                }
+                Some((lane, true, *id))
+            }
+            Some(RowTimelineEvent::End(id)) => lane_by_request
+                .get(id)
+                .copied()
+                .map(|lane| (lane, false, *id)),
+            None => None,
+        };
+
+        let max_lane = active
+            .iter()
+            .copied()
+            .chain(marker_lane.iter().map(|(lane, _, _)| *lane))
+            .max();
+        let timeline = if let Some(max_lane) = max_lane {
+            let mut chars = Vec::new();
+            for lane in 0..=max_lane {
+                let ch = if let Some((marker_lane, is_start, _)) = marker_lane.as_ref() {
+                    if *marker_lane == lane {
+                        if *is_start {
+                            '┌'
+                        } else {
+                            '└'
+                        }
+                    } else if active.contains(&lane) {
+                        '│'
+                    } else {
+                        ' '
+                    }
+                } else if active.contains(&lane) {
+                    '│'
+                } else {
+                    ' '
+                };
+                chars.push(ch);
+            }
+            chars.into_iter().collect::<String>()
+        } else {
+            String::new()
+        };
+
+        if let Some((lane, is_start, id)) = marker_lane {
+            if is_start {
+                lane_by_request.insert(id, lane);
+            } else {
+                lane_by_request.remove(&id);
+            }
+        }
+
+        result.push(VisibleRow {
+            timeline,
+            text: row.text,
+            insertion_index: row.insertion_index,
+            script_item_index: row.script_item_index,
+            is_invalid: row.is_invalid,
+        });
+    }
+
+    result
+}
+
+pub fn render_trace<R: TraceRuntime>(
+    runtime: &R,
+    trace: &[RuntimeTraceItem<R>],
+) -> Result<RenderedTrace, String> {
+    let mut replay_state = runtime.new_replay_state();
+    let bundle = runtime.new_replay_bundle(&mut replay_state);
+    let (mut wrapper, initial_outbound) = NewRunWrapper::new(bundle).start();
+    runtime.record_runtime_outbound(&mut replay_state, &initial_outbound);
+    let mut rows = initial_outbound
+        .iter()
+        .map(|event| ReplayRow {
+            text: format!("OUT {}", runtime.format_runtime_event(event)),
+            insertion_index: 0,
+            script_item_index: None,
+            is_invalid: false,
+            timeline_event: request_start_id(event).map(RowTimelineEvent::Start),
+        })
+        .collect::<Vec<_>>();
+    let mut replay_trace = vec![TraceStep::start(initial_outbound.clone())];
+    let mut replay_error = None;
+
+    for (index, item) in trace.iter().enumerate() {
+        let action = match runtime.replay_item_action(&mut replay_state, item) {
+            Ok(action) => action,
+            Err(err) => {
+                replay_error = Some(err);
+                rows.push(ReplayRow {
+                    text: runtime.format_trace_item(item),
+                    insertion_index: index + 1,
+                    script_item_index: Some(index),
+                    is_invalid: true,
+                    timeline_event: None,
+                });
+                for (tail_index, tail_item) in trace.iter().enumerate().skip(index + 1) {
+                    rows.push(ReplayRow {
+                        text: runtime.format_trace_item(tail_item),
+                        insertion_index: tail_index + 1,
+                        script_item_index: Some(tail_index),
+                        is_invalid: true,
+                        timeline_event: None,
+                    });
+                }
+                break;
+            }
+        };
+
+        let ReplayItemAction::PushInbound(event) = action else {
+            continue;
+        };
+
+        let possible = crate::possible_next_events::<_, _, _, _, R::ReplaySpec>(&replay_trace)
+            .map_err(|err| format!("failed to compute possible events: {err:?}"))?;
+        if !possible
+            .iter()
+            .any(|candidate| runtime.matches_possible_event(&replay_state, candidate, &event))
+        {
+            replay_error = Some(format!(
+                "saved inbound item is not valid at index {index}: {}",
+                runtime.format_trace_item(item)
+            ));
+            rows.push(ReplayRow {
+                text: runtime.format_trace_item(item),
+                insertion_index: index + 1,
+                script_item_index: Some(index),
+                is_invalid: true,
+                timeline_event: None,
+            });
+            for (tail_index, tail_item) in trace.iter().enumerate().skip(index + 1) {
+                rows.push(ReplayRow {
+                    text: runtime.format_trace_item(tail_item),
+                    insertion_index: tail_index + 1,
+                    script_item_index: Some(tail_index),
+                    is_invalid: true,
+                    timeline_event: None,
+                });
+            }
+            break;
+        }
+
+        rows.push(ReplayRow {
+            text: runtime.format_trace_item(item),
+            insertion_index: index + 1,
+            script_item_index: Some(index),
+            is_invalid: false,
+            timeline_event: request_start_id(&event)
+                .map(RowTimelineEvent::Start)
+                .or_else(|| request_end_id(&event).map(RowTimelineEvent::End)),
+        });
+        let outbound = wrapper.push(event.clone());
+        runtime.record_runtime_outbound(&mut replay_state, &outbound);
+        replay_trace.push(TraceStep::push(event, outbound.clone()));
+        rows.extend(outbound.iter().map(|event| {
+            ReplayRow {
+                text: format!("OUT {}", runtime.format_runtime_event(event)),
+                insertion_index: index + 1,
+                script_item_index: None,
+                is_invalid: false,
+                timeline_event: request_start_id(event)
+                    .map(RowTimelineEvent::Start)
+                    .or_else(|| request_end_id(event).map(RowTimelineEvent::End)),
+            }
+        }));
+        if wrapper.is_terminated() {
+            if let Some(marker) = runtime.replay_terminated_marker(&replay_state) {
+                rows.push(ReplayRow {
+                    text: marker,
+                    insertion_index: index + 1,
+                    script_item_index: None,
+                    is_invalid: false,
+                    timeline_event: None,
+                });
+            }
+        }
+    }
+
+    Ok(RenderedTrace {
+        rows: build_timeline(rows),
+        replay_error,
+    })
+}
+
 pub(crate) fn snapshot_for<R: TraceRuntime>(
     state: &AppState<RuntimeTraceItem<R>>,
     runtime: &R,
 ) -> Result<ViewSnapshot, String> {
-    let rendered = runtime.render_trace(&state.view.trace)?;
+    let rendered = render_trace(runtime, &state.view.trace)?;
     let steps = build_steps(&rendered.rows, state.view.trace.len());
     let trivial_preview = preview_insertion_step(&steps, &rendered.rows, state)
         .and_then(|step_index| {
@@ -233,7 +548,7 @@ pub(crate) fn snapshot_for<R: TraceRuntime>(
             if inserted_count == 0 {
                 return Some(Vec::new());
             }
-            let mut preview = runtime.render_trace(&trace).ok()?.rows;
+            let mut preview = render_trace(runtime, &trace).ok()?.rows;
             preview.drain(..rendered.rows.len());
             if has_more {
                 preview.push(VisibleRow {
@@ -367,6 +682,23 @@ fn selected_script_item_indices(
     indices
 }
 
+fn delete_trace_items<T>(trace: &mut Vec<T>, item_indices: Vec<usize>) -> Result<(), String> {
+    let mut item_indices = item_indices;
+    item_indices.sort_unstable();
+    item_indices.dedup();
+    if let Some(index) = item_indices
+        .iter()
+        .copied()
+        .find(|index| *index >= trace.len())
+    {
+        return Err(format!("invalid item index {index}"));
+    }
+    for index in item_indices.into_iter().rev() {
+        trace.remove(index);
+    }
+    Ok(())
+}
+
 fn build_trivial_chain_trace<R: TraceRuntime>(
     runtime: &R,
     trace: &[RuntimeTraceItem<R>],
@@ -379,7 +711,7 @@ fn build_trivial_chain_trace<R: TraceRuntime>(
     let mut reached_limit_with_more = false;
     for _ in 0..512 {
         if preview_limit.is_some_and(|limit| inserted_count >= limit) {
-            let choices = runtime.insertion_choices(&trace, next_insertion_index)?;
+            let choices = runtime.insertion_choices(&trace[..next_insertion_index])?;
             let target = RuntimeTarget::Insert {
                 insertion_index: next_insertion_index,
             };
@@ -397,7 +729,7 @@ fn build_trivial_chain_trace<R: TraceRuntime>(
             reached_limit_with_more = complete_choices == 1;
             break;
         }
-        let choices = runtime.insertion_choices(&trace, next_insertion_index)?;
+        let choices = runtime.insertion_choices(&trace[..next_insertion_index])?;
         let target = RuntimeTarget::Insert {
             insertion_index: next_insertion_index,
         };
@@ -480,15 +812,33 @@ pub fn update<R: TraceRuntime>(
             (state, Vec::new())
         }
         Command::MoveUp => {
-            state.view.cursor_step_index = state.view.cursor_step_index.saturating_sub(1);
-            keep_cursor_visible(&mut state, &snapshot);
+            match &mut state.view.dialog {
+                TraceViewDialog::Choice { selected, .. } => {
+                    *selected = selected.saturating_sub(1);
+                }
+                TraceViewDialog::Form { .. } | TraceViewDialog::None => {
+                    state.view.cursor_step_index = state.view.cursor_step_index.saturating_sub(1);
+                    keep_cursor_visible(&mut state, &snapshot);
+                }
+            }
             (state, Vec::new())
         }
         Command::MoveDown => {
-            if state.view.cursor_step_index + 1 < snapshot.steps.len() {
-                state.view.cursor_step_index += 1;
+            match &mut state.view.dialog {
+                TraceViewDialog::Choice {
+                    selected, choices, ..
+                } => {
+                    if *selected + 1 < choices.len() {
+                        *selected += 1;
+                    }
+                }
+                TraceViewDialog::Form { .. } | TraceViewDialog::None => {
+                    if state.view.cursor_step_index + 1 < snapshot.steps.len() {
+                        state.view.cursor_step_index += 1;
+                    }
+                    keep_cursor_visible(&mut state, &snapshot);
+                }
             }
-            keep_cursor_visible(&mut state, &snapshot);
             (state, Vec::new())
         }
         Command::MoveTop => {
@@ -547,13 +897,10 @@ pub fn update<R: TraceRuntime>(
                     return (state, Vec::new());
                 }
             };
-            match runtime.insertion_choices(
-                &state.view.trace,
-                match runtime_target {
-                    RuntimeTarget::Insert { insertion_index } => insertion_index,
-                    RuntimeTarget::Edit { .. } => unreachable!(),
-                },
-            ) {
+            match runtime.insertion_choices(match runtime_target {
+                RuntimeTarget::Insert { insertion_index } => &state.view.trace[..insertion_index],
+                RuntimeTarget::Edit { .. } => unreachable!(),
+            }) {
                 Ok(choices) => {
                     state.view.dialog = TraceViewDialog::Choice {
                         target,
@@ -769,7 +1116,7 @@ pub fn update<R: TraceRuntime>(
                 set_status(&mut state, "no editable inbound events selected");
                 return (state, Vec::new());
             }
-            match runtime.delete_items(&mut state.view.trace, indices) {
+            match delete_trace_items(&mut state.view.trace, indices) {
                 Ok(()) => {
                     state.view.selection_anchor_step_index = None;
                     state.view.cursor_step_index = start.min(state.view.cursor_step_index);
@@ -854,6 +1201,8 @@ mod tests {
     use serde::Deserialize;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use crate::{AsyncTiming, SimDriver};
+
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     enum TestSyncOp {
         BootReason,
@@ -879,6 +1228,50 @@ mod tests {
         Unit,
     }
 
+    struct TestBundle;
+
+    impl SimBundle for TestBundle {
+        type SyncOp = TestSyncOp;
+        type AsyncOp = TestAsyncOp;
+        type SyncResult = TestSyncResult;
+        type AsyncResult = TestAsyncResult;
+        type RunFuture = std::future::Ready<()>;
+
+        fn build(
+            self,
+            driver: SimDriver<Self::SyncOp, Self::AsyncOp, Self::SyncResult, Self::AsyncResult>,
+        ) -> Self::RunFuture {
+            let _ = driver.create_sync(TestSyncOp::BootReason);
+            std::future::ready(())
+        }
+
+        fn sync_result_matches(op: &Self::SyncOp, result: &Self::SyncResult) -> bool {
+            matches!((op, result), (TestSyncOp::BootReason, TestSyncResult::Unit))
+        }
+
+        fn async_result_matches(_op: &Self::AsyncOp, _result: &Self::AsyncResult) -> bool {
+            true
+        }
+    }
+
+    struct TestSpec;
+
+    impl NextEventsSpec<TestSyncOp, TestAsyncOp, TestSyncResult, TestAsyncResult> for TestSpec {
+        type InboundAsyncKind = ();
+
+        fn sync_result_matches(op: &TestSyncOp, result: &TestSyncResult) -> bool {
+            TestBundle::sync_result_matches(op, result)
+        }
+
+        fn async_result_matches(op: &TestAsyncOp, result: &TestAsyncResult) -> bool {
+            TestBundle::async_result_matches(op, result)
+        }
+
+        fn async_timing(_op: &TestAsyncOp) -> AsyncTiming {
+            AsyncTiming::Untimed
+        }
+    }
+
     struct TestRuntime;
 
     impl TraceRuntime for TestRuntime {
@@ -887,38 +1280,26 @@ mod tests {
         type SyncResult = TestSyncResult;
         type SyncError = TestSyncError;
         type AsyncResult = TestAsyncResult;
-
-        fn render_trace(&self, trace: &[RuntimeTraceItem<Self>]) -> Result<RenderedTrace, String> {
-            let mut rows = vec![VisibleRow {
-                timeline: String::new(),
-                text: "CreateSync#0 BootReason".to_string(),
-                insertion_index: 0,
-                script_item_index: None,
-                is_invalid: false,
-            }];
-            for (index, _) in trace.iter().enumerate() {
-                rows.push(VisibleRow {
-                    timeline: String::new(),
-                    text: format!("row {index}"),
-                    insertion_index: index + 1,
-                    script_item_index: Some(index),
-                    is_invalid: false,
-                });
-            }
-            Ok(RenderedTrace {
-                rows,
-                replay_error: None,
-            })
-        }
+        type ReplaySyncOp = TestSyncOp;
+        type ReplayAsyncOp = TestAsyncOp;
+        type ReplaySyncResult = TestSyncResult;
+        type ReplayAsyncResult = TestAsyncResult;
+        type Bundle = TestBundle;
+        type ReplaySpec = TestSpec;
+        type ReplayState = ();
 
         fn insertion_choices(
             &self,
-            _trace: &[RuntimeTraceItem<Self>],
-            _insertion_index: usize,
+            _trace_prefix: &[RuntimeTraceItem<Self>],
         ) -> Result<Vec<InsertionChoice>, String> {
-            Ok(vec![InsertionChoice {
-                label: "ReturnSync#0 BootReason".into(),
-            }])
+            Ok(vec![
+                InsertionChoice {
+                    label: "ReturnSync#0 BootReason".into(),
+                },
+                InsertionChoice {
+                    label: "ReturnSync#1 DisplayInit".into(),
+                },
+            ])
         }
 
         fn edit_choices(
@@ -986,17 +1367,104 @@ mod tests {
             Ok(())
         }
 
-        fn delete_items(
+        fn new_replay_state(&self) -> Self::ReplayState {}
+
+        fn new_replay_bundle(&self, _replay_state: &mut Self::ReplayState) -> Self::Bundle {
+            TestBundle
+        }
+
+        fn record_runtime_outbound(
             &self,
-            trace: &mut Vec<RuntimeTraceItem<Self>>,
-            mut item_indices: Vec<usize>,
-        ) -> Result<(), String> {
-            item_indices.sort_unstable();
-            item_indices.dedup();
-            for index in item_indices.into_iter().rev() {
-                trace.remove(index);
+            _replay_state: &mut Self::ReplayState,
+            _events: &[Event<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                Self::ReplaySyncResult,
+                Self::ReplayAsyncResult,
+            >],
+        ) {
+        }
+
+        fn replay_item_action(
+            &self,
+            _replay_state: &mut Self::ReplayState,
+            item: &RuntimeTraceItem<Self>,
+        ) -> Result<
+            ReplayItemAction<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                Self::ReplaySyncResult,
+                Self::ReplayAsyncResult,
+            >,
+            String,
+        > {
+            match item {
+                TraceItem::InboundReturnSync { .. } => {
+                    Ok(ReplayItemAction::PushInbound(Event::ReturnSync {
+                        id: 0,
+                        result: TestSyncResult::Unit,
+                    }))
+                }
+                _ => Err("unsupported test item".to_string()),
             }
-            Ok(())
+        }
+
+        fn matches_possible_event(
+            &self,
+            _replay_state: &Self::ReplayState,
+            candidate: &PossibleEvent<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                <Self::ReplaySpec as NextEventsSpec<
+                    Self::ReplaySyncOp,
+                    Self::ReplayAsyncOp,
+                    Self::ReplaySyncResult,
+                    Self::ReplayAsyncResult,
+                >>::InboundAsyncKind,
+            >,
+            event: &Event<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                Self::ReplaySyncResult,
+                Self::ReplayAsyncResult,
+            >,
+        ) -> bool {
+            matches!(
+                (candidate, event),
+                (
+                    PossibleEvent::ReturnSync {
+                        id: 0,
+                        op: TestSyncOp::BootReason,
+                    },
+                    Event::ReturnSync {
+                        id: 0,
+                        result: TestSyncResult::Unit,
+                    }
+                )
+            )
+        }
+
+        fn format_trace_item(&self, _item: &RuntimeTraceItem<Self>) -> String {
+            "row".to_string()
+        }
+
+        fn format_runtime_event(
+            &self,
+            event: &Event<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                Self::ReplaySyncResult,
+                Self::ReplayAsyncResult,
+            >,
+        ) -> String {
+            match event {
+                Event::CreateSync { .. } => "CreateSync BootReason".to_string(),
+                Event::ReturnSync { .. } => "ReturnSync Unit".to_string(),
+                Event::CreateAsync { .. } => "CreateAsync Sleep".to_string(),
+                Event::ResolveAsync { .. } => "ResolveAsync Unit".to_string(),
+                Event::CancelAsync { .. } => "CancelAsync".to_string(),
+                Event::AbortAsync { .. } => "AbortAsync".to_string(),
+            }
         }
     }
 
@@ -1039,5 +1507,31 @@ mod tests {
         let state = AppState::new(Vec::<RuntimeTraceItem<TestRuntime>>::new(), 80, 24);
         let (_, effects) = update(state, Command::Quit, &TestRuntime);
         assert_eq!(effects, vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn move_down_in_choice_dialog_changes_dialog_selection_not_trace_cursor() {
+        let state = AppState::new(Vec::<RuntimeTraceItem<TestRuntime>>::new(), 80, 24);
+        let (state, effects) = update(state, Command::StartInsert, &TestRuntime);
+        assert!(effects.is_empty());
+
+        match &state.view.dialog {
+            TraceViewDialog::Choice {
+                choices, selected, ..
+            } => {
+                assert_eq!(choices.len(), 2);
+                assert_eq!(*selected, 0);
+            }
+            dialog => panic!("expected choice dialog, got {dialog:?}"),
+        }
+
+        let initial_cursor_step_index = state.view.cursor_step_index;
+        let (state, effects) = update(state, Command::MoveDown, &TestRuntime);
+        assert!(effects.is_empty());
+        assert_eq!(state.view.cursor_step_index, initial_cursor_step_index);
+        assert!(matches!(
+            state.view.dialog,
+            TraceViewDialog::Choice { selected: 1, .. }
+        ));
     }
 }

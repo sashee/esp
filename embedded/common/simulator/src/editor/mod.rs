@@ -18,7 +18,7 @@ pub use state::{
     TraceViewDialog, TraceViewState, VisibleRow,
 };
 pub use update::{
-    create_trace, load_trace, open_or_create_trace, open_trace, save_trace, update, EditorSession,
-    RuntimeTraceItem, TraceRuntime,
+    create_trace, load_trace, open_or_create_trace, open_trace, render_trace, save_trace, update,
+    EditorSession, ReplayItemAction, RuntimeTraceItem, TraceRuntime,
 };
 pub(crate) use update::{snapshot_for, ViewSnapshot};

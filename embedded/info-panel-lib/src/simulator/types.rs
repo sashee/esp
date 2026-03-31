@@ -3,7 +3,7 @@ use super::bundle::*;
 use std::panic::resume_unwind;
 use std::sync::atomic::AtomicBool;
 
-pub(super) struct UnsafeSendFuture(Pin<Box<dyn Future<Output = ()> + 'static>>);
+pub struct UnsafeSendFuture(Pin<Box<dyn Future<Output = ()> + 'static>>);
 
 unsafe impl Send for UnsafeSendFuture {}
 
@@ -16,7 +16,7 @@ impl Future for UnsafeSendFuture {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum SyncOp {
+pub enum SyncOp {
     BootReason,
     MacAddress,
     Now,
@@ -41,7 +41,7 @@ pub(super) enum SyncOp {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum AsyncOp {
+pub enum AsyncOp {
     Sleep(EmbassyDuration),
     WifiDisconnect,
     WifiStop,
@@ -74,7 +74,7 @@ pub(super) enum AsyncOp {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum SyncResult {
+pub enum SyncResult {
     BootReason(BootReason),
     MacAddress([u8; 6]),
     Now(u64),
@@ -84,7 +84,7 @@ pub(super) enum SyncResult {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum AsyncResult {
+pub enum AsyncResult {
     SleepDone,
     Unit,
     PortalSignal,
@@ -101,7 +101,7 @@ pub(super) enum AsyncResult {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum InboundAsyncKind {
+pub enum InboundAsyncKind {
     PortalHttpRequest,
     PortalClientConnected,
     PortalStopped,
@@ -138,7 +138,7 @@ impl PortalState {
     }
 }
 
-pub(super) struct InfoPanelSpec;
+pub struct InfoPanelSpec;
 
 impl NextEventsSpec<SyncOp, AsyncOp, SyncResult, AsyncResult> for InfoPanelSpec {
     type InboundAsyncKind = InboundAsyncKind;
@@ -211,12 +211,12 @@ impl NextEventsSpec<SyncOp, AsyncOp, SyncResult, AsyncResult> for InfoPanelSpec 
     }
 }
 
-pub(super) struct InfoPanelBundle {
+pub struct InfoPanelBundle {
     pub(super) rebooted: Arc<AtomicBool>,
 }
 
 impl InfoPanelBundle {
-    pub(super) fn new(rebooted: Arc<AtomicBool>) -> Self {
+    pub fn new(rebooted: Arc<AtomicBool>) -> Self {
         Self { rebooted }
     }
 }

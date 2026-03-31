@@ -1,10 +1,21 @@
 use super::forms::*;
 use super::replay::*;
 use super::saved::*;
+use super::types::{AsyncOp, AsyncResult, InfoPanelBundle, InfoPanelSpec, SyncOp, SyncResult};
 use super::*;
-use simulator::editor::{FormSpec, FormState, RenderedTrace};
+use simulator::editor::{FormSpec, FormState, ReplayItemAction};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct InfoPanelSimulatorRuntime;
+
+pub struct InfoPanelReplayState {
+    rebooted: Arc<AtomicBool>,
+    pending_requests: Vec<PendingRequest>,
+    symbolic_to_runtime: BTreeMap<String, u64>,
+    runtime_to_symbolic: BTreeMap<u64, String>,
+    used_ids: BTreeSet<String>,
+    next_inbound_runtime_id: u64,
+}
 
 #[derive(Clone)]
 struct ChoiceTemplate {
@@ -108,26 +119,20 @@ impl TraceRuntime for InfoPanelSimulatorRuntime {
     type SyncResult = SavedSyncResult;
     type SyncError = SavedSyncError;
     type AsyncResult = SavedAsyncResult;
-
-    fn render_trace(&self, document: &[SavedItem]) -> Result<RenderedTrace, String> {
-        let items = parse_items(document)?;
-        let snapshot = replay_items(&items)?;
-        Ok(RenderedTrace {
-            rows: snapshot.rows,
-            replay_error: snapshot.replay_error,
-        })
-    }
+    type ReplaySyncOp = SyncOp;
+    type ReplayAsyncOp = AsyncOp;
+    type ReplaySyncResult = SyncResult;
+    type ReplayAsyncResult = AsyncResult;
+    type Bundle = InfoPanelBundle;
+    type ReplaySpec = InfoPanelSpec;
+    type ReplayState = InfoPanelReplayState;
 
     fn insertion_choices(
         &self,
-        document: &[SavedItem],
-        insertion_index: usize,
+        trace_prefix: &[SavedItem],
     ) -> Result<Vec<InsertionChoice>, String> {
-        let items = parse_items(document)?;
-        if insertion_index > items.len() {
-            return Err(format!("invalid insertion index {insertion_index}"));
-        }
-        let snapshot = replay_items(&items[..insertion_index])?;
+        let items = parse_items(trace_prefix)?;
+        let snapshot = replay_items(&items)?;
         Ok(choice_templates_for_snapshot(&snapshot)?
             .iter()
             .map(|choice| InsertionChoice {
@@ -221,32 +226,112 @@ impl TraceRuntime for InfoPanelSimulatorRuntime {
         Ok(())
     }
 
-    fn delete_items(
+    fn new_replay_state(&self) -> Self::ReplayState {
+        InfoPanelReplayState {
+            rebooted: Arc::new(AtomicBool::new(false)),
+            pending_requests: Vec::new(),
+            symbolic_to_runtime: BTreeMap::new(),
+            runtime_to_symbolic: BTreeMap::new(),
+            used_ids: BTreeSet::new(),
+            next_inbound_runtime_id: 1_000_000,
+        }
+    }
+
+    fn new_replay_bundle(&self, replay_state: &mut Self::ReplayState) -> Self::Bundle {
+        InfoPanelBundle::new(replay_state.rebooted.clone())
+    }
+
+    fn record_runtime_outbound(
         &self,
-        document: &mut RunDocument,
-        item_indices: Vec<usize>,
-    ) -> Result<(), String> {
-        let mut items = parse_items(document)?;
-        let mut spans = item_indices
-            .into_iter()
-            .map(|index| removal_span(&items, index))
-            .collect::<Result<Vec<_>, _>>()?;
-        spans.sort_unstable();
-        let mut merged = Vec::<(usize, usize)>::new();
-        for (start, end) in spans {
-            if let Some((_, last_end)) = merged.last_mut() {
-                if start <= *last_end {
-                    *last_end = (*last_end).max(end);
-                    continue;
-                }
+        replay_state: &mut Self::ReplayState,
+        events: &[Event<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >],
+    ) {
+        add_pending_requests(&mut replay_state.pending_requests, events);
+    }
+
+    fn replay_item_action(
+        &self,
+        replay_state: &mut Self::ReplayState,
+        item: &SavedItem,
+    ) -> Result<
+        ReplayItemAction<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >,
+        String,
+    > {
+        match item {
+            SavedItem::OutboundCreateSync { .. } | SavedItem::OutboundCreateAsync { .. } => {
+                bind_outbound(
+                    &mut replay_state.pending_requests,
+                    item,
+                    &mut replay_state.symbolic_to_runtime,
+                    &mut replay_state.runtime_to_symbolic,
+                    &mut replay_state.used_ids,
+                )?;
+                Ok(ReplayItemAction::BindOutbound)
             }
-            merged.push((start, end));
+            _ => build_inbound_event(
+                item,
+                &mut replay_state.symbolic_to_runtime,
+                &mut replay_state.runtime_to_symbolic,
+                &mut replay_state.next_inbound_runtime_id,
+            )
+            .map(ReplayItemAction::PushInbound),
         }
-        for (start, end) in merged.into_iter().rev() {
-            items.drain(start..end);
-        }
-        *document = items;
-        Ok(())
+    }
+
+    fn matches_possible_event(
+        &self,
+        _replay_state: &Self::ReplayState,
+        candidate: &PossibleEvent<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            <Self::ReplaySpec as NextEventsSpec<
+                Self::ReplaySyncOp,
+                Self::ReplayAsyncOp,
+                Self::ReplaySyncResult,
+                Self::ReplayAsyncResult,
+            >>::InboundAsyncKind,
+        >,
+        event: &Event<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >,
+    ) -> bool {
+        allows_event(std::slice::from_ref(candidate), event)
+    }
+
+    fn format_trace_item(&self, item: &SavedItem) -> String {
+        format_saved_item(item)
+    }
+
+    fn format_runtime_event(
+        &self,
+        event: &Event<
+            Self::ReplaySyncOp,
+            Self::ReplayAsyncOp,
+            Self::ReplaySyncResult,
+            Self::ReplayAsyncResult,
+        >,
+    ) -> String {
+        format_event(event)
+    }
+
+    fn replay_terminated_marker(&self, replay_state: &Self::ReplayState) -> Option<String> {
+        replay_state
+            .rebooted
+            .load(Ordering::SeqCst)
+            .then(|| "RUN rebooted".to_string())
     }
 }
 
@@ -257,7 +342,7 @@ mod tests {
         default_form_state_for_items, encode_items_from_form_state, form_spec_for_items,
     };
     use crate::simulator::types::{AsyncOp, AsyncResult, SyncOp};
-    use simulator::editor::{open_trace, update, Command};
+    use simulator::editor::{open_trace, render_trace, update, Command, VisibleRow};
 
     fn saved_items(document: &RunDocument) -> Vec<SavedItem> {
         parse_items(document).expect("document should parse")
@@ -287,7 +372,7 @@ mod tests {
         let mut document = Vec::new();
 
         let _choices = runtime
-            .insertion_choices(&document, 0)
+            .insertion_choices(&document)
             .expect("choices should load");
         let choice_index = 0;
         let saved_json_items = insert_choice_items(&runtime, &document, 0, choice_index);
@@ -340,7 +425,7 @@ mod tests {
         let runtime = InfoPanelSimulatorRuntime::new();
         let mut document = Vec::new();
         let choices = runtime
-            .insertion_choices(&document, 0)
+            .insertion_choices(&document)
             .expect("choices should load");
         let choice_index = choices
             .iter()
@@ -357,7 +442,7 @@ mod tests {
             )
             .expect("apply form should succeed");
 
-        let rendered = runtime.render_trace(&document).expect("rows should render");
+        let rendered = render_trace(&runtime, &document).expect("rows should render");
         assert!(!rendered
             .rows
             .iter()
@@ -615,9 +700,7 @@ mod tests {
             op: SavedAsyncOp::WifiDisconnect,
         }];
 
-        let rendered = runtime
-            .render_trace(&document)
-            .expect("render should succeed");
+        let rendered = render_trace(&runtime, &document).expect("render should succeed");
         assert!(rendered.replay_error.is_some());
         assert!(rendered.rows.iter().any(|row| row.is_invalid));
     }
@@ -640,9 +723,7 @@ mod tests {
             },
         ];
 
-        let rendered = runtime
-            .render_trace(&document)
-            .expect("render should succeed");
+        let rendered = render_trace(&runtime, &document).expect("render should succeed");
         assert!(rendered.replay_error.is_some());
         assert!(rendered
             .rows
@@ -655,20 +736,6 @@ mod tests {
             .map(|row| row.insertion_index)
             .collect::<Vec<_>>();
         assert_eq!(invalid_indices.last().copied(), Some(3));
-    }
-
-    #[test]
-    fn invalid_trace_still_allows_deletion() {
-        let runtime = InfoPanelSimulatorRuntime::new();
-        let mut document = vec![SavedItem::OutboundCreateAsync {
-            id: "wifi_disconnect_2".to_string(),
-            op: SavedAsyncOp::WifiDisconnect,
-        }];
-
-        runtime
-            .delete_items(&mut document, vec![0])
-            .expect("delete should succeed");
-        assert!(document.is_empty());
     }
 
     #[test]
@@ -687,9 +754,7 @@ mod tests {
             },
         ];
 
-        let rendered = runtime
-            .render_trace(&document)
-            .expect("render should succeed");
+        let rendered = render_trace(&runtime, &document).expect("render should succeed");
         assert!(rendered.rows.iter().any(|row| {
             row.text.contains("TftSetRstHigh")
                 || row.text.contains("TftSetRstLow")
@@ -734,7 +799,7 @@ mod tests {
         let insertion_index = document.len();
 
         let choices = runtime
-            .insertion_choices(&document, insertion_index)
+            .insertion_choices(&document[..insertion_index])
             .expect("choices should load");
         assert!(
             !choices.is_empty(),
@@ -810,9 +875,7 @@ mod tests {
         std::fs::write(&path, include_str!("../../simulator1.json")).expect("write simulator1");
 
         let session = open_trace::<InfoPanelSimulatorRuntime>(&path, 120, 30).expect("open trace");
-        let rendered = runtime
-            .render_trace(&session.state.view.trace)
-            .expect("rendered rows");
+        let rendered = render_trace(&runtime, &session.state.view.trace).expect("rendered rows");
         let step_count = step_count(&rendered.rows);
         let previous_step = step_count - 2;
         let last_step = step_count - 1;
