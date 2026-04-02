@@ -37,6 +37,10 @@ pub enum SyncOp {
         namespace: String,
         keys: Vec<String>,
     },
+    HttpRead {
+        body: String,
+        max_len: usize,
+    },
 }
 
 #[allow(dead_code)]
@@ -80,6 +84,14 @@ pub enum SyncResult {
     Now(u64),
     StoreRead(Result<BTreeMap<String, String>, String>),
     Unit(Result<(), String>),
+    HttpRead { bytes: Vec<u8> },
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SyncError {
+    StoreReadErr { message: String },
+    UnitErr { message: String },
 }
 
 #[allow(dead_code)]
@@ -91,7 +103,7 @@ pub enum AsyncResult {
     ScanNetworks(Vec<wifi::FoundNetwork>),
     ConnectionInfo(wifi::ConnectionInfo),
     PortalStartAccessPoint(wifi::IpConfig),
-    HttpFrame(Vec<u8>),
+    HttpResponse { body: String },
     PortalHttpResponse {
         status_code: u16,
         content_type: &'static str,
@@ -157,6 +169,7 @@ impl NextEventsSpec<SyncOp, AsyncOp, SyncResult, AsyncResult> for InfoPanelSpec 
                 | (SyncOp::StoreRead { .. }, SyncResult::StoreRead(_))
                 | (SyncOp::StoreWrite { .. }, SyncResult::Unit(_))
                 | (SyncOp::StoreRemove { .. }, SyncResult::Unit(_))
+                | (SyncOp::HttpRead { .. }, SyncResult::HttpRead { .. })
         )
     }
 
@@ -172,7 +185,7 @@ impl NextEventsSpec<SyncOp, AsyncOp, SyncResult, AsyncResult> for InfoPanelSpec 
                 | (AsyncOp::WifiConnect { .. }, AsyncResult::ConnectionInfo(_))
                 | (AsyncOp::PortalStartAccessPoint { .. }, AsyncResult::PortalStartAccessPoint(_))
                 | (AsyncOp::PortalStopAccessPoint, AsyncResult::Unit)
-                | (AsyncOp::HttpGet { .. }, AsyncResult::HttpFrame(_))
+                | (AsyncOp::HttpGet { .. }, AsyncResult::HttpResponse { .. })
                 | (AsyncOp::PortalHttpRequest { .. }, AsyncResult::PortalHttpResponse { .. })
                 | (AsyncOp::PortalClientConnected, AsyncResult::PortalSignal)
                 | (AsyncOp::PortalStopped, AsyncResult::PortalSignal)
@@ -216,8 +229,10 @@ pub struct InfoPanelBundle {
 }
 
 impl InfoPanelBundle {
-    pub fn new(rebooted: Arc<AtomicBool>) -> Self {
-        Self { rebooted }
+    pub fn new() -> Self {
+        Self {
+            rebooted: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 

@@ -23,8 +23,8 @@ pub enum Event<S, A, SR, AR> {
 pub trait SimBundle: Sized + Send + 'static {
     type SyncOp: Clone + Send + 'static;
     type AsyncOp: Clone + Send + 'static;
-    type SyncResult: Send + 'static;
-    type AsyncResult: Send + 'static;
+    type SyncResult: Clone + Send + 'static;
+    type AsyncResult: Clone + Send + 'static;
     type RunFuture: Future + Send + 'static;
 
     fn build(

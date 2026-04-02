@@ -20,14 +20,14 @@ enum TestAsyncOp {
     Never,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum TestSyncResult {
     BootReason(u32),
     Echo(&'static str),
     Reboot,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum TestAsyncResult {
     ScanNetworks(Result<Vec<&'static str>, &'static str>),
     SleepDone(&'static str),

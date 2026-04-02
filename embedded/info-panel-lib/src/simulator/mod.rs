@@ -3,12 +3,12 @@ use config_portal::{ConfigStore, HttpEndpoint, HttpMethod, HttpRequest, HttpResp
 use core::future::poll_fn;
 use embassy_time::Duration as EmbassyDuration;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use simulator::editor::{InsertionChoice, RuntimeTarget, TraceItem, TraceRuntime};
+use simulator::editor::{TraceItem, TraceRuntime};
 use simulator::{
-    elapsed_time, AsyncCompletion, AsyncTiming, ElapsedTime, Event, NewRunWrapper,
-    NextEventsSpec, PossibleEvent, SimBundle, SimDriver, TraceStep, possible_next_events,
+    elapsed_time, AsyncCompletion, AsyncTiming, ElapsedTime, Event, NextEventsSpec, SimBundle,
+    SimDriver, TraceStep,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -18,20 +18,21 @@ use std::time::Duration;
 use crate::{BootReason, Clock, Hal, HttpClient, Platform};
 
 mod bundle;
+mod codec;
 mod forms;
 mod replay;
 mod runtime;
-mod saved;
 mod types;
 
 pub use runtime::InfoPanelSimulatorRuntime;
 
+#[cfg(test)]
 type SavedTraceItem = TraceItem<
-    saved::SavedSyncOp,
-    saved::SavedAsyncOp,
-    saved::SavedSyncResult,
-    saved::SavedSyncError,
-    saved::SavedAsyncResult,
+    types::SyncOp,
+    types::AsyncOp,
+    types::SyncResult,
+    types::SyncError,
+    types::AsyncResult,
 >;
+#[cfg(test)]
 type RunDocument = Vec<SavedTraceItem>;
-type FormTarget = RuntimeTarget;

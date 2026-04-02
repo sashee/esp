@@ -16,8 +16,8 @@ use time::format_description::BorrowedFormatItem;
 use time::{macros::format_description, OffsetDateTime};
 
 use crate::editor::{
-    open_or_create_trace, replay_state_at, save_replay, save_trace, snapshot_for, update, AppState,
-    Command, EditorSession, Effect, ReplayEnvelope, RuntimeTraceItem, TraceRuntime,
+    open_or_create_trace, replay_state_at, save_runtime_replay, save_trace, snapshot_for, update,
+    AppState, Command, EditorSession, Effect, ReplayEnvelope, RuntimeTraceItem, TraceRuntime,
     TraceViewDialog, ViewSnapshot,
 };
 
@@ -47,7 +47,7 @@ pub fn run_editor<R: TraceRuntime>(runtime: &R, path: &Path) -> Result<(), Strin
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|err| err.to_string())?;
     let size = terminal.size().map_err(|err| err.to_string())?;
-    let mut session = open_or_create_trace::<R>(path, size.width, size.height)?;
+    let mut session = open_or_create_trace(runtime, path, size.width, size.height)?;
     let mut recorder = ReplayRecorder {
         initial_state: session.state.clone(),
         commands: Vec::new(),
@@ -110,12 +110,14 @@ fn run_live_loop<R: TraceRuntime>(
             continue;
         };
         match action {
-            LiveAction::SaveReplay => match save_replay_snapshot(&session.path, recorder) {
-                Ok(path) => {
-                    session.state.view.status = Some(format!("saved replay {}", path.display()))
+            LiveAction::SaveReplay => {
+                match save_replay_snapshot(&session.path, recorder, runtime) {
+                    Ok(path) => {
+                        session.state.view.status = Some(format!("saved replay {}", path.display()))
+                    }
+                    Err(err) => session.state.view.status = Some(err),
                 }
-                Err(err) => session.state.view.status = Some(err),
-            },
+            }
             LiveAction::Command(command) => {
                 if !matches!(command, Command::Quit) {
                     recorder.commands.push(command.clone());
@@ -125,13 +127,15 @@ fn run_live_loop<R: TraceRuntime>(
                 session.state = next_state;
                 for effect in effects {
                     match effect {
-                        Effect::SaveTrace { trace } => match save_trace(&session.path, &trace) {
-                            Ok(()) => {
-                                session.state.view.status =
-                                    Some(format!("saved {}", session.path.display()))
+                        Effect::SaveTrace { trace } => {
+                            match save_trace(runtime, &session.path, &trace) {
+                                Ok(()) => {
+                                    session.state.view.status =
+                                        Some(format!("saved {}", session.path.display()))
+                                }
+                                Err(err) => session.state.view.status = Some(err),
                             }
-                            Err(err) => session.state.view.status = Some(err),
-                        },
+                        }
                         Effect::Quit => return Ok(()),
                     }
                 }
@@ -484,19 +488,17 @@ fn color_to_ansi(color: Color, is_background: bool) -> Vec<String> {
     }
 }
 
-fn save_replay_snapshot<T>(
+fn save_replay_snapshot<R: TraceRuntime>(
     trace_path: &Path,
-    recorder: &ReplayRecorder<T>,
-) -> Result<std::path::PathBuf, String>
-where
-    T: Clone + serde::Serialize,
-{
+    recorder: &ReplayRecorder<RuntimeTraceItem<R>>,
+    runtime: &R,
+) -> Result<std::path::PathBuf, String> {
     let timestamp = OffsetDateTime::now_utc()
         .format(REPLAY_TIMESTAMP_FORMAT)
         .map_err(|err| err.to_string())?;
     let replay_path = trace_path.with_file_name(format!("{timestamp}.replay.json"));
     let replay = ReplayEnvelope::new(recorder.initial_state.clone(), recorder.commands.clone());
-    save_replay(&replay_path, &replay)?;
+    save_runtime_replay(runtime, &replay_path, &replay)?;
     Ok(replay_path)
 }
 

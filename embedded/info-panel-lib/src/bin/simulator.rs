@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "simulator-ui")]
 use info_panel_lib::simulator::InfoPanelSimulatorRuntime;
 #[cfg(feature = "simulator-ui")]
-use simulator::editor::{is_replay_file, load_replay, replay_state_at, RuntimeTraceItem};
+use simulator::editor::{is_replay_file, load_runtime_replay, replay_state_at, RuntimeTraceItem};
 
 #[cfg(feature = "simulator-ui")]
 enum Mode {
@@ -73,11 +73,12 @@ fn parse_args() -> Result<Mode, String> {
 }
 
 #[cfg(feature = "simulator-ui")]
-fn load_runtime_replay(
+fn load_replay_for_runtime(
     path: &Path,
 ) -> Result<simulator::editor::ReplayEnvelope<RuntimeTraceItem<InfoPanelSimulatorRuntime>>, String>
 {
-    load_replay(path)
+    let runtime = InfoPanelSimulatorRuntime::new();
+    load_runtime_replay(&runtime, path)
 }
 
 #[cfg(feature = "simulator-ui")]
@@ -86,18 +87,18 @@ fn main() -> Result<(), String> {
     match parse_args()? {
         Mode::Open { path } => simulator::ui::run_editor(&runtime, &path),
         Mode::Replay { path } => {
-            let replay = load_runtime_replay(&path)?;
+            let replay = load_replay_for_runtime(&path)?;
             simulator::ui::run_replay(&runtime, &path, replay)
         }
         Mode::ShowActions { path } => {
-            let replay = load_runtime_replay(&path)?;
+            let replay = load_replay_for_runtime(&path)?;
             for (index, command) in replay.commands.iter().enumerate() {
                 println!("{}: {:?}", index + 1, command);
             }
             Ok(())
         }
         Mode::RenderAction { path, index } => {
-            let replay = load_runtime_replay(&path)?;
+            let replay = load_replay_for_runtime(&path)?;
             let state = replay_state_at(&runtime, &replay.initial_state, &replay.commands, index)?;
             let mut session = simulator::editor::EditorSession { path, state };
             let width = session.state.view.terminal_width.max(1);

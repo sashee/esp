@@ -1,423 +1,365 @@
 use super::replay::*;
-use super::saved::*;
+use super::types::{AsyncOp, AsyncResult, InboundAsyncKind, SyncError, SyncOp, SyncResult};
 use super::*;
+use crate::simulator::codec::{format_boot_reason, parse_boot_reason};
+use simulator::editor::{
+    EditorChoice, FormField, FormFieldKind, FormSpec, FormState, FormValue, TraceItem,
+};
 
 const FIELD_BOOT_REASON: &str = "boot_reason";
 const FIELD_TICKS: &str = "ticks";
 const FIELD_TEXT: &str = "text";
 const FIELD_CONFIRM: &str = "confirm";
 
-pub(super) fn form_spec_for_items(title: &str, items: &[SavedItem]) -> simulator::editor::FormSpec {
-    match items {
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::BootReason,
+type RunItem = TraceItem<SyncOp, AsyncOp, SyncResult, SyncError, AsyncResult>;
+type Choice = EditorChoice<SyncOp, AsyncOp, InboundAsyncKind>;
+
+pub(super) fn form_spec_for_choice(
+    title: &str,
+    choice: &Choice,
+    current_item: Option<&RunItem>,
+    current_ticks: u64,
+) -> FormSpec {
+    match choice {
+        Choice::ReturnSyncSuccess {
+            op: SyncOp::BootReason,
             ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { .. },
-            ..
-        }] => simulator::editor::FormSpec {
+        } => FormSpec {
             title: title.to_string(),
             details: Vec::new(),
-            fields: vec![simulator::editor::FormField {
+            fields: vec![FormField {
                 id: FIELD_BOOT_REASON.to_string(),
                 label: "Boot reason".to_string(),
-                kind: simulator::editor::FormFieldKind::Select {
+                kind: FormFieldKind::Select {
                     options: BOOT_REASON_OPTIONS
                         .iter()
                         .map(|value| (*value).to_string())
                         .collect(),
                 },
                 help: None,
+                initial_value: Some(FormValue::Select(current_boot_reason_selection(
+                    current_item,
+                ))),
             }],
             auto_accept_if_complete: false,
         },
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::Now,
-            ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { .. },
-            ..
-        }] => simulator::editor::FormSpec {
+        Choice::ReturnSyncSuccess {
+            op: SyncOp::Now, ..
+        } => FormSpec {
             title: title.to_string(),
             details: vec!["Ticks since boot.".to_string()],
-            fields: vec![simulator::editor::FormField {
+            fields: vec![FormField {
                 id: FIELD_TICKS.to_string(),
                 label: "Ticks".to_string(),
-                kind: simulator::editor::FormFieldKind::Text { multiline: false },
+                kind: FormFieldKind::Text { multiline: false },
                 help: None,
+                initial_value: Some(FormValue::Text(
+                    current_now_ticks(current_item)
+                        .unwrap_or(current_ticks)
+                        .to_string(),
+                )),
             }],
             auto_accept_if_complete: true,
         },
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::StoreRead { .. },
+        Choice::ReturnSyncSuccess {
+            op: SyncOp::StoreRead { namespace, keys },
             ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::StoreReadOk { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::StoreReadOk { .. },
-            ..
-        }] => {
-            let (namespace, keys) = store_read_context(items);
-            simulator::editor::FormSpec {
-                title: title.to_string(),
-                details: vec![
-                    format!("namespace: {namespace}"),
-                    format!("keys: {}", keys.join(", ")),
-                ],
-                fields: vec![simulator::editor::FormField {
-                    id: FIELD_TEXT.to_string(),
-                    label: "Payload".to_string(),
-                    kind: simulator::editor::FormFieldKind::Text { multiline: true },
-                    help: Some("Success values as key=value lines.".to_string()),
-                }],
-                auto_accept_if_complete: false,
-            }
-        }
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::StoreRead { .. },
-            ..
-        }, SavedItem::InboundErrorSync {
-            error: SavedSyncError::StoreReadErr { .. },
-            ..
-        }]
-        | [SavedItem::InboundErrorSync {
-            error: SavedSyncError::StoreReadErr { .. },
-            ..
-        }] => {
-            let (namespace, keys) = store_read_context(items);
-            simulator::editor::FormSpec {
-                title: title.to_string(),
-                details: vec![
-                    format!("namespace: {namespace}"),
-                    format!("keys: {}", keys.join(", ")),
-                ],
-                fields: vec![simulator::editor::FormField {
-                    id: FIELD_TEXT.to_string(),
-                    label: "Message".to_string(),
-                    kind: simulator::editor::FormFieldKind::Text { multiline: true },
-                    help: Some("Error message.".to_string()),
-                }],
-                auto_accept_if_complete: false,
-            }
-        }
-        [SavedItem::OutboundCreateSync { op, .. }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::UnitOk,
-            ..
-        }] if matches!(
-            op,
-            SavedSyncOp::StoreWrite { .. }
-                | SavedSyncOp::StoreRemove { .. }
-                | SavedSyncOp::TftSetDcLow
-                | SavedSyncOp::TftSetDcHigh
-                | SavedSyncOp::TftSetRstLow
-                | SavedSyncOp::TftSetRstHigh
-                | SavedSyncOp::TftWrite { .. }
-        ) =>
-        {
-            simulator::editor::FormSpec {
-                title: title.to_string(),
-                details: vec![format!("operation: {}", format_saved_sync_op(op))],
-                fields: Vec::new(),
-                auto_accept_if_complete: true,
-            }
-        }
-        [SavedItem::OutboundCreateSync { op, .. }, SavedItem::InboundErrorSync {
-            error: SavedSyncError::UnitErr { .. },
-            ..
-        }] if matches!(
-            op,
-            SavedSyncOp::StoreWrite { .. }
-                | SavedSyncOp::StoreRemove { .. }
-                | SavedSyncOp::TftSetDcLow
-                | SavedSyncOp::TftSetDcHigh
-                | SavedSyncOp::TftSetRstLow
-                | SavedSyncOp::TftSetRstHigh
-                | SavedSyncOp::TftWrite { .. }
-        ) =>
-        {
-            simulator::editor::FormSpec {
-                title: title.to_string(),
-                details: vec![format!("operation: {}", format_saved_sync_op(op))],
-                fields: vec![simulator::editor::FormField {
-                    id: FIELD_TEXT.to_string(),
-                    label: "Message".to_string(),
-                    kind: simulator::editor::FormFieldKind::Text { multiline: true },
-                    help: Some("Error message.".to_string()),
-                }],
-                auto_accept_if_complete: false,
-            }
-        }
-        [SavedItem::OutboundCreateAsync { .. }, SavedItem::InboundAbortAsync { .. }]
-        | [SavedItem::OutboundCreateAsync { .. }, SavedItem::InboundCancelAsync { .. }]
-        | [SavedItem::InboundAbortAsync { .. }]
-        | [SavedItem::InboundCancelAsync { .. }] => simulator::editor::FormSpec {
+        } => FormSpec {
             title: title.to_string(),
-            details: items.iter().map(format_saved_item).collect(),
-            fields: vec![simulator::editor::FormField {
+            details: vec![
+                format!("namespace: {namespace}"),
+                format!("keys: {}", keys.join(", ")),
+            ],
+            fields: vec![FormField {
+                id: FIELD_TEXT.to_string(),
+                label: "Payload".to_string(),
+                kind: FormFieldKind::Text { multiline: true },
+                help: Some("Success values as key=value lines.".to_string()),
+                initial_value: Some(FormValue::Text(current_store_read_success_text(
+                    current_item,
+                    keys,
+                ))),
+            }],
+            auto_accept_if_complete: false,
+        },
+        Choice::ReturnSyncError {
+            op: SyncOp::StoreRead { namespace, keys },
+            ..
+        } => FormSpec {
+            title: title.to_string(),
+            details: vec![
+                format!("namespace: {namespace}"),
+                format!("keys: {}", keys.join(", ")),
+            ],
+            fields: vec![FormField {
+                id: FIELD_TEXT.to_string(),
+                label: "Message".to_string(),
+                kind: FormFieldKind::Text { multiline: true },
+                help: Some("Error message.".to_string()),
+                initial_value: Some(FormValue::Text(current_store_read_error_text(current_item))),
+            }],
+            auto_accept_if_complete: false,
+        },
+        Choice::ReturnSyncSuccess { op, .. } if is_unit_sync_op(op) => FormSpec {
+            title: title.to_string(),
+            details: vec![format!("operation: {}", format_sync_op(op))],
+            fields: Vec::new(),
+            auto_accept_if_complete: true,
+        },
+        Choice::ReturnSyncError { op, .. } if is_unit_sync_op(op) => FormSpec {
+            title: title.to_string(),
+            details: vec![format!("operation: {}", format_sync_op(op))],
+            fields: vec![FormField {
+                id: FIELD_TEXT.to_string(),
+                label: "Message".to_string(),
+                kind: FormFieldKind::Text { multiline: true },
+                help: Some("Error message.".to_string()),
+                initial_value: Some(FormValue::Text(current_unit_error_text(current_item))),
+            }],
+            auto_accept_if_complete: false,
+        },
+        Choice::AbortAsync { .. }
+        | Choice::CancelInboundAsync { .. }
+        | Choice::DropResult { .. } => FormSpec {
+            title: title.to_string(),
+            details: vec![format_choice_details(choice, current_ticks)],
+            fields: vec![FormField {
                 id: FIELD_CONFIRM.to_string(),
                 label: "Confirm".to_string(),
-                kind: simulator::editor::FormFieldKind::Toggle {
+                kind: FormFieldKind::Toggle {
                     false_label: "no".to_string(),
                     true_label: "yes".to_string(),
                 },
                 help: Some("Toggle to confirm this non-trivial action.".to_string()),
+                initial_value: None,
             }],
             auto_accept_if_complete: false,
         },
-        _ => simulator::editor::FormSpec {
+        _ => FormSpec {
             title: title.to_string(),
-            details: items.iter().map(format_saved_item).collect(),
+            details: vec![format_choice_details(choice, current_ticks)],
             fields: Vec::new(),
             auto_accept_if_complete: true,
         },
     }
 }
 
-pub(super) fn default_form_state_for_items(items: &[SavedItem]) -> simulator::editor::FormState {
-    match items {
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::BootReason,
-            ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { value },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { value },
-            ..
-        }] => std::iter::once((
-            FIELD_BOOT_REASON.to_string(),
-            simulator::editor::FormValue::Select(
-                BOOT_REASON_OPTIONS
-                    .iter()
-                    .position(|option| *option == value)
-                    .unwrap_or(0),
-            ),
-        ))
-        .collect(),
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::Now,
-            ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { ticks },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { ticks },
-            ..
-        }] => std::iter::once((
-            FIELD_TICKS.to_string(),
-            simulator::editor::FormValue::Text(ticks.to_string()),
-        ))
-        .collect(),
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::StoreRead { .. },
-            ..
-        }, SavedItem::InboundReturnSync { result, .. }]
-        | [SavedItem::InboundReturnSync { result, .. }] => match result {
-            SavedSyncResult::StoreReadOk { values } => [(
-                FIELD_TEXT.to_string(),
-                simulator::editor::FormValue::Text(format_store_read_text(values)),
-            )]
-            .into_iter()
-            .collect(),
-            SavedSyncResult::UnitOk => simulator::editor::FormState::new(),
-            _ => simulator::editor::FormState::new(),
+pub(super) fn runtime_items_from_form_state(
+    choice: &Choice,
+    state: &FormState,
+    current_ticks: u64,
+) -> Result<Vec<RunItem>, String> {
+    match choice {
+        Choice::ReturnSyncSuccess {
+            target,
+            op,
+            include_outbound,
+        } => match op {
+            SyncOp::BootReason => Ok(with_optional_outbound_sync(
+                target,
+                op,
+                *include_outbound,
+                SyncResult::BootReason(parse_boot_reason_selection(state)),
+            )),
+            SyncOp::Now => Ok(with_optional_outbound_sync(
+                target,
+                op,
+                *include_outbound,
+                SyncResult::Now(parse_ticks(state)?),
+            )),
+            SyncOp::StoreRead { keys, .. } => Ok(with_optional_outbound_sync(
+                target,
+                op,
+                *include_outbound,
+                SyncResult::StoreRead(Ok(parse_store_read_text(keys, &text_value(state))?)),
+            )),
+            _ => Ok(with_optional_outbound_sync(
+                target,
+                op,
+                *include_outbound,
+                default_runtime_sync_result(op, current_ticks),
+            )),
         },
-        [SavedItem::OutboundCreateSync { .. }, SavedItem::InboundErrorSync { .. }]
-        | [SavedItem::InboundErrorSync { .. }] => simulator::editor::FormState::new(),
-        [SavedItem::OutboundCreateAsync { .. }, SavedItem::InboundAbortAsync { .. }]
-        | [SavedItem::OutboundCreateAsync { .. }, SavedItem::InboundCancelAsync { .. }]
-        | [SavedItem::InboundAbortAsync { .. }]
-        | [SavedItem::InboundCancelAsync { .. }] => simulator::editor::FormState::new(),
-        _ => simulator::editor::FormState::new(),
-    }
-}
-
-pub(super) fn current_boot_reason_selection(document: &[SavedItem], item_index: usize) -> usize {
-    parse_items(document)
-        .ok()
-        .and_then(|items| items.get(item_index).cloned())
-        .and_then(|item| match item {
-            SavedItem::InboundReturnSync {
-                result: SavedSyncResult::BootReason { value },
-                ..
-            } => BOOT_REASON_OPTIONS
-                .iter()
-                .position(|option| *option == value),
-            _ => None,
-        })
-        .unwrap_or(0)
-}
-
-pub(super) fn current_store_read_text(document: &[SavedItem], item_index: usize) -> String {
-    parse_items(document)
-        .ok()
-        .and_then(|items| items.get(item_index).cloned())
-        .and_then(|item| match item {
-            SavedItem::InboundReturnSync {
-                result: SavedSyncResult::StoreReadOk { values },
-                ..
-            } => Some(format_store_read_text(&values)),
-            SavedItem::InboundErrorSync {
-                error: SavedSyncError::StoreReadErr { message },
-                ..
-            } => Some(message),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-pub(super) fn current_store_unit_text(document: &[SavedItem], item_index: usize) -> String {
-    parse_items(document)
-        .ok()
-        .and_then(|items| items.get(item_index).cloned())
-        .and_then(|item| match item {
-            SavedItem::InboundErrorSync {
-                error: SavedSyncError::UnitErr { message },
-                ..
-            } => Some(message),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-pub(super) fn current_now_ticks(document: &[SavedItem], item_index: usize) -> Option<u64> {
-    parse_items(document)
-        .ok()
-        .and_then(|items| items.get(item_index).cloned())
-        .and_then(|item| match item {
-            SavedItem::InboundReturnSync {
-                result: SavedSyncResult::Now { ticks },
-                ..
-            } => Some(ticks),
-            _ => None,
-        })
-}
-
-pub(super) fn edited_form_state_for_items(
-    document: &[SavedItem],
-    item_index: usize,
-    items: &[SavedItem],
-) -> simulator::editor::FormState {
-    let mut state = default_form_state_for_items(items);
-    match items {
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::BootReason,
+        Choice::ReturnSyncError {
+            target,
+            op,
+            include_outbound,
+        } => Ok(with_optional_outbound_error_sync(
+            target,
+            op,
+            *include_outbound,
+            sync_error_for_choice(op, state)?,
+        )),
+        Choice::ResolveAsync {
+            target,
+            op,
+            include_outbound,
             ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { .. },
-            ..
-        }] => {
-            state.insert(
-                FIELD_BOOT_REASON.to_string(),
-                simulator::editor::FormValue::Select(current_boot_reason_selection(
-                    document, item_index,
-                )),
-            );
-        }
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::Now,
-            ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { .. },
-            ..
-        }] => {
-            if let Some(ticks) = current_now_ticks(document, item_index) {
-                state.insert(
-                    FIELD_TICKS.to_string(),
-                    simulator::editor::FormValue::Text(ticks.to_string()),
-                );
+        } => Ok(with_optional_outbound_async(
+            target,
+            op,
+            *include_outbound,
+            default_runtime_async_result(op, target),
+        )),
+        Choice::AbortAsync {
+            target,
+            op,
+            include_outbound,
+        } => Ok(with_optional_abort_async(target, op, *include_outbound)),
+        Choice::CreateInboundAsync { id, kind } => Ok(vec![TraceItem::InboundCreateAsync {
+            id: id.clone(),
+            target: None,
+            op: default_runtime_inbound_async_op(kind),
+        }]),
+        Choice::CancelInboundAsync { target, .. } => Ok(vec![TraceItem::InboundCancelAsync {
+            target: target.clone(),
+        }]),
+        Choice::DropResult { target, outbound } => Ok(vec![if *outbound {
+            TraceItem::OutboundDropResult {
+                target: target.clone(),
             }
-        }
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::StoreRead { .. },
-            ..
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::StoreReadOk { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            result: SavedSyncResult::StoreReadOk { .. },
-            ..
-        }] => {
-            state.insert(
-                FIELD_TEXT.to_string(),
-                simulator::editor::FormValue::Text(current_store_read_text(document, item_index)),
-            );
-        }
-        [SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::StoreRead { .. },
-            ..
-        }, SavedItem::InboundErrorSync {
-            error: SavedSyncError::StoreReadErr { .. },
-            ..
-        }]
-        | [SavedItem::InboundErrorSync {
-            error: SavedSyncError::StoreReadErr { .. },
-            ..
-        }] => {
-            state.insert(
-                FIELD_TEXT.to_string(),
-                simulator::editor::FormValue::Text(current_store_read_text(document, item_index)),
-            );
-        }
-        [SavedItem::OutboundCreateSync { op, .. }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::UnitOk,
-            ..
-        }] if matches!(
-            op,
-            SavedSyncOp::StoreWrite { .. }
-                | SavedSyncOp::StoreRemove { .. }
-                | SavedSyncOp::TftSetDcLow
-                | SavedSyncOp::TftSetDcHigh
-                | SavedSyncOp::TftSetRstLow
-                | SavedSyncOp::TftSetRstHigh
-                | SavedSyncOp::TftWrite { .. }
-        ) => {}
-        [SavedItem::OutboundCreateSync { op, .. }, SavedItem::InboundErrorSync {
-            error: SavedSyncError::UnitErr { .. },
-            ..
-        }] if matches!(
-            op,
-            SavedSyncOp::StoreWrite { .. }
-                | SavedSyncOp::StoreRemove { .. }
-                | SavedSyncOp::TftSetDcLow
-                | SavedSyncOp::TftSetDcHigh
-                | SavedSyncOp::TftSetRstLow
-                | SavedSyncOp::TftSetRstHigh
-                | SavedSyncOp::TftWrite { .. }
-        ) =>
-        {
-            state.insert(
-                FIELD_TEXT.to_string(),
-                simulator::editor::FormValue::Text(current_store_unit_text(document, item_index)),
-            );
-        }
-        _ => {}
+        } else {
+            TraceItem::InboundDropResult {
+                target: target.clone(),
+            }
+        }]),
     }
-    state
 }
 
-pub(super) fn format_store_read_text(values: &BTreeMap<String, String>) -> String {
+fn with_optional_outbound_sync(
+    target: &str,
+    op: &SyncOp,
+    include_outbound: bool,
+    result: SyncResult,
+) -> Vec<RunItem> {
+    let mut items = Vec::new();
+    if include_outbound {
+        items.push(TraceItem::OutboundCreateSync {
+            id: target.to_string(),
+            target: sync_op_target(op),
+            op: Some(op.clone()),
+        });
+    }
+    items.push(TraceItem::InboundReturnSync {
+        target: target.to_string(),
+        result,
+    });
+    items
+}
+
+fn with_optional_outbound_error_sync(
+    target: &str,
+    op: &SyncOp,
+    include_outbound: bool,
+    error: SyncError,
+) -> Vec<RunItem> {
+    let mut items = Vec::new();
+    if include_outbound {
+        items.push(TraceItem::OutboundCreateSync {
+            id: target.to_string(),
+            target: sync_op_target(op),
+            op: Some(op.clone()),
+        });
+    }
+    items.push(TraceItem::InboundErrorSync {
+        target: target.to_string(),
+        error,
+    });
+    items
+}
+
+fn with_optional_outbound_async(
+    target: &str,
+    op: &AsyncOp,
+    include_outbound: bool,
+    result: AsyncResult,
+) -> Vec<RunItem> {
+    let mut items = Vec::new();
+    if include_outbound {
+        items.push(TraceItem::OutboundCreateAsync {
+            id: target.to_string(),
+            target: async_op_target(op),
+            op: Some(op.clone()),
+        });
+    }
+    items.push(TraceItem::InboundResolveAsync {
+        target: target.to_string(),
+        result,
+    });
+    items
+}
+
+fn with_optional_abort_async(target: &str, op: &AsyncOp, include_outbound: bool) -> Vec<RunItem> {
+    let mut items = Vec::new();
+    if include_outbound {
+        items.push(TraceItem::OutboundCreateAsync {
+            id: target.to_string(),
+            target: async_op_target(op),
+            op: Some(op.clone()),
+        });
+    }
+    items.push(TraceItem::InboundAbortAsync {
+        target: target.to_string(),
+    });
+    items
+}
+
+fn current_boot_reason_selection(current_item: Option<&RunItem>) -> usize {
+    match current_item {
+        Some(TraceItem::InboundReturnSync {
+            result: SyncResult::BootReason(value),
+            ..
+        }) => BOOT_REASON_OPTIONS
+            .iter()
+            .position(|option| *option == format_boot_reason(*value))
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn current_now_ticks(current_item: Option<&RunItem>) -> Option<u64> {
+    match current_item {
+        Some(TraceItem::InboundReturnSync {
+            result: SyncResult::Now(ticks),
+            ..
+        }) => Some(*ticks),
+        _ => None,
+    }
+}
+
+fn current_store_read_success_text(current_item: Option<&RunItem>, keys: &[String]) -> String {
+    match current_item {
+        Some(TraceItem::InboundReturnSync {
+            result: SyncResult::StoreRead(Ok(values)),
+            ..
+        }) => format_store_read_text(values),
+        _ => format_store_read_text(&default_store_values(keys)),
+    }
+}
+
+fn current_store_read_error_text(current_item: Option<&RunItem>) -> String {
+    match current_item {
+        Some(TraceItem::InboundErrorSync {
+            error: SyncError::StoreReadErr { message },
+            ..
+        }) => message.clone(),
+        _ => String::new(),
+    }
+}
+
+fn current_unit_error_text(current_item: Option<&RunItem>) -> String {
+    match current_item {
+        Some(TraceItem::InboundErrorSync {
+            error: SyncError::UnitErr { message },
+            ..
+        }) => message.clone(),
+        _ => String::new(),
+    }
+}
+
+pub(super) fn format_store_read_text(
+    values: &std::collections::BTreeMap<String, String>,
+) -> String {
     values
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -428,8 +370,8 @@ pub(super) fn format_store_read_text(values: &BTreeMap<String, String>) -> Strin
 pub(super) fn parse_store_read_text(
     allowed_keys: &[String],
     text: &str,
-) -> Result<BTreeMap<String, String>, String> {
-    let mut values = BTreeMap::new();
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut values = std::collections::BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -447,188 +389,94 @@ pub(super) fn parse_store_read_text(
     Ok(values)
 }
 
-fn store_read_context(items: &[SavedItem]) -> (String, Vec<String>) {
-    match items.first() {
-        Some(SavedItem::OutboundCreateSync {
-            op: SavedSyncOp::StoreRead { namespace, keys },
-            ..
-        }) => (namespace.clone(), keys.clone()),
-        _ => (String::new(), Vec::new()),
+fn parse_boot_reason_selection(state: &FormState) -> crate::BootReason {
+    let selected = match state.get(FIELD_BOOT_REASON) {
+        Some(FormValue::Select(selected)) => *selected,
+        _ => 0,
+    };
+    parse_boot_reason(
+        BOOT_REASON_OPTIONS[selected.min(BOOT_REASON_OPTIONS.len().saturating_sub(1))],
+    )
+    .expect("known boot reason option should parse")
+}
+
+fn parse_ticks(state: &FormState) -> Result<u64, String> {
+    match state.get(FIELD_TICKS) {
+        Some(FormValue::Text(text)) => text.trim().parse::<u64>().map_err(|err| err.to_string()),
+        _ => Err("missing ticks".to_string()),
     }
 }
 
-pub(super) fn encode_items_from_form_state(
-    items: &[SavedItem],
-    state: &simulator::editor::FormState,
-) -> Result<Vec<SavedItem>, String> {
-    let output = match items {
-        [SavedItem::OutboundCreateSync {
-            id,
-            op: SavedSyncOp::BootReason,
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::BootReason { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            target: id,
-            result: SavedSyncResult::BootReason { .. },
-        }] => {
-            let selected = match state.get(FIELD_BOOT_REASON) {
-                Some(simulator::editor::FormValue::Select(selected)) => *selected,
-                _ => 0,
-            };
-            let mut output = Vec::new();
-            if matches!(items.first(), Some(SavedItem::OutboundCreateSync { .. })) {
-                output.push(items[0].clone());
-            }
-            output.push(SavedItem::InboundReturnSync {
-                target: id.clone(),
-                result: SavedSyncResult::BootReason {
-                    value: BOOT_REASON_OPTIONS
-                        [selected.min(BOOT_REASON_OPTIONS.len().saturating_sub(1))]
-                    .to_string(),
-                },
-            });
-            output
-        }
-        [SavedItem::OutboundCreateSync {
-            id,
-            op: SavedSyncOp::Now,
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::Now { .. },
-            ..
-        }]
-        | [SavedItem::InboundReturnSync {
-            target: id,
-            result: SavedSyncResult::Now { .. },
-        }] => {
-            let ticks = match state.get(FIELD_TICKS) {
-                Some(simulator::editor::FormValue::Text(text)) => {
-                    text.trim().parse::<u64>().map_err(|err| err.to_string())?
-                }
-                _ => return Err("missing ticks".to_string()),
-            };
-            let mut output = Vec::new();
-            if matches!(items.first(), Some(SavedItem::OutboundCreateSync { .. })) {
-                output.push(items[0].clone());
-            }
-            output.push(SavedItem::InboundReturnSync {
-                target: id.clone(),
-                result: SavedSyncResult::Now { ticks },
-            });
-            output
-        }
-        [SavedItem::OutboundCreateSync {
-            id,
-            op: SavedSyncOp::StoreRead { .. },
-        }, SavedItem::InboundReturnSync {
-            result: SavedSyncResult::StoreReadOk { .. },
-            ..
-        }] => {
-            let text = match state.get(FIELD_TEXT) {
-                Some(simulator::editor::FormValue::Text(text)) => text.clone(),
-                _ => String::new(),
-            };
-            let (_, keys) = store_read_context(items);
-            let mut output = Vec::new();
-            if matches!(items.first(), Some(SavedItem::OutboundCreateSync { .. })) {
-                output.push(items[0].clone());
-            }
-            output.push(SavedItem::InboundReturnSync {
-                target: id.clone(),
-                result: SavedSyncResult::StoreReadOk {
-                    values: parse_store_read_text(&keys, &text)?,
-                },
-            });
-            output
-        }
-        [SavedItem::InboundErrorSync {
-            target: id,
-            error: SavedSyncError::StoreReadErr { .. },
-        }] => {
-            let text = match state.get(FIELD_TEXT) {
-                Some(simulator::editor::FormValue::Text(text)) => text.clone(),
-                _ => String::new(),
-            };
-            output_store_read_error_without_context(id, text)
-        }
-        [SavedItem::OutboundCreateSync {
-            id,
-            op: SavedSyncOp::StoreRead { .. },
-        }, SavedItem::InboundErrorSync {
-            error: SavedSyncError::StoreReadErr { .. },
-            ..
-        }] => {
-            let text = match state.get(FIELD_TEXT) {
-                Some(simulator::editor::FormValue::Text(text)) => text.clone(),
-                _ => String::new(),
-            };
-            let mut output = Vec::new();
-            output.push(items[0].clone());
-            output.push(SavedItem::InboundErrorSync {
-                target: id.clone(),
-                error: SavedSyncError::StoreReadErr {
-                    message: text.trim().to_string(),
-                },
-            });
-            output
-        }
-        [SavedItem::OutboundCreateSync { id, op }, SavedItem::InboundReturnSync { .. }]
-            if matches!(
-                op,
-                SavedSyncOp::StoreWrite { .. }
-                    | SavedSyncOp::StoreRemove { .. }
-                    | SavedSyncOp::TftSetDcLow
-                    | SavedSyncOp::TftSetDcHigh
-                    | SavedSyncOp::TftSetRstLow
-                    | SavedSyncOp::TftSetRstHigh
-                    | SavedSyncOp::TftWrite { .. }
-            ) =>
-        {
-            let mut output = Vec::new();
-            output.push(items[0].clone());
-            output.push(SavedItem::InboundReturnSync {
-                target: id.clone(),
-                result: SavedSyncResult::UnitOk,
-            });
-            output
-        }
-        [SavedItem::OutboundCreateSync { id, op }, SavedItem::InboundErrorSync { .. }]
-            if matches!(
-                op,
-                SavedSyncOp::StoreWrite { .. }
-                    | SavedSyncOp::StoreRemove { .. }
-                    | SavedSyncOp::TftSetDcLow
-                    | SavedSyncOp::TftSetDcHigh
-                    | SavedSyncOp::TftSetRstLow
-                    | SavedSyncOp::TftSetRstHigh
-                    | SavedSyncOp::TftWrite { .. }
-            ) =>
-        {
-            let text = match state.get(FIELD_TEXT) {
-                Some(simulator::editor::FormValue::Text(text)) => text.clone(),
-                _ => String::new(),
-            };
-            let mut output = Vec::new();
-            output.push(items[0].clone());
-            output.push(SavedItem::InboundErrorSync {
-                target: id.clone(),
-                error: SavedSyncError::UnitErr {
-                    message: text.trim().to_string(),
-                },
-            });
-            output
-        }
-        _ => items.to_vec(),
-    };
-    Ok(output)
+fn text_value(state: &FormState) -> String {
+    match state.get(FIELD_TEXT) {
+        Some(FormValue::Text(text)) => text.clone(),
+        _ => String::new(),
+    }
 }
 
-fn output_store_read_error_without_context(id: &str, text: String) -> Vec<SavedItem> {
-    vec![SavedItem::InboundErrorSync {
-        target: id.to_string(),
-        error: SavedSyncError::StoreReadErr {
-            message: text.trim().to_string(),
+fn sync_error_for_choice(op: &SyncOp, state: &FormState) -> Result<SyncError, String> {
+    let text = text_value(state).trim().to_string();
+    match op {
+        SyncOp::StoreRead { .. } => Ok(SyncError::StoreReadErr { message: text }),
+        op if is_unit_sync_op(op) => Ok(SyncError::UnitErr { message: text }),
+        _ => Err(format!(
+            "sync op has no error variant: {}",
+            format_sync_op(op)
+        )),
+    }
+}
+
+fn is_unit_sync_op(op: &SyncOp) -> bool {
+    matches!(
+        op,
+        SyncOp::StoreWrite { .. }
+            | SyncOp::StoreRemove { .. }
+            | SyncOp::TftSetDcLow
+            | SyncOp::TftSetDcHigh
+            | SyncOp::TftSetRstLow
+            | SyncOp::TftSetRstHigh
+            | SyncOp::TftWrite { .. }
+    )
+}
+
+fn sync_op_target(op: &SyncOp) -> Option<String> {
+    match op {
+        SyncOp::HttpRead { body, .. } => Some(body.clone()),
+        _ => None,
+    }
+}
+
+fn async_op_target(_op: &AsyncOp) -> Option<String> {
+    None
+}
+
+fn format_choice_details(choice: &Choice, current_ticks: u64) -> String {
+    match choice {
+        Choice::ReturnSyncSuccess { target: _, op, .. } => format!(
+            "INBOUND ReturnSync {:?}",
+            default_runtime_sync_result(op, current_ticks)
+        ),
+        Choice::ReturnSyncError { target: _, op, .. } => match default_runtime_sync_error(op) {
+            Some(error) => format!("INBOUND ErrorSync {error:?}"),
+            None => format!("INBOUND {}", format_sync_op(op)),
         },
-    }]
+        Choice::ResolveAsync { target, op, .. } => {
+            format!(
+                "INBOUND ResolveAsync {:?}",
+                default_runtime_async_result(op, target)
+            )
+        }
+        Choice::AbortAsync { .. } => "INBOUND AbortAsync".to_string(),
+        Choice::CreateInboundAsync { kind, .. } => {
+            format!("INBOUND CreateAsync {}", inbound_async_kind_name(kind))
+        }
+        Choice::CancelInboundAsync { .. } => "INBOUND CancelAsync".to_string(),
+        Choice::DropResult { target, outbound } => {
+            if *outbound {
+                format!("OUTBOUND DropResult {target}")
+            } else {
+                format!("INBOUND DropResult {target}")
+            }
+        }
+    }
 }

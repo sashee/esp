@@ -1,27 +1,14 @@
+use super::codec::*;
 use super::forms::*;
 use super::replay::*;
-use super::saved::*;
-use super::types::{AsyncOp, AsyncResult, InfoPanelBundle, InfoPanelSpec, SyncOp, SyncResult};
+use super::types::{
+    AsyncOp, AsyncResult, InboundAsyncKind, InfoPanelBundle, InfoPanelSpec, SyncError, SyncOp,
+    SyncResult,
+};
 use super::*;
-use simulator::editor::{FormSpec, FormState, ReplayItemAction};
-use std::sync::atomic::{AtomicBool, Ordering};
+use simulator::editor::{replay_steps_for_trace, EditorChoice, FormSpec, FormState, RuntimeTarget};
 
 pub struct InfoPanelSimulatorRuntime;
-
-pub struct InfoPanelReplayState {
-    rebooted: Arc<AtomicBool>,
-    pending_requests: Vec<PendingRequest>,
-    symbolic_to_runtime: BTreeMap<String, u64>,
-    runtime_to_symbolic: BTreeMap<u64, String>,
-    used_ids: BTreeSet<String>,
-    next_inbound_runtime_id: u64,
-}
-
-#[derive(Clone)]
-struct ChoiceTemplate {
-    label: String,
-    items: Vec<SavedItem>,
-}
 
 impl InfoPanelSimulatorRuntime {
     pub fn new() -> Self {
@@ -29,323 +16,430 @@ impl InfoPanelSimulatorRuntime {
     }
 }
 
-fn choice_templates_for_snapshot(snapshot: &ReplaySnapshot) -> Result<Vec<ChoiceTemplate>, String> {
-    let mut templates = Vec::new();
-    for possible in &snapshot.possible {
-        match possible {
-            PossibleEvent::ReturnSync { id, op } => {
-                let target = snapshot
-                    .runtime_to_symbolic
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| uniquify_id(&snapshot.used_ids, sync_op_name(op)));
-                let prefix = if snapshot.runtime_to_symbolic.contains_key(id) {
-                    Vec::new()
-                } else {
-                    vec![SavedItem::OutboundCreateSync {
-                        id: target.clone(),
-                        op: runtime_sync_op_to_saved(op),
-                    }]
-                };
-                let mut success_items = prefix.clone();
-                success_items.push(SavedItem::InboundReturnSync {
-                    target: target.clone(),
-                    result: default_sync_result(op, snapshot.current_ticks),
-                });
-                templates.push(ChoiceTemplate {
-                    label: format!("ReturnSync#{id} {}", format_sync_op(op)),
-                    items: success_items,
-                });
-                if let Some(error) = default_sync_error(op) {
-                    let mut error_items = prefix;
-                    error_items.push(SavedItem::InboundErrorSync { target, error });
-                    templates.push(ChoiceTemplate {
-                        label: format!("ErrorSync#{id} {}", format_sync_op(op)),
-                        items: error_items,
-                    });
+type RunItem = simulator::editor::TraceItem<SyncOp, AsyncOp, SyncResult, SyncError, AsyncResult>;
+type Choice = EditorChoice<SyncOp, AsyncOp, InboundAsyncKind>;
+
+fn runtime_removal_span(document: &[RunItem], item_index: usize) -> Result<(usize, usize), String> {
+    let Some(item) = document.get(item_index) else {
+        return Err(format!("invalid item index {item_index}"));
+    };
+    match item {
+        simulator::editor::TraceItem::InboundReturnSync { target, .. }
+        | simulator::editor::TraceItem::InboundErrorSync { target, .. }
+        | simulator::editor::TraceItem::InboundResolveAsync { target, .. }
+        | simulator::editor::TraceItem::InboundAbortAsync { target }
+        | simulator::editor::TraceItem::InboundCancelAsync { target } => {
+            if item_index > 0 {
+                match &document[item_index - 1] {
+                    simulator::editor::TraceItem::OutboundCreateSync { id, .. }
+                    | simulator::editor::TraceItem::OutboundCreateAsync { id, .. }
+                        if id == target =>
+                    {
+                        return Ok((item_index - 1, item_index + 1));
+                    }
+                    _ => {}
                 }
             }
-            _ => templates.push(ChoiceTemplate {
-                label: format_possible_event(possible),
-                items: choice_to_saved_items(
-                    &snapshot.used_ids,
-                    &snapshot.runtime_to_symbolic,
-                    snapshot.current_ticks,
-                    possible,
-                )?,
-            }),
+            Ok((item_index, item_index + 1))
         }
+        _ => Ok((item_index, item_index + 1)),
     }
-    Ok(templates)
 }
 
-fn choice_templates_for_target(
-    document: &[SavedItem],
-    target: &FormTarget,
-) -> Result<Vec<ChoiceTemplate>, String> {
-    let items = parse_items(document)?;
+fn current_item_for_target<'a>(
+    document: &'a [RunItem],
+    target: &RuntimeTarget,
+) -> Option<&'a RunItem> {
     match target {
-        FormTarget::Insert { insertion_index } => {
-            if *insertion_index > items.len() {
-                return Err(format!("invalid insertion index {insertion_index}"));
-            }
-            let snapshot = replay_items(&items[..*insertion_index])?;
-            choice_templates_for_snapshot(&snapshot)
-        }
-        FormTarget::Edit { item_index } => {
-            let (start, end) = removal_span(&items, *item_index)?;
-            let mut reduced = items.clone();
-            reduced.drain(start..end);
-            let snapshot = replay_items(&reduced[..start])?;
-            choice_templates_for_snapshot(&snapshot)
-        }
+        RuntimeTarget::Insert { .. } => None,
+        RuntimeTarget::Edit { item_index } => document.get(*item_index),
     }
 }
 
-fn form_items_for_target(
-    document: &[SavedItem],
-    target: &FormTarget,
-    choice_index: usize,
-) -> Result<Vec<SavedItem>, String> {
-    choice_templates_for_target(document, target)?
-        .get(choice_index)
-        .map(|choice| choice.items.clone())
-        .ok_or_else(|| format!("invalid choice index {choice_index}"))
+fn current_ticks_for_target(
+    runtime: &InfoPanelSimulatorRuntime,
+    document: &[RunItem],
+    target: &RuntimeTarget,
+) -> Result<u64, String> {
+    let prefix = match target {
+        RuntimeTarget::Insert { insertion_index } => &document[..*insertion_index],
+        RuntimeTarget::Edit { item_index } => {
+            let (start, _) = runtime_removal_span(document, *item_index)?;
+            &document[..start]
+        }
+    };
+    let replay = replay_steps_for_trace(runtime, prefix)?;
+    Ok(current_ticks_from_trace(&replay))
 }
 
 impl TraceRuntime for InfoPanelSimulatorRuntime {
-    type SyncOp = SavedSyncOp;
-    type AsyncOp = SavedAsyncOp;
-    type SyncResult = SavedSyncResult;
-    type SyncError = SavedSyncError;
-    type AsyncResult = SavedAsyncResult;
-    type ReplaySyncOp = SyncOp;
-    type ReplayAsyncOp = AsyncOp;
-    type ReplaySyncResult = SyncResult;
-    type ReplayAsyncResult = AsyncResult;
+    type SyncOp = SyncOp;
+    type AsyncOp = AsyncOp;
+    type SyncResult = SyncResult;
+    type SyncError = SyncError;
+    type AsyncResult = AsyncResult;
     type Bundle = InfoPanelBundle;
     type ReplaySpec = InfoPanelSpec;
-    type ReplayState = InfoPanelReplayState;
 
-    fn insertion_choices(
+    fn form_schema(
         &self,
-        trace_prefix: &[SavedItem],
-    ) -> Result<Vec<InsertionChoice>, String> {
-        let items = parse_items(trace_prefix)?;
-        let snapshot = replay_items(&items)?;
-        Ok(choice_templates_for_snapshot(&snapshot)?
-            .iter()
-            .map(|choice| InsertionChoice {
-                label: choice.label.clone(),
-            })
-            .collect())
-    }
-
-    fn edit_choices(
-        &self,
-        document: &[SavedItem],
-        item_index: usize,
-    ) -> Result<Vec<InsertionChoice>, String> {
-        let items = parse_items(document)?;
-        let (start, end) = removal_span(&items, item_index)?;
-        let mut reduced = items.clone();
-        reduced.drain(start..end);
-        let snapshot = replay_items(&reduced[..start])?;
-        Ok(choice_templates_for_snapshot(&snapshot)?
-            .iter()
-            .map(|choice| InsertionChoice {
-                label: choice.label.clone(),
-            })
-            .collect())
-    }
-
-    fn form_spec(
-        &self,
-        document: &[SavedItem],
-        target: &FormTarget,
-        choice_index: usize,
+        document: &[RunItem],
+        target: &RuntimeTarget,
+        choice: &Choice,
     ) -> Result<FormSpec, String> {
-        let items = form_items_for_target(document, target, choice_index)?;
-        Ok(form_spec_for_items(
-            match target {
-                FormTarget::Insert { .. } => "Insert event",
-                FormTarget::Edit { .. } => "Edit event",
-            },
-            &items,
+        let title = match target {
+            RuntimeTarget::Insert { .. } => "Insert event",
+            RuntimeTarget::Edit { .. } => "Edit event",
+        };
+        let current_ticks = current_ticks_for_target(self, document, target)?;
+        Ok(form_spec_for_choice(
+            title,
+            choice,
+            current_item_for_target(document, target),
+            current_ticks,
         ))
     }
 
-    fn initial_form_state(
+    fn decode_form_state(
         &self,
-        document: &[SavedItem],
-        target: &FormTarget,
-        choice_index: usize,
-    ) -> Result<FormState, String> {
-        let items = form_items_for_target(document, target, choice_index)?;
-        Ok(match target {
-            FormTarget::Insert { .. } => default_form_state_for_items(&items),
-            FormTarget::Edit { item_index } => {
-                edited_form_state_for_items(document, *item_index, &items)
-            }
-        })
-    }
-
-    fn encode_form_state(
-        &self,
-        document: &[SavedItem],
-        target: &FormTarget,
-        choice_index: usize,
+        document: &[RunItem],
+        target: &RuntimeTarget,
+        choice: &Choice,
         state: &FormState,
-    ) -> Result<Vec<SavedItem>, String> {
-        let items = form_items_for_target(document, target, choice_index)?;
-        encode_items_from_form_state(&items, state)
+    ) -> Result<Vec<RunItem>, String> {
+        let current_ticks = current_ticks_for_target(self, document, target)?;
+        runtime_items_from_form_state(choice, state, current_ticks)
     }
 
-    fn apply_form(
-        &self,
-        document: &mut RunDocument,
-        target: &FormTarget,
-        items: Vec<SavedItem>,
-    ) -> Result<(), String> {
-        let mut saved_items = parse_items(document)?;
-        match target {
-            FormTarget::Insert { insertion_index } => {
-                if *insertion_index > saved_items.len() {
-                    return Err(format!("invalid insertion index {insertion_index}"));
+    fn format_editor_choice(&self, choice: &Choice) -> String {
+        match choice {
+            EditorChoice::ReturnSyncSuccess { target, op, .. } => {
+                format!("ReturnSync#{target} {}", format_sync_op(op))
+            }
+            EditorChoice::ReturnSyncError { target, op, .. } => {
+                format!("ErrorSync#{target} {}", format_sync_op(op))
+            }
+            EditorChoice::ResolveAsync {
+                target,
+                op,
+                warnings,
+                ..
+            } => {
+                if warnings.is_empty() {
+                    format!("ResolveAsync#{target} {}", format_async_op(op))
+                } else {
+                    format!(
+                        "ResolveAsync#{target} {} warnings={warnings:?}",
+                        format_async_op(op)
+                    )
                 }
-                for (offset, item) in items.into_iter().enumerate() {
-                    saved_items.insert(insertion_index + offset, item);
+            }
+            EditorChoice::AbortAsync { target, op, .. } => {
+                format!("AbortAsync#{target} {}", format_async_op(op))
+            }
+            EditorChoice::CreateInboundAsync { kind, .. } => {
+                format!("CreateInboundAsync {}", inbound_async_kind_name(kind))
+            }
+            EditorChoice::CancelInboundAsync { target, op } => {
+                format!("CancelInboundAsync#{target} {}", format_async_op(op))
+            }
+            EditorChoice::DropResult { target, outbound } => {
+                if *outbound {
+                    format!("DropResult#{target}")
+                } else {
+                    format!("InboundDropResult#{target}")
                 }
             }
-            FormTarget::Edit { item_index } => {
-                let (start, end) = removal_span(&saved_items, *item_index)?;
-                saved_items.splice(start..end, items);
-            }
-        }
-        *document = saved_items;
-        Ok(())
-    }
-
-    fn new_replay_state(&self) -> Self::ReplayState {
-        InfoPanelReplayState {
-            rebooted: Arc::new(AtomicBool::new(false)),
-            pending_requests: Vec::new(),
-            symbolic_to_runtime: BTreeMap::new(),
-            runtime_to_symbolic: BTreeMap::new(),
-            used_ids: BTreeSet::new(),
-            next_inbound_runtime_id: 1_000_000,
         }
     }
 
-    fn new_replay_bundle(&self, replay_state: &mut Self::ReplayState) -> Self::Bundle {
-        InfoPanelBundle::new(replay_state.rebooted.clone())
+    fn default_sync_error(&self, op: &Self::SyncOp) -> Option<Self::SyncError> {
+        default_runtime_sync_error(op)
     }
 
-    fn record_runtime_outbound(
-        &self,
-        replay_state: &mut Self::ReplayState,
-        events: &[Event<
-            Self::ReplaySyncOp,
-            Self::ReplayAsyncOp,
-            Self::ReplaySyncResult,
-            Self::ReplayAsyncResult,
-        >],
-    ) {
-        add_pending_requests(&mut replay_state.pending_requests, events);
+    fn new_replay_bundle(&self) -> Self::Bundle {
+        InfoPanelBundle::new()
     }
 
-    fn replay_item_action(
-        &self,
-        replay_state: &mut Self::ReplayState,
-        item: &SavedItem,
-    ) -> Result<
-        ReplayItemAction<
-            Self::ReplaySyncOp,
-            Self::ReplayAsyncOp,
-            Self::ReplaySyncResult,
-            Self::ReplayAsyncResult,
-        >,
-        String,
-    > {
-        match item {
-            SavedItem::OutboundCreateSync { .. } | SavedItem::OutboundCreateAsync { .. } => {
-                bind_outbound(
-                    &mut replay_state.pending_requests,
-                    item,
-                    &mut replay_state.symbolic_to_runtime,
-                    &mut replay_state.runtime_to_symbolic,
-                    &mut replay_state.used_ids,
-                )?;
-                Ok(ReplayItemAction::BindOutbound)
-            }
-            _ => build_inbound_event(
-                item,
-                &mut replay_state.symbolic_to_runtime,
-                &mut replay_state.runtime_to_symbolic,
-                &mut replay_state.next_inbound_runtime_id,
-            )
-            .map(ReplayItemAction::PushInbound),
+    fn sync_error_to_result(&self, error: &Self::SyncError) -> Self::SyncResult {
+        SavedSyncError::from_runtime_error(error).to_runtime_result()
+    }
+
+    fn inbound_async_kind(&self, op: &Self::AsyncOp) -> Option<InboundAsyncKind> {
+        match op {
+            AsyncOp::PortalHttpRequest { .. } => Some(InboundAsyncKind::PortalHttpRequest),
+            AsyncOp::PortalClientConnected => Some(InboundAsyncKind::PortalClientConnected),
+            AsyncOp::PortalStopped => Some(InboundAsyncKind::PortalStopped),
+            _ => None,
         }
     }
 
-    fn matches_possible_event(
+    fn format_trace_item(
         &self,
-        _replay_state: &Self::ReplayState,
-        candidate: &PossibleEvent<
-            Self::ReplaySyncOp,
-            Self::ReplayAsyncOp,
-            <Self::ReplaySpec as NextEventsSpec<
-                Self::ReplaySyncOp,
-                Self::ReplayAsyncOp,
-                Self::ReplaySyncResult,
-                Self::ReplayAsyncResult,
-            >>::InboundAsyncKind,
-        >,
-        event: &Event<
-            Self::ReplaySyncOp,
-            Self::ReplayAsyncOp,
-            Self::ReplaySyncResult,
-            Self::ReplayAsyncResult,
-        >,
-    ) -> bool {
-        allows_event(std::slice::from_ref(candidate), event)
-    }
-
-    fn format_trace_item(&self, item: &SavedItem) -> String {
-        format_saved_item(item)
+        item: &simulator::editor::TraceItem<SyncOp, AsyncOp, SyncResult, SyncError, AsyncResult>,
+    ) -> String {
+        format_saved_item(&saved_item_from_runtime_item(item))
     }
 
     fn format_runtime_event(
         &self,
-        event: &Event<
-            Self::ReplaySyncOp,
-            Self::ReplayAsyncOp,
-            Self::ReplaySyncResult,
-            Self::ReplayAsyncResult,
-        >,
+        event: &Event<SyncOp, AsyncOp, SyncResult, AsyncResult>,
     ) -> String {
         format_event(event)
     }
 
-    fn replay_terminated_marker(&self, replay_state: &Self::ReplayState) -> Option<String> {
-        replay_state
-            .rebooted
-            .load(Ordering::SeqCst)
-            .then(|| "RUN rebooted".to_string())
+    fn sync_op_result_target(&self, op: &Self::SyncOp) -> Option<String> {
+        match op {
+            SyncOp::HttpRead { body, .. } => Some(body.clone()),
+            _ => None,
+        }
     }
+
+    fn async_op_result_target(&self, _op: &Self::AsyncOp) -> Option<String> {
+        None
+    }
+
+    fn async_op_to_json(&self, value: &Self::AsyncOp) -> Result<serde_json::Value, String> {
+        serde_json::to_value(SavedAsyncOp::from_runtime(value)).map_err(|err| err.to_string())
+    }
+
+    fn async_op_from_json(&self, value: serde_json::Value) -> Result<Self::AsyncOp, String> {
+        serde_json::from_value::<SavedAsyncOp>(value)
+            .map_err(|err| err.to_string())
+            .map(|value| value.to_runtime())
+    }
+
+    fn sync_result_to_json(&self, value: &Self::SyncResult) -> Result<serde_json::Value, String> {
+        let saved = SavedSyncResult::from_runtime(value)?;
+        serde_json::to_value(saved).map_err(|err| err.to_string())
+    }
+
+    fn sync_result_from_json(&self, value: serde_json::Value) -> Result<Self::SyncResult, String> {
+        serde_json::from_value::<SavedSyncResult>(value)
+            .map_err(|err| err.to_string())?
+            .to_runtime()
+    }
+
+    fn sync_error_to_json(&self, value: &Self::SyncError) -> Result<serde_json::Value, String> {
+        serde_json::to_value(SavedSyncError::from_runtime_error(value))
+            .map_err(|err| err.to_string())
+    }
+
+    fn sync_error_from_json(&self, value: serde_json::Value) -> Result<Self::SyncError, String> {
+        serde_json::from_value::<SavedSyncError>(value)
+            .map_err(|err| err.to_string())
+            .map(|value| value.to_runtime_error())
+    }
+
+    fn async_result_to_json(&self, value: &Self::AsyncResult) -> Result<serde_json::Value, String> {
+        serde_json::to_value(SavedAsyncResult::from_runtime(value)).map_err(|err| err.to_string())
+    }
+
+    fn async_result_from_json(
+        &self,
+        value: serde_json::Value,
+    ) -> Result<Self::AsyncResult, String> {
+        serde_json::from_value::<SavedAsyncResult>(value)
+            .map_err(|err| err.to_string())
+            .map(|value| value.to_runtime())
+    }
+}
+
+#[cfg(test)]
+fn saved_items_from_runtime_trace(trace: &[RunItem]) -> Vec<SavedItem> {
+    trace.iter().map(saved_item_from_runtime_item).collect()
+}
+
+#[cfg(test)]
+fn runtime_items_from_saved_items(items: &[SavedItem]) -> Result<Vec<RunItem>, String> {
+    items.iter().map(runtime_item_from_saved_item).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulator::forms::{
-        default_form_state_for_items, encode_items_from_form_state, form_spec_for_items,
-    };
+    use crate::simulator::forms::{form_spec_for_choice, runtime_items_from_form_state};
     use crate::simulator::types::{AsyncOp, AsyncResult, SyncOp};
-    use simulator::editor::{open_trace, render_trace, update, Command, VisibleRow};
+    use simulator::editor::{
+        editor_choices_for_target, form_state_from_spec, open_trace, render_trace, update, Command,
+        RuntimeTarget, VisibleRow,
+    };
 
     fn saved_items(document: &RunDocument) -> Vec<SavedItem> {
-        parse_items(document).expect("document should parse")
+        saved_items_from_runtime_trace(document)
+    }
+
+    fn runtime_document(items: &[SavedItem]) -> RunDocument {
+        runtime_items_from_saved_items(items).expect("items should convert to runtime trace")
+    }
+
+    fn infer_choice_from_runtime_items(items: &[RunItem]) -> Choice {
+        match items {
+            [simulator::editor::TraceItem::OutboundCreateSync {
+                id, op: Some(op), ..
+            }, simulator::editor::TraceItem::InboundReturnSync { .. }] => {
+                EditorChoice::ReturnSyncSuccess {
+                    target: id.clone(),
+                    op: op.clone(),
+                    include_outbound: true,
+                }
+            }
+            [simulator::editor::TraceItem::InboundReturnSync { target, result }] => {
+                EditorChoice::ReturnSyncSuccess {
+                    target: target.clone(),
+                    op: infer_sync_op_from_result(result),
+                    include_outbound: false,
+                }
+            }
+            [simulator::editor::TraceItem::OutboundCreateSync {
+                id, op: Some(op), ..
+            }, simulator::editor::TraceItem::InboundErrorSync { .. }] => {
+                EditorChoice::ReturnSyncError {
+                    target: id.clone(),
+                    op: op.clone(),
+                    include_outbound: true,
+                }
+            }
+            [simulator::editor::TraceItem::InboundErrorSync { target, error }] => {
+                EditorChoice::ReturnSyncError {
+                    target: target.clone(),
+                    op: infer_sync_op_from_error(error),
+                    include_outbound: false,
+                }
+            }
+            [simulator::editor::TraceItem::OutboundCreateAsync {
+                id, op: Some(op), ..
+            }, simulator::editor::TraceItem::InboundResolveAsync { .. }] => {
+                EditorChoice::ResolveAsync {
+                    target: id.clone(),
+                    op: op.clone(),
+                    include_outbound: true,
+                    warnings: Vec::new(),
+                }
+            }
+            [simulator::editor::TraceItem::InboundResolveAsync { target, result }] => {
+                EditorChoice::ResolveAsync {
+                    target: target.clone(),
+                    op: infer_async_op_from_result(result),
+                    include_outbound: false,
+                    warnings: Vec::new(),
+                }
+            }
+            [simulator::editor::TraceItem::OutboundCreateAsync {
+                id, op: Some(op), ..
+            }, simulator::editor::TraceItem::InboundAbortAsync { .. }] => {
+                EditorChoice::AbortAsync {
+                    target: id.clone(),
+                    op: op.clone(),
+                    include_outbound: true,
+                }
+            }
+            [simulator::editor::TraceItem::InboundAbortAsync { target }] => {
+                EditorChoice::AbortAsync {
+                    target: target.clone(),
+                    op: AsyncOp::Sleep(EmbassyDuration::from_ticks(0)),
+                    include_outbound: false,
+                }
+            }
+            [simulator::editor::TraceItem::InboundCancelAsync { target }] => {
+                EditorChoice::CancelInboundAsync {
+                    target: target.clone(),
+                    op: AsyncOp::PortalStopped,
+                }
+            }
+            [simulator::editor::TraceItem::OutboundDropResult { target }] => {
+                EditorChoice::DropResult {
+                    target: target.clone(),
+                    outbound: true,
+                }
+            }
+            [simulator::editor::TraceItem::InboundDropResult { target }] => {
+                EditorChoice::DropResult {
+                    target: target.clone(),
+                    outbound: false,
+                }
+            }
+            [simulator::editor::TraceItem::InboundCreateAsync { id, op, .. }] => {
+                EditorChoice::CreateInboundAsync {
+                    id: id.clone(),
+                    kind: match op {
+                        AsyncOp::PortalHttpRequest { .. } => InboundAsyncKind::PortalHttpRequest,
+                        AsyncOp::PortalClientConnected => InboundAsyncKind::PortalClientConnected,
+                        AsyncOp::PortalStopped => InboundAsyncKind::PortalStopped,
+                        _ => panic!("unsupported inbound async op"),
+                    },
+                }
+            }
+            _ => panic!("unsupported test items shape"),
+        }
+    }
+
+    fn infer_sync_op_from_result(result: &SyncResult) -> SyncOp {
+        match result {
+            SyncResult::BootReason(_) => SyncOp::BootReason,
+            SyncResult::Now(_) => SyncOp::Now,
+            SyncResult::StoreRead(_) => SyncOp::StoreRead {
+                namespace: String::new(),
+                keys: Vec::new(),
+            },
+            SyncResult::MacAddress(_) => SyncOp::MacAddress,
+            SyncResult::HttpRead { .. } => SyncOp::HttpRead {
+                body: String::new(),
+                max_len: 0,
+            },
+            SyncResult::Unit(_) => SyncOp::TftSetRstHigh,
+        }
+    }
+
+    fn infer_sync_op_from_error(error: &SyncError) -> SyncOp {
+        match error {
+            SyncError::StoreReadErr { .. } => SyncOp::StoreRead {
+                namespace: String::new(),
+                keys: Vec::new(),
+            },
+            SyncError::UnitErr { .. } => SyncOp::TftSetRstHigh,
+        }
+    }
+
+    fn infer_async_op_from_result(result: &AsyncResult) -> AsyncOp {
+        match result {
+            AsyncResult::SleepDone => AsyncOp::Sleep(EmbassyDuration::from_ticks(0)),
+            AsyncResult::Unit => AsyncOp::WifiDisconnect,
+            AsyncResult::PortalSignal => AsyncOp::PortalStopped,
+            AsyncResult::ScanNetworks(_) => AsyncOp::WifiScanNetworks,
+            AsyncResult::ConnectionInfo(_) => AsyncOp::WifiConnect {
+                timeout: Duration::from_secs(0),
+            },
+            AsyncResult::PortalStartAccessPoint(_) => AsyncOp::PortalStartAccessPoint {
+                ssid: String::new(),
+            },
+            AsyncResult::HttpResponse { .. } => AsyncOp::HttpGet { url: String::new() },
+            AsyncResult::PortalHttpResponse { .. } => AsyncOp::PortalHttpRequest {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                body: Vec::new(),
+            },
+        }
+    }
+
+    fn form_spec_for_items(title: &str, items: &[SavedItem]) -> FormSpec {
+        let runtime_items = runtime_document(items);
+        let choice = infer_choice_from_runtime_items(&runtime_items);
+        form_spec_for_choice(title, &choice, runtime_items.last(), 0)
+    }
+
+    fn default_form_state_for_items(items: &[SavedItem]) -> FormState {
+        form_state_from_spec(&form_spec_for_items("Test", items))
+    }
+
+    fn encode_items_from_form_state(
+        items: &[SavedItem],
+        state: &FormState,
+    ) -> Result<Vec<SavedItem>, String> {
+        let runtime_items = runtime_document(items);
+        let choice = infer_choice_from_runtime_items(&runtime_items);
+        let encoded = runtime_items_from_form_state(&choice, state, 0)?;
+        Ok(saved_items_from_runtime_trace(&encoded))
     }
 
     fn insert_choice_items(
@@ -353,17 +447,65 @@ mod tests {
         document: &RunDocument,
         insertion_index: usize,
         choice_index: usize,
-    ) -> Vec<SavedItem> {
-        let target = FormTarget::Insert { insertion_index };
-        let _ = runtime
-            .form_spec(document, &target, choice_index)
-            .expect("form spec should load");
-        let state = runtime
-            .initial_form_state(document, &target, choice_index)
-            .expect("initial form state should load");
+    ) -> RunDocument {
+        let target = RuntimeTarget::Insert { insertion_index };
+        let choices =
+            editor_choices_for_target(runtime, document, &target).expect("choices should resolve");
+        let spec = runtime
+            .form_schema(document, &target, &choices[choice_index])
+            .expect("form schema should load");
+        let state = form_state_from_spec(&spec);
         runtime
-            .encode_form_state(document, &target, choice_index, &state)
+            .decode_form_state(document, &target, &choices[choice_index], &state)
             .expect("encoding should succeed")
+    }
+
+    fn apply_form_items(document: &mut RunDocument, target: &RuntimeTarget, items: RunDocument) {
+        let mut saved_document = saved_items(document);
+        let items = saved_items(&items);
+        match target {
+            RuntimeTarget::Insert { insertion_index } => {
+                for (offset, item) in items.into_iter().enumerate() {
+                    saved_document.insert(insertion_index + offset, item);
+                }
+            }
+            RuntimeTarget::Edit { item_index } => {
+                let (start, end) = saved_removal_span(&saved_document, *item_index)
+                    .expect("edit span should resolve");
+                saved_document.splice(start..end, items);
+            }
+        }
+        *document = runtime_document(&saved_document);
+    }
+
+    fn saved_removal_span(
+        items: &[SavedItem],
+        item_index: usize,
+    ) -> Result<(usize, usize), String> {
+        let Some(item) = items.get(item_index) else {
+            return Err(format!("invalid item index {item_index}"));
+        };
+        match item {
+            SavedItem::InboundReturnSync { target, .. }
+            | SavedItem::InboundErrorSync { target, .. }
+            | SavedItem::InboundResolveAsync { target, .. }
+            | SavedItem::InboundAbortAsync { target }
+            | SavedItem::InboundCancelAsync { target } => {
+                if item_index > 0 {
+                    match &items[item_index - 1] {
+                        SavedItem::OutboundCreateSync { id, .. }
+                        | SavedItem::OutboundCreateAsync { id, .. }
+                            if id == target =>
+                        {
+                            return Ok((item_index - 1, item_index + 1));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok((item_index, item_index + 1))
+            }
+            _ => Ok((item_index, item_index + 1)),
+        }
     }
 
     #[test]
@@ -371,18 +513,19 @@ mod tests {
         let runtime = InfoPanelSimulatorRuntime::new();
         let mut document = Vec::new();
 
-        let _choices = runtime
-            .insertion_choices(&document)
-            .expect("choices should load");
+        let _choices = editor_choices_for_target(
+            &runtime,
+            &document,
+            &RuntimeTarget::Insert { insertion_index: 0 },
+        )
+        .expect("choices should load");
         let choice_index = 0;
         let saved_json_items = insert_choice_items(&runtime, &document, 0, choice_index);
-        runtime
-            .apply_form(
-                &mut document,
-                &FormTarget::Insert { insertion_index: 0 },
-                saved_json_items,
-            )
-            .expect("apply form should succeed");
+        apply_form_items(
+            &mut document,
+            &RuntimeTarget::Insert { insertion_index: 0 },
+            saved_json_items,
+        );
 
         let items = saved_items(&document);
         assert_eq!(items.len(), 2);
@@ -401,14 +544,14 @@ mod tests {
             other => panic!("unexpected saved items: {other:?}"),
         }
 
-        let first = serde_json::to_value(&document[0]).expect("first item should serialize");
+        let first = serde_json::to_value(&items[0]).expect("first item should serialize");
         let first = first.as_object().expect("first item should be object");
         assert_eq!(first.get("type").and_then(|v| v.as_str()), Some("outbound"));
         assert!(matches!(
             first.get("event_type").and_then(|v| v.as_str()),
             Some("create_sync") | Some("create_async")
         ));
-        let second = serde_json::to_value(&document[1]).expect("second item should serialize");
+        let second = serde_json::to_value(&items[1]).expect("second item should serialize");
         let second = second.as_object().expect("second item should be object");
         assert_eq!(second.get("type").and_then(|v| v.as_str()), Some("inbound"));
         assert!(matches!(
@@ -424,23 +567,25 @@ mod tests {
     fn rendered_rows_hide_script_outbound_marker_and_omit_ids() {
         let runtime = InfoPanelSimulatorRuntime::new();
         let mut document = Vec::new();
-        let choices = runtime
-            .insertion_choices(&document)
-            .expect("choices should load");
+        let choices = editor_choices_for_target(
+            &runtime,
+            &document,
+            &RuntimeTarget::Insert { insertion_index: 0 },
+        )
+        .expect("choices should load");
         let choice_index = choices
             .iter()
             .position(|choice| {
-                choice.label.starts_with("ResolveAsync") || choice.label.starts_with("ReturnSync")
+                let label = runtime.format_editor_choice(choice);
+                label.starts_with("ResolveAsync") || label.starts_with("ReturnSync")
             })
             .expect("expected a completion choice");
         let saved_json_items = insert_choice_items(&runtime, &document, 0, choice_index);
-        runtime
-            .apply_form(
-                &mut document,
-                &FormTarget::Insert { insertion_index: 0 },
-                saved_json_items,
-            )
-            .expect("apply form should succeed");
+        apply_form_items(
+            &mut document,
+            &RuntimeTarget::Insert { insertion_index: 0 },
+            saved_json_items,
+        );
 
         let rendered = render_trace(&runtime, &document).expect("rows should render");
         assert!(!rendered
@@ -460,7 +605,8 @@ mod tests {
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "boot_reason".to_string(),
-                op: SavedSyncOp::BootReason,
+                target: None,
+                op: Some(SavedSyncOp::BootReason),
             },
             SavedItem::InboundReturnSync {
                 target: "boot_reason".to_string(),
@@ -493,10 +639,11 @@ mod tests {
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "store_read".to_string(),
-                op: SavedSyncOp::StoreRead {
+                target: None,
+                op: Some(SavedSyncOp::StoreRead {
                     namespace: "app_config".to_string(),
                     keys: vec!["ssid".to_string(), "pw".to_string()],
-                },
+                }),
             },
             SavedItem::InboundReturnSync {
                 target: "store_read".to_string(),
@@ -529,10 +676,11 @@ mod tests {
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "store_read".to_string(),
-                op: SavedSyncOp::StoreRead {
+                target: None,
+                op: Some(SavedSyncOp::StoreRead {
                     namespace: "app_config".to_string(),
                     keys: vec!["ssid".to_string()],
-                },
+                }),
             },
             SavedItem::InboundReturnSync {
                 target: "store_read".to_string(),
@@ -572,7 +720,8 @@ mod tests {
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "tft_set_rst_high".to_string(),
-                op: SavedSyncOp::TftSetRstHigh,
+                target: None,
+                op: Some(SavedSyncOp::TftSetRstHigh),
             },
             SavedItem::InboundReturnSync {
                 target: "tft_set_rst_high".to_string(),
@@ -633,6 +782,113 @@ mod tests {
     }
 
     #[test]
+    fn http_read_result_serializes_as_hex_string() {
+        let value = serde_json::to_value(SavedSyncResult::HttpRead {
+            bytes: vec![0x00, 0x0f, 0xa5, 0xff],
+        })
+        .expect("serialize should succeed");
+
+        assert_eq!(
+            value.get("type").and_then(|v| v.as_str()),
+            Some("http_read")
+        );
+        assert_eq!(
+            value.get("bytes_hex").and_then(|v| v.as_str()),
+            Some("000fa5ff")
+        );
+        assert!(value.get("bytes").is_none());
+
+        let roundtrip: SavedSyncResult =
+            serde_json::from_value(value).expect("deserialize should succeed");
+        assert_eq!(
+            roundtrip,
+            SavedSyncResult::HttpRead {
+                bytes: vec![0x00, 0x0f, 0xa5, 0xff]
+            }
+        );
+    }
+
+    #[test]
+    fn async_saved_values_roundtrip_full_runtime_information() {
+        let networks = SavedAsyncResult::from_runtime(&AsyncResult::ScanNetworks(vec![
+            wifi::FoundNetwork::new("ssid-a", Some(1), Some(-30)),
+            wifi::FoundNetwork::new("ssid-b", None, None),
+        ]));
+        assert_eq!(
+            networks,
+            SavedAsyncResult::ScanNetworks {
+                networks: vec![
+                    SavedFoundNetwork {
+                        ssid: "ssid-a".to_string(),
+                        channel: Some(1),
+                        signal_strength: Some(-30),
+                    },
+                    SavedFoundNetwork {
+                        ssid: "ssid-b".to_string(),
+                        channel: None,
+                        signal_strength: None,
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            networks.to_runtime(),
+            AsyncResult::ScanNetworks(vec![
+                wifi::FoundNetwork::new("ssid-a", Some(1), Some(-30)),
+                wifi::FoundNetwork::new("ssid-b", None, None),
+            ])
+        );
+
+        let response = SavedAsyncResult::from_runtime(&AsyncResult::PortalHttpResponse {
+            status_code: 201,
+            content_type: "application/json",
+            body_len: 42,
+        });
+        assert_eq!(
+            response,
+            SavedAsyncResult::PortalHttpResponse {
+                status_code: 201,
+                content_type: "application/json".to_string(),
+                body_len: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn async_saved_ops_roundtrip_full_runtime_information() {
+        let sleep = SavedAsyncOp::from_runtime(&AsyncOp::Sleep(EmbassyDuration::from_ticks(1234)));
+        assert_eq!(
+            sleep,
+            SavedAsyncOp::Sleep {
+                duration: SavedEmbassyDuration { ticks: 1234 },
+            }
+        );
+        assert_eq!(
+            sleep.to_runtime(),
+            AsyncOp::Sleep(EmbassyDuration::from_ticks(1234))
+        );
+
+        let connect = SavedAsyncOp::from_runtime(&AsyncOp::WifiConnect {
+            timeout: Duration::new(2, 345),
+        });
+        assert_eq!(
+            connect,
+            SavedAsyncOp::WifiConnect {
+                timeout: SavedStdDuration {
+                    secs: 2,
+                    nanos: 345
+                },
+            }
+        );
+        assert_eq!(
+            connect.to_runtime(),
+            AsyncOp::WifiConnect {
+                timeout: Duration::new(2, 345),
+            }
+        );
+    }
+
+    #[test]
     fn now_default_uses_elapsed_time_from_trace_prefix() {
         let current_ticks = current_ticks_from_trace(&[
             TraceStep::start(vec![Event::CreateAsync {
@@ -649,16 +905,15 @@ mod tests {
         ]);
 
         assert_eq!(
-            default_sync_result(&SyncOp::Now, current_ticks),
-            SavedSyncResult::Now {
-                ticks: EmbassyDuration::from_millis(150).as_ticks()
-            }
+            default_runtime_sync_result(&SyncOp::Now, current_ticks),
+            SyncResult::Now(EmbassyDuration::from_millis(150).as_ticks())
         );
 
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "now".to_string(),
-                op: SavedSyncOp::Now,
+                target: None,
+                op: Some(SavedSyncOp::Now),
             },
             SavedItem::InboundReturnSync {
                 target: "now".to_string(),
@@ -677,7 +932,8 @@ mod tests {
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "boot_reason".to_string(),
-                op: SavedSyncOp::BootReason,
+                target: None,
+                op: Some(SavedSyncOp::BootReason),
             },
             SavedItem::InboundReturnSync {
                 target: "boot_reason".to_string(),
@@ -697,8 +953,10 @@ mod tests {
         let runtime = InfoPanelSimulatorRuntime::new();
         let document = vec![SavedItem::OutboundCreateAsync {
             id: "wifi_disconnect_2".to_string(),
-            op: SavedAsyncOp::WifiDisconnect,
+            target: None,
+            op: None,
         }];
+        let document = runtime_document(&document);
 
         let rendered = render_trace(&runtime, &document).expect("render should succeed");
         assert!(rendered.replay_error.is_some());
@@ -711,7 +969,8 @@ mod tests {
         let document = vec![
             SavedItem::OutboundCreateSync {
                 id: "now".to_string(),
-                op: SavedSyncOp::Now,
+                target: None,
+                op: Some(SavedSyncOp::Now),
             },
             SavedItem::InboundReturnSync {
                 target: "now".to_string(),
@@ -719,9 +978,11 @@ mod tests {
             },
             SavedItem::InboundCreateAsync {
                 id: "portal_client_connected".to_string(),
+                target: None,
                 op: SavedAsyncOp::PortalClientConnected,
             },
         ];
+        let document = runtime_document(&document);
 
         let rendered = render_trace(&runtime, &document).expect("render should succeed");
         assert!(rendered.replay_error.is_some());
@@ -744,7 +1005,8 @@ mod tests {
         let document = vec![
             SavedItem::OutboundCreateSync {
                 id: "boot_reason".to_string(),
-                op: SavedSyncOp::BootReason,
+                target: None,
+                op: Some(SavedSyncOp::BootReason),
             },
             SavedItem::InboundReturnSync {
                 target: "boot_reason".to_string(),
@@ -753,6 +1015,7 @@ mod tests {
                 },
             },
         ];
+        let document = runtime_document(&document);
 
         let rendered = render_trace(&runtime, &document).expect("render should succeed");
         assert!(rendered.rows.iter().any(|row| {
@@ -769,7 +1032,8 @@ mod tests {
         let items = vec![
             SavedItem::OutboundCreateSync {
                 id: "boot_reason".to_string(),
-                op: SavedSyncOp::BootReason,
+                target: None,
+                op: Some(SavedSyncOp::BootReason),
             },
             SavedItem::InboundReturnSync {
                 target: "boot_reason".to_string(),
@@ -795,30 +1059,26 @@ mod tests {
         let envelope: simulator::editor::RunEnvelope<SavedItem> =
             serde_json::from_str(include_str!("../../simulator1.json"))
                 .expect("simulator1 should parse");
-        let document: RunDocument = envelope.items;
+        let document: RunDocument = runtime_document(&envelope.items);
         let insertion_index = document.len();
 
-        let choices = runtime
-            .insertion_choices(&document[..insertion_index])
-            .expect("choices should load");
+        let target = RuntimeTarget::Insert { insertion_index };
+        let choices =
+            editor_choices_for_target(&runtime, &document, &target).expect("choices should load");
         assert!(
             !choices.is_empty(),
             "expected choices at end of simulator1 trace"
         );
 
-        let target = FormTarget::Insert { insertion_index };
         let complete = choices
             .iter()
-            .enumerate()
-            .filter_map(|(choice_index, choice)| {
+            .filter_map(|choice| {
                 let spec = runtime
-                    .form_spec(&document, &target, choice_index)
-                    .expect("form spec should load");
-                let state = runtime
-                    .initial_form_state(&document, &target, choice_index)
-                    .expect("form state should load");
+                    .form_schema(&document, &target, choice)
+                    .expect("form schema should load");
+                let state = form_state_from_spec(&spec);
                 simulator::editor::form_is_auto_acceptable(&spec, &state)
-                    .then_some(choice.label.clone())
+                    .then_some(runtime.format_editor_choice(choice))
             })
             .collect::<Vec<_>>();
 
@@ -874,14 +1134,13 @@ mod tests {
         let path = directory.join("simulator1.json");
         std::fs::write(&path, include_str!("../../simulator1.json")).expect("write simulator1");
 
-        let session = open_trace::<InfoPanelSimulatorRuntime>(&path, 120, 30).expect("open trace");
+        let session = open_trace(&runtime, &path, 120, 30).expect("open trace");
         let rendered = render_trace(&runtime, &session.state.view.trace).expect("rendered rows");
         let step_count = step_count(&rendered.rows);
         let previous_step = step_count - 2;
         let last_step = step_count - 1;
 
-        let mut previous_session =
-            open_trace::<InfoPanelSimulatorRuntime>(&path, 120, 30).expect("reopen trace");
+        let mut previous_session = open_trace(&runtime, &path, 120, 30).expect("reopen trace");
         previous_session.state.view.cursor_step_index = previous_step;
         let (state, _) = update(previous_session.state, Command::MoveUp, &runtime);
         previous_session.state = state;

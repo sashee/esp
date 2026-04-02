@@ -381,8 +381,8 @@ impl HttpClient for SimHttpClient {
             })
             .await
         {
-            AsyncCompletion::Resolved(AsyncResult::HttpFrame(bytes)) => {
-                Ok(Box::new(ByteFrameSource::new(bytes)))
+            AsyncCompletion::Resolved(AsyncResult::HttpResponse { body }) => {
+                Ok(Box::new(ByteFrameSource::new(self.driver.clone(), body)))
             }
             _ => Err(anyhow!("unexpected http get completion")),
         }
@@ -390,13 +390,13 @@ impl HttpClient for SimHttpClient {
 }
 
 pub(super) struct ByteFrameSource {
-    bytes: Vec<u8>,
-    offset: usize,
+    driver: SimDriver<SyncOp, AsyncOp, SyncResult, AsyncResult>,
+    body: String,
 }
 
 impl ByteFrameSource {
-    fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes, offset: 0 }
+    fn new(driver: SimDriver<SyncOp, AsyncOp, SyncResult, AsyncResult>, body: String) -> Self {
+        Self { driver, body }
     }
 }
 
@@ -404,14 +404,17 @@ impl tft_display::FrameSource for ByteFrameSource {
     type Error = anyhow::Error;
 
     fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
-        if self.offset >= self.bytes.len() {
-            return Ok(0);
+        match self.driver.create_sync(SyncOp::HttpRead {
+            body: self.body.clone(),
+            max_len: buf.len(),
+        }) {
+            SyncResult::HttpRead { bytes } => {
+                let read = bytes.len().min(buf.len());
+                buf[..read].copy_from_slice(&bytes[..read]);
+                Ok(read)
+            }
+            _ => Err(anyhow!("unexpected http read completion")),
         }
-
-        let read = (self.bytes.len() - self.offset).min(buf.len());
-        buf[..read].copy_from_slice(&self.bytes[self.offset..self.offset + read]);
-        self.offset += read;
-        Ok(read)
     }
 }
 

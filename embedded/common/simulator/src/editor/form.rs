@@ -16,6 +16,7 @@ pub struct FormField {
     pub label: String,
     pub kind: FormFieldKind,
     pub help: Option<String>,
+    pub initial_value: Option<FormValue>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,18 @@ pub enum FormValue {
 }
 
 pub type FormState = BTreeMap<String, FormValue>;
+
+pub fn form_state_from_spec(spec: &FormSpec) -> FormState {
+    spec.fields
+        .iter()
+        .filter_map(|field| {
+            field
+                .initial_value
+                .as_ref()
+                .map(|value| (field.id.clone(), value.clone()))
+        })
+        .collect()
+}
 
 pub fn missing_form_fields(spec: &FormSpec, state: &FormState) -> Vec<String> {
     spec.fields
