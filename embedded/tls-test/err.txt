@@ -1,0 +1,7 @@
+   Compiling tls-test v0.1.0 (/home/sashee/workspace/esp/embedded/tls-test)
+    Finished `release` profile [optimized] target(s) in 0.86s
+[2026-04-18T18:32:41Z INFO ] 🚀 A new version of espflash is available: v4.4.0
+[2026-04-18T18:32:41Z INFO ] Serial port: '/dev/ttyACM0'
+[2026-04-18T18:32:41Z INFO ] Connecting...
+[2026-04-18T18:32:42Z INFO ] Using flash stub
+[2026-04-18T18:32:42Z INFO ] Flashing has completed!

@@ -1,0 +1,23 @@
+tty: /dev/tty
+
+ps:
+    PID    PPID    PGID     SID   TPGID TT       STAT COMMAND
+  84938 1496478   84938 1496444 1496478 pts/2    SN   sh -c printf "tty: "; tty; printf "\nps:\n"; ps -o pid,ppid,pgid,sid,tpgid,tty,stat,command -p $$; printf "\nfds:\n"; ls -l /proc/$$/fd/0 /proc/$$/fd/1 /proc/$$/fd/2; printf "\n--- running ---\n"; exec nix-shell --run run
+
+fds:
+lr-x------ 1 sashee sashee 64 Apr 18 20:32 /proc/84938/fd/0 -> /dev/tty
+l-wx------ 1 sashee sashee 64 Apr 18 20:32 /proc/84938/fd/1 -> /home/sashee/workspace/esp/embedded/tls-test/out.txt
+l-wx------ 1 sashee sashee 64 Apr 18 20:32 /proc/84938/fd/2 -> /home/sashee/workspace/esp/embedded/tls-test/err.txt
+
+--- running ---
+Using udevCheckHook
+Chip type:         esp32c6 (revision v0.1)
+Crystal frequency: 40 MHz
+Flash size:        4MB
+Features:          WiFi 6, BT 5
+MAC address:       f0:f5:bd:2b:da:74
+App/part. size:    387,872/4,128,768 bytes, 9.39%
+Commands:
+    CTRL+R    Reset chip
+    CTRL+C    Exit
+

@@ -1,0 +1,6 @@
+/target
+/.artifacts
+/.embuild
+/sdkconfig
+/vendor
+/result
