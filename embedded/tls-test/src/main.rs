@@ -382,7 +382,7 @@ impl SupportedKxGroup for LibcruxMlKem768 {
     }
 
     fn start_and_complete(&self, peer_pub_key: &[u8]) -> Result<CompletedKeyExchange, rustls::Error> {
-        let public_key = parse_public_key(peer_pub_key)?;
+        let public_key = parse_mlkem768_public_key(peer_pub_key)?;
         let (ciphertext, secret) = mlkem768::encapsulate(&public_key, fill_random::<SHARED_SECRET_SIZE>()?);
 
         Ok(CompletedKeyExchange {
@@ -423,7 +423,7 @@ struct ActiveHybrid {
 
 impl ActiveKeyExchange for ActiveLibcruxMlKem768 {
     fn complete(self: Box<Self>, peer_pub_key: &[u8]) -> Result<SharedSecret, rustls::Error> {
-        let ciphertext = parse_ciphertext(peer_pub_key)?;
+        let ciphertext = parse_mlkem768_ciphertext(peer_pub_key)?;
         let secret = mlkem768::decapsulate(&self.private_key, &ciphertext);
 
         Ok(SharedSecret::from(secret.as_slice()))
@@ -544,7 +544,7 @@ fn fill_random<const N: usize>() -> Result<[u8; N], rustls::Error> {
     Ok(bytes)
 }
 
-fn parse_public_key(peer_pub_key: &[u8]) -> Result<mlkem768::MlKem768PublicKey, rustls::Error> {
+fn parse_mlkem768_public_key(peer_pub_key: &[u8]) -> Result<mlkem768::MlKem768PublicKey, rustls::Error> {
     let key_bytes: [u8; 1184] = peer_pub_key
         .try_into()
         .map_err(|_| rustls::Error::PeerMisbehaved(rustls::PeerMisbehaved::InvalidKeyShare))?;
@@ -559,7 +559,7 @@ fn parse_public_key(peer_pub_key: &[u8]) -> Result<mlkem768::MlKem768PublicKey, 
     Ok(public_key)
 }
 
-fn parse_ciphertext(peer_pub_key: &[u8]) -> Result<mlkem768::MlKem768Ciphertext, rustls::Error> {
+fn parse_mlkem768_ciphertext(peer_pub_key: &[u8]) -> Result<mlkem768::MlKem768Ciphertext, rustls::Error> {
     let ciphertext: [u8; 1088] = peer_pub_key
         .try_into()
         .map_err(|_| rustls::Error::PeerMisbehaved(rustls::PeerMisbehaved::InvalidKeyShare))?;

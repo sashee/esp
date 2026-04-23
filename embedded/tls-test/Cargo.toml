@@ -22,10 +22,10 @@ opt-level = "z"
 anyhow = "1"
 config-portal = { path = "../common/lib/config-portal" }
 log = "0.4"
-esp-idf-svc = { version = "0.52.1", features = ["critical-section"] }
+esp-idf-svc = { version = "0.52.1", default-features = false, features = ["std", "binstart", "critical-section"] }
 libcrux-ml-kem = { version = "0.0.8", default-features = false, features = ["mlkem768", "std"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "logging", "tls12"] }
-rustls-rustcrypto = "0.0.2-alpha"
+rustls = { version = "0.23", default-features = false, features = ["std", "logging"] }
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["std"] }
 webpki-roots = "1"
 wifi = { path = "../common/lib/wifi" }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
